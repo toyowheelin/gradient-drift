@@ -75,6 +75,9 @@ jobs:
           cat > pkg/README.txt <<EOF
           Gradient Drift plugin $version, built for AssettoServer $ASSETTOSERVER_VERSION.
 
+          The same files are for Windows and Linux servers (a .NET plugin, no native code), but it has
+          been tested on Windows servers only so far.
+
           It is built and tested against AssettoServer $ASSETTOSERVER_VERSION only. On another version it
           says so in the server log at start, and the bots may misbehave: use the release made for your
           version, or build the plugin from the source against it.
@@ -112,7 +115,7 @@ jobs:
           PACKAGE: ${{ needs.build.outputs.package }}
       - run: >
           gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME (AssettoServer $ASSETTOSERVER)"
-          --notes "Built and tested for AssettoServer $ASSETTOSERVER. On another version the plugin warns in the server log at start. Install it with the setup program (the newest setup-v release): unzip this into setup's folder and run setup."
+          --notes "Built and tested for AssettoServer $ASSETTOSERVER. One download for Windows and Linux servers (a .NET plugin; tested on Windows only, Linux untested). On another version the plugin warns in the server log at start. Install it with the setup program (the newest setup-v release): unzip this into setup's folder and run setup."
           --repo "$GITHUB_REPOSITORY" "$PACKAGE.zip"
         env:
           GH_TOKEN: ${{ github.token }}
