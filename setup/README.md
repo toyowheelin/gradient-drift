@@ -28,8 +28,11 @@ command line as the fallback on Windows and the only form on Linux.
   on the server, and the policy with it (an older plugin turns down a newer policy's settings and
   leaves the cars to the stock AI). The old files go to the backup like any other change. Stop the
   server first: setup will not replace a plugin AssettoServer has loaded. A policy beside the same
-  plugin that differs from the download's is kept, since it may have been polished for the track;
-  setup says so and where the download's is.
+  plugin that an earlier release shipped is updated to the download's too (setup knows every
+  release's policy by its checksum); one no release shipped is kept, since it may have been
+  polished for the track, and setup says so and where the download's is. Plugin settings in
+  `extra_cfg.yml` that the new plugin renamed move to their new name with their value; ones it no
+  longer has are taken out, since AssettoServer will not start with a setting the plugin lacks.
 - **Exports instead, for a server it cannot reach** (a hosting plan): the files to upload and the
   config edits ([below](#a-server-on-a-hosting-plan-or-any-machine-without-the-game)).
 

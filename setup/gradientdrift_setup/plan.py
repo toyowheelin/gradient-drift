@@ -13,6 +13,17 @@ from .identify import TESTED_VERSION, identify, version_tuple
 from .server import OLD_PLUGIN, OLD_PLUGIN_CONFIG_TAG, PLUGIN, PLUGIN_CONFIG_TAG, server_running
 
 PLUGIN_FILES = ['GradientDriftPlugin.dll', 'GradientDriftPlugin.deps.json', 'GradientDriftPlugin.policy.json']
+# Every policy a plugin release shipped (SHA-256 of the file, line endings as LF), with the release.
+# A server's policy that is one of these is a stock one, replaced by the policy setup carries even
+# beside the same plugin; any other was made for the server (polished for its track) and is kept.
+# Add each release's policy here (build-plugin.yml refuses a plugin-v* tag whose policy is missing).
+SHIPPED_POLICIES = {
+    'd4388a8477bf5284d0d358e12908eb7293a7018b0140a46fd55f13bac99d2212': 'plugin-v0.1.0',
+}
+# Plugin settings a release renamed (old name: new name). A setting the plugin going in does not know
+# at all is taken out of extra_cfg.yml (AssettoServer stops at start on a setting the plugin's
+# configuration lacks); a renamed one keeps its value under the new name.
+RENAMED_SETTINGS = {}
 # the files the plugin reads from the server's folder for its track (drift_rl/setup_track.py makes them)
 TRACK_FILES = ['{track}_triangles.csv.gz', '{track}_collision.csv.gz', '{track}_road_mesh.csv',
                '{track}_course_edges.csv', '{track}_pace_reference.csv']
@@ -143,6 +154,25 @@ def current_pace_reference(path):
     return None
 
 
+def policy_sha256(path):
+    """The SHA-256 of a policy file with its line endings as LF (a copy on Windows may have CRLF)."""
+    import hashlib
+    with open(path, 'rb') as f:
+        return hashlib.sha256(f.read().replace(b'\r\n', b'\n')).hexdigest()
+
+
+def plugin_settings(dll):
+    """The setting names the plugin build knows: each property of its configuration has a set_<Name>
+    method, whose name is in the assembly's metadata strings. None when the file cannot be read."""
+    import re
+    try:
+        with open(dll, 'rb') as f:
+            data = f.read()
+    except OSError:
+        return None
+    return {m.decode() for m in re.findall(rb'set_([A-Za-z][A-Za-z0-9_]*)\x00', data)}
+
+
 def same_data(a, b):
     """Whether two track data files hold the same data: their text the same apart from line endings
     (a copy made on Windows writes CRLF), inside the .gz for a gzipped one."""
@@ -222,10 +252,14 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
                 and not filecmp.cmp(source, there, shallow=False))
     stale = [f for f in PLUGIN_FILES if differs(f)]
     plugin_update = any(f != policy_name for f in stale)
-    # the policy the bots will run, which the track's checks are for
     installed = os.path.join(server.folder, plugin_rel, policy_name)
     carried = os.path.join(plugin_source, policy_name) if plugin_source else ''
-    if os.path.exists(installed) and not plugin_update:
+    # beside the same plugin, a server's policy that a release shipped is replaced too (an older
+    # stock policy); one that no release shipped is the server's own and stays
+    stock_policy = (not plugin_update and policy_name in stale
+                    and SHIPPED_POLICIES.get(policy_sha256(installed)))
+    # the policy the bots will run, which the track's checks are for
+    if os.path.exists(installed) and not plugin_update and not stock_policy:
         policy = installed
     elif not os.path.exists(installed) and server.old_policy:
         policy = server.old_policy
@@ -482,10 +516,36 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         if server_running(server.folder):
             p.blockers.append("AssettoServer is running from this folder (the plugin is in use): stop it, then run "
                               "setup again to update the plugin")
+    elif stock_policy:
+        p.changes.append(Change(f'{plugin_rel}/{policy_name}',
+                                f"update the policy (the server's is the one {stock_policy} shipped) to the one setup "
+                                "carries; it drives from the server's next start",
+                                op=('copy', carried, f'{plugin_rel}/{policy_name}')))
     elif stale:
         p.notes.append(f"the server's policy ({plugin_rel}/{policy_name}) differs from the one setup carries for the "
-                       "same plugin, so it is kept (it may have been polished for this track). To use setup's, copy "
-                       f"{os.path.join(plugin_source, policy_name)} over it")
+                       "same plugin and no release shipped it, so it is kept (it may have been polished for this "
+                       f"track). To use setup's, copy {os.path.join(plugin_source, policy_name)} over it")
+    # settings the plugin going in (or the one installed) does not know: renamed ones move to their new
+    # name, the rest come out, so AssettoServer does not stop at start on them
+    going_in = plugin_update or PLUGIN_FILES[0] in missing
+    dll = (os.path.join(plugin_source, PLUGIN_FILES[0]) if plugin_source else '') if going_in \
+        else os.path.join(server.folder, plugin_rel, PLUGIN_FILES[0])
+    known = plugin_settings(dll) if dll and os.path.exists(dll) else None
+    if known and server.plugin_config:
+        for key, value in server.plugin_config.items():
+            if key in known:
+                continue
+            new_key = RENAMED_SETTINGS.get(key)
+            if new_key and new_key in known:
+                if new_key in server.plugin_config:
+                    p.changes.append(Change(x, f"take out {key} (renamed {new_key}, which is set already)",
+                                            f'{key}: {value}', '', op=('yaml_doc_remove', PLUGIN_CONFIG_TAG, key)))
+                else:
+                    p.changes.append(Change(x, f"the plugin setting {key} is called {new_key} now", f'{key}: {value}',
+                                            f'{new_key}: {value}', op=('yaml_doc_rename', PLUGIN_CONFIG_TAG, key, new_key)))
+            else:
+                p.changes.append(Change(x, f"take out the plugin setting {key}: this plugin has no such setting",
+                                        f'{key}: {value}', '', op=('yaml_doc_remove', PLUGIN_CONFIG_TAG, key)))
     # an any-car policy (it reads the car inputs: more than 55) drives each bot with its own car's numbers
     if inputs > 55 and game:
         from .carfile import car_file_text, pace_source, same_car_file
