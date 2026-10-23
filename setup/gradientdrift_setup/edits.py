@@ -210,3 +210,31 @@ def yaml_plugin_doc(tf, tag, key, value):
             tf.lines[i] = f'{key}: {value}{comment}'
             return
     tf.lines.insert(start + 1, f'{key}: {value}')
+
+
+def _plugin_doc_key(tf, tag, key):
+    """The line index of key in the plugin's own document (--- !Tag), or None."""
+    start = next((i for i, l in enumerate(tf.lines) if l.startswith('---') and tag in l), None)
+    if start is None:
+        return None
+    end = next((i for i in range(start + 1, len(tf.lines)) if tf.lines[i].startswith('---')), len(tf.lines))
+    return next((i for i in range(start + 1, end) if re.match(rf'^{re.escape(key)}:', tf.lines[i])), None)
+
+
+def yaml_plugin_doc_rename(tf, tag, old, new):
+    """Renames key old to new in the plugin's own document, its value and comment as they are."""
+    i = _plugin_doc_key(tf, tag, old)
+    if i is not None:
+        tf.lines[i] = new + tf.lines[i][len(old):]
+
+
+def yaml_plugin_doc_remove(tf, tag, key):
+    """Takes key out of the plugin's own document, with the lines indented under it (a list or a
+    mapping as its value)."""
+    i = _plugin_doc_key(tf, tag, key)
+    if i is None:
+        return
+    j = i + 1
+    while j < len(tf.lines) and tf.lines[j][:1].isspace() and tf.lines[j].strip():
+        j += 1
+    del tf.lines[i:j]

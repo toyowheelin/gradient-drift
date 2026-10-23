@@ -9,10 +9,10 @@ name: build plugin
 on:
   push:
     branches: [main]
-    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', '.github/workflows/build-plugin.yml']
+    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', '.github/workflows/build-plugin.yml']
     tags: ['plugin-v*']
   pull_request:
-    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', '.github/workflows/build-plugin.yml']
+    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', '.github/workflows/build-plugin.yml']
   workflow_dispatch:
 
 permissions:
@@ -48,6 +48,30 @@ jobs:
         run: |
           out=AssettoServer/GradientDriftPlugin/bin/Debug/net8.0
           ls -l $out/GradientDriftPlugin.dll $out/GradientDriftPlugin.deps.json $out/GradientDriftPlugin.policy.json
+      - name: setup can tell what this build knows
+        # setup reads the plugin's settings from the DLL's set_<Name> metadata strings (to take out
+        # settings a newer plugin dropped), and replaces a server's policy only when a release shipped
+        # it (SHIPPED_POLICIES): a release's own policy has to be on that list
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, re
+          out = 'AssettoServer/GradientDriftPlugin/bin/Debug/net8.0'
+          dll = open(f'{out}/GradientDriftPlugin.dll', 'rb').read()
+          cs = open('gradient-drift/GradientDriftPlugin/GradientDriftConfiguration.cs').read()
+          keys = re.findall(r'public [\w<>?,\[\] ]+? (\w+) \{ get; set; \}', cs)
+          lost = [k for k in keys if b'set_' + k.encode() + b'\0' not in dll]
+          print(f'{len(keys)} settings; not found in the DLL: {lost}')
+          assert keys and not lost, 'setup could not see these settings in the DLL'
+          plan = open('gradient-drift/setup/gradientdrift_setup/plan.py').read()
+          policy = open(f'{out}/GradientDriftPlugin.policy.json', 'rb').read().replace(b'\r\n', b'\n')
+          sha = hashlib.sha256(policy).hexdigest()
+          listed = sha in plan
+          print(f'policy {sha}: {"in" if listed else "NOT in"} setup SHIPPED_POLICIES')
+          if os.environ['GITHUB_REF'].startswith('refs/tags/plugin-v'):
+              assert listed, 'add this policy to SHIPPED_POLICIES in setup/gradientdrift_setup/plan.py'
+          elif not listed:
+              print('::warning::the policy is not in setup SHIPPED_POLICIES yet (needed before a release)')
+          PY
       - name: the plugin, setup and this build name the same AssettoServer version, the one it ran with
         id: version
         shell: pwsh

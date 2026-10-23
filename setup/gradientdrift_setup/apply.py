@@ -48,6 +48,10 @@ def _edit(tf, op):
         edits.yaml_rename_plugin(tf, op[1], op[2])
     elif kind == 'yaml_rename_doc':
         edits.yaml_rename_doc(tf, op[1], op[2])
+    elif kind == 'yaml_doc_rename':
+        edits.yaml_plugin_doc_rename(tf, op[1], op[2], op[3])
+    elif kind == 'yaml_doc_remove':
+        edits.yaml_plugin_doc_remove(tf, op[1], op[2])
     else:
         raise ValueError(f'unknown edit {kind}')
 
@@ -77,6 +81,11 @@ def _check_yaml(text, ops):
         elif kind == 'yaml_rename_doc':
             tags = [getattr(getattr(d, 'tag', None), 'value', None) for d in docs[1:]]
             assert op[2] in tags and op[1] not in tags, f'{op[2]} does not read back'
+        elif kind in ('yaml_doc_rename', 'yaml_doc_remove'):
+            doc = next((d for d in docs[1:] if getattr(getattr(d, 'tag', None), 'value', None) == op[1]), None)
+            assert doc is not None and op[2] not in doc, f'{op[1]} {op[2]} is still there'
+            if kind == 'yaml_doc_rename':
+                assert op[3] in doc, f'{op[1]} {op[3]} does not read back'
 
 
 def _check_ini(path_text, ops):
