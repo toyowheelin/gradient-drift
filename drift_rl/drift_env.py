@@ -619,9 +619,14 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     q = _drift_quality(abs_slip / (1.0 - SKILL_ANGLE * lack), rw)
     pace = s[fs.S_PACE]
     ref_point = max(0, min(pace_ref.shape[0] - 1, int(d[fs.D_NearestPointId])))
-    asked_kmh = pace * pace_ref[ref_point] if pace_ref.shape[0] == sp_pos.shape[0] else 0.0
+    ref_kmh = pace_ref[ref_point] if pace_ref.shape[0] == sp_pos.shape[0] else 0.0
     if p[fs.P_PACE_SCALE] > 0.0:
-        asked_kmh *= p[fs.P_PACE_SCALE]
+        ref_kmh *= p[fs.P_PACE_SCALE]
+    # never more than the car's speed limit: on a long straight the course's reference runs up to
+    # pace_model's 216 km/h ceiling, which no car limited to 72 - 88 km/h reaches, and the pace
+    # error it sees there read 27% slow (Black Cat County, 2026-10-19). The plugin's UpdatePaceOver
+    # asks the same.
+    asked_kmh = pace * min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6)
     paid_speed = asked_kmh if asked_kmh > 0.0 else rw[R_PAID_SPEED]
     paid = progress
     if paid_speed > 0.0:

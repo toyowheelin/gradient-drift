@@ -1221,7 +1221,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         aiState.Status.Position = position;
         if (_paceReferenceKmh != null)
         {
-            UpdatePaceOver(state, position, paceAskedPointId, dt, policy.PaceAverageSeconds);
+            UpdatePaceOver(state, position, paceAskedPointId, aiState.MaxSpeed, dt, policy.PaceAverageSeconds);
         }
         aiState.Status.Velocity = velocity;
 
@@ -1570,7 +1570,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     // the tick's length, and the speed asked of it, pace x the reference speed at the point it
     // started the tick at, each averaged over about averageSeconds; then how far over the asked
     // speed it is (0 while nothing is asked). The first tick starts both averages afresh.
-    private void UpdatePaceOver(DriftCarState state, Vector3 position, int askedPointId, float dt, float averageSeconds)
+    private void UpdatePaceOver(DriftCarState state, Vector3 position, int askedPointId, float maxSpeedMs, float dt,
+        float averageSeconds)
     {
         DriftPolicyCarState p = state.Policy;
         float[] arcs = _lapArc!;
@@ -1595,7 +1596,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         }
 
         float speed = Math.Clamp(progress, -2f, 5f) / MathF.Max(dt, 1e-3f);
-        float askedKmh = state.Pace * _paceReferenceKmh![askedPointId] * _car.PaceScale;
+        // never more than the car's speed limit (drift_env._step_one asks the same): a long
+        // straight's reference can run far past what any bot is allowed to reach
+        float askedKmh = state.Pace * MathF.Min(_paceReferenceKmh![askedPointId] * _car.PaceScale, maxSpeedMs * 3.6f);
         if (p.PaceTicks == 0)
         {
             p.PaceSpeedAverageMs = speed;

@@ -111,7 +111,7 @@ def pace_over_from_telemetry(df, world, fs, average_s):
                 continue
             dt = max(float(r.RealDtMs) / 1000.0, 1e-3)
             speed = min(5.0, max(-2.0, progress)) / dt
-            asked = float(r.Pace) * world.pace_ref[min(point, len(world.pace_ref) - 1)] / 3.6
+            asked = float(r.Pace) * min(world.pace_ref[min(point, len(world.pace_ref) - 1)], float(r.CeilingKmh)) / 3.6
             if ticks == 0:
                 avg_speed, avg_asked = speed, asked
             else:
