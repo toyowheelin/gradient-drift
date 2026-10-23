@@ -78,6 +78,6 @@ jobs:
       - uses: actions/download-artifact@v5
         with:
           merge-multiple: true
-      - run: gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" gradient-drift-setup-windows.zip gradient-drift-setup-linux.zip
+      - run: gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --notes "The setup program for Windows (window and command line) or Linux (command line). Unzip it, unzip the plugin download (the newest plugin-v release) into the same folder, and run it. See setup/README.md." --repo "$GITHUB_REPOSITORY" gradient-drift-setup-windows.zip gradient-drift-setup-linux.zip
         env:
           GH_TOKEN: ${{ github.token }}

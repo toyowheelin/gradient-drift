@@ -38,8 +38,26 @@ It does not train a policy for a track. The trainer can polish the shipped polic
 
 ## Download and run
 
-Download the zip for your system, unzip it anywhere, and run what's inside. It carries its own
-Python and Qt; nothing to install.
+Download two things from the [releases](https://github.com/toyowheelin/gradient-drift/releases): the setup zip for
+your system (from the newest `setup-v…` release) and the plugin (from the newest `plugin-v…` release,
+`GradientDriftPlugin-<version>-for-AssettoServer-0.0.54.zip`). Unzip the setup zip anywhere, then
+unzip the plugin download into the same folder, so it looks like this:
+
+```
+gradient-drift-setup/
+├── gradient-drift-setup.exe      (gradient-drift-setup on Linux)
+├── GradientDriftPlugin/          <- from the plugin download: the files setup installs
+│   ├── GradientDriftPlugin.dll
+│   ├── GradientDriftPlugin.deps.json
+│   └── GradientDriftPlugin.policy.json
+└── ...
+```
+
+Setup finds the plugin there and installs it on the server (or updates an older one). Windows'
+**Extract All** puts the download in a folder of its own (`GradientDriftPlugin-v0.1.0-for-...`);
+that's fine inside setup's folder too, and with several, setup takes the newest. It carries its
+own Python and Qt; nothing to install. The plugin can live anywhere else too: pick its
+`GradientDriftPlugin` folder under **Plugin build** on the last page, or give `--plugin`.
 
 ### Windows
 
@@ -102,7 +120,7 @@ Several server folders can be given at once (not with `export`).
 | `--car A,B,...`, `--skin X,Y,...` | a car (and skin) per bot slot, the existing AI entries first in the entry list's order; an empty one keeps that bot's car; bots past the list take its last car |
 | `--train-size N` | run the bots as tandem trains of N: the first car of each drives, the others follow it door to door (1 = every bot on its own) |
 | `--pace PERCENT` | how fast they drive, as a share of the track's reference speed round the lap (a policy trained with paces; lower is calmer) |
-| `--plugin FOLDER` | the plugin's build (default: `plugin/` beside the packaged program, else the repository's build folder) |
+| `--plugin FOLDER` | the plugin's files (default: the plugin download's `GradientDriftPlugin/` beside the packaged program, else the repository's build folder) |
 | `--track-data FOLDER` | the tracks' files, a folder per track (default: `tracks/` beside it, else the repository's `drift_rl/tracks`) |
 
 ## A server on a hosting plan (or any machine without the game)

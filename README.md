@@ -54,10 +54,14 @@ by the one behind.
 **You need** AssettoServer v0.0.54, and the game installed on the machine you run setup on (setup
 reads the track and the cars from it).
 
-1. **Get the plugin.** Download it from the releases, or build it (see
-   [Building the plugin](#building-the-plugin)). Each download is built for one AssettoServer
-   version, named in its file name and README; on another version the plugin says so in the server
-   log at start.
+1. **Download the plugin and the setup program** from the
+   [releases](https://github.com/toyowheelin/gradient-drift/releases). They are separate releases:
+   `plugin-v…` has the plugin (`GradientDriftPlugin-<version>-for-AssettoServer-0.0.54.zip`),
+   `setup-v…` has the setup program for Windows or Linux. Unzip the setup program anywhere, then unzip the plugin download into the
+   same folder, so its `GradientDriftPlugin` folder sits beside `gradient-drift-setup.exe`; setup
+   finds it there. Each plugin download is built for one AssettoServer version, named in its file
+   name and README; on another version the plugin says so in the server log at start. To build the
+   plugin yourself instead, see [Building the plugin](#building-the-plugin).
 2. **Run the setup program** ([`setup/`](setup/README.md)). Point it at the game install and the
    server folder, then choose the bot car, how many bots, trains and pace. It shows every change
    before and after, makes them on a yes, keeps the originals, and can undo. It copies in the
@@ -168,8 +172,8 @@ tools need from the game content installed on their own machine.
 
 ## Building the plugin
 
-The releases carry the plugin built. To build it yourself: it compiles against AssettoServer's own
-source, so you need that too.
+The [releases](https://github.com/toyowheelin/gradient-drift/releases) carry the plugin built. To build it yourself: it
+compiles against AssettoServer's own source, so you need that too.
 
 **You need:** the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) and
 [git](https://git-scm.com/).
