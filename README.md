@@ -45,9 +45,10 @@ ships as one `policy.json`; nothing learns on the live server.
 | 🎛️ **Two dials** | How fast (a share of the track's flat-out drift speed), and how good a driver: from a careful novice who still holds a drift to the best the policy can do. |
 | 🧑 **Close to a human** | On the owner's server the bots rotate the car about as hard and as often as a human drifting the same track (yaw acceleration, direction changes, sideways g, time sliding). |
 
-**Limits:** tested on Windows servers only (Linux should work but is untested); rear-drive cars
-only; and the bots don't see each other or the players, so a car that spins can be driven through
-by the one behind.
+**Limits:** tested on Windows servers only (the same plugin download should run on Linux too, as
+a .NET plugin with no native code, but nobody has tried it yet); rear-drive cars only;
+and the bots don't see each other or the players, so a car that spins can be driven through by
+the one behind.
 
 ## Quick start
 
