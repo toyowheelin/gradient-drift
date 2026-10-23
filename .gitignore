@@ -32,3 +32,6 @@ course_*.png
 # PyInstaller output (setup/gradient-drift-setup.spec)
 /build/
 /dist/
+
+# Training output (policies, checkpoints, logs): kept outside this repository
+drift_rl/runs/
