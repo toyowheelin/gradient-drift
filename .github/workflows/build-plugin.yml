@@ -79,8 +79,9 @@ jobs:
           says so in the server log at start, and the bots may misbehave: use the release made for your
           version, or build the plugin from the source against it.
 
-          Copy the GradientDriftPlugin folder into the server's plugins folder, then run
-          gradient-drift-setup on the server folder for the track data, car files and settings.
+          To install: unzip this into the gradient-drift-setup folder (from the setup-v... release,
+          same page), so GradientDriftPlugin sits beside the program, and run setup on the server
+          folder. It installs the plugin and makes the track data, car files and settings.
 
           Source, licence (AGPL-3.0, in LICENSE) and documentation:
           $GITHUB_SERVER_URL/$GITHUB_REPOSITORY (built from commit $GITHUB_SHA)
@@ -111,7 +112,7 @@ jobs:
           PACKAGE: ${{ needs.build.outputs.package }}
       - run: >
           gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME (AssettoServer $ASSETTOSERVER)"
-          --notes "Built and tested for AssettoServer $ASSETTOSERVER. On another version the plugin warns in the server log at start."
+          --notes "Built and tested for AssettoServer $ASSETTOSERVER. On another version the plugin warns in the server log at start. Install it with the setup program (the newest setup-v release): unzip this into setup's folder and run setup."
           --repo "$GITHUB_REPOSITORY" "$PACKAGE.zip"
         env:
           GH_TOKEN: ${{ github.token }}

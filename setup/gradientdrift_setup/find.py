@@ -1,4 +1,5 @@
 """Finding the Assetto Corsa install and AssettoServer folders without being told."""
+import glob
 import os
 import re
 import sys
@@ -16,12 +17,19 @@ def _bases():
 
 
 def default_plugin_source():
-    """The plugin's build: plugin/ beside the packaged program, else the repository's build folder."""
+    """The plugin's build: the release download's GradientDriftPlugin/ beside the packaged program (or
+    in the folder a "extract all" made for the download, the newest one), plugin/, else the
+    repository's build folder."""
+    dll = 'GradientDriftPlugin.dll'
     for base in _bases():
-        for sub in ('plugin', *(os.path.join(*parent, 'GradientDriftPlugin', 'bin', build, 'net8.0')
-                                for parent in ((), ('AssettoServer',)) for build in ('Release', 'Debug'))):
+        extracted = [os.path.join(d, 'GradientDriftPlugin') for d in glob.glob(os.path.join(base, 'GradientDriftPlugin-*'))]
+        extracted.sort(key=lambda f: os.path.getmtime(os.path.join(f, dll)) if os.path.exists(os.path.join(f, dll)) else 0,
+                       reverse=True)
+        for sub in ('GradientDriftPlugin', *extracted, 'plugin',
+                    *(os.path.join(*parent, 'GradientDriftPlugin', 'bin', build, 'net8.0')
+                      for parent in ((), ('AssettoServer',)) for build in ('Release', 'Debug'))):
             folder = os.path.join(base, sub)
-            if os.path.exists(os.path.join(folder, 'GradientDriftPlugin.dll')):
+            if os.path.exists(os.path.join(folder, dll)):
                 return folder
     return None
 
