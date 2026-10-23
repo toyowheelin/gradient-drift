@@ -18,7 +18,7 @@ What it does:
      same sign convention as the plugin's CrossTrackErrorM) at its distance along the line.
   3. Joins up the markers on each side: the course edge at any point along the line is the
      straight-line interpolation (in distance along the line) between the neighbouring markers on
-     that side, or the edge of the paved surface where that is nearer.
+     that side, or the edge of the paved surface or the first wall where that is nearer.
 
 Output (in the track's folder, drift_rl/tracks/<track>/):
   <track>_course_edges.csv    one row per spline point: how far the course extends to
@@ -52,6 +52,9 @@ MAX_MARKER_DISTANCE_M = 19.0
 # course by definition, and a marker this close to it is a clipping point, not a wall
 MIN_HALF_WIDTH_M = 2.0
 PAVED_EDGE_SEARCH_M = 30.0
+# a wall crossing the line's normal ends the course there; probed this high above the ground (a low
+# tire wall and the gap under a guard rail)
+WALL_PROBE_HEIGHTS_M = (0.3, 0.9)
 # Markers that stand near the course but are NOT part of its edge (X, Z; matched within 1 m).
 # From the track's owner, checking course_layout.png: "the cones aren't part of the
 # track, just the tires in that spot" - the edge was bridging out to two cones around X 80-92,
@@ -160,11 +163,26 @@ def build(world, fs, de):
                      and not any(math.hypot(m['x'] - x, m['z'] - z) < 1.0 for x, z in NOT_PART_OF_THE_EDGE))
     track = de.track_surface_code(world)
 
+    R = world.ray_arrays()
+
     def paved_edge(i, sign):
+        """How far the paving runs from the line at point i, stopping at the first wall: on a track
+        walled along a road that is paved beyond the walls too (a street circuit, House of RWD's
+        kind), the paving alone put the edge PAVED_EDGE_SEARCH_M out on both sides."""
         nx, nz = -line.tan[i, 2] * sign, line.tan[i, 0] * sign
-        for d in np.arange(0.5, PAVED_EDGE_SEARCH_M + 0.01, 0.25):
-            if de.surface_under(world, sp[i, 0] + nx * d, sp[i, 1], sp[i, 2] + nz * d) != track:
+        step = 0.25
+        y = sp[i, 1]
+        for d in np.arange(0.5, PAVED_EDGE_SEARCH_M + 0.01, step):
+            x, z = sp[i, 0] + nx * d, sp[i, 2] + nz * d
+            if de.surface_under(world, x, y, z) != track:
                 return d
+            down, _ = fs.ground_below(x, y + 3.0, z, 12.0, *R)
+            if down >= 0:
+                y = y + 3.0 - down
+            for h in WALL_PROBE_HEIGHTS_M:
+                hit, _ = fs.raycast(x, y + h, z, nx, 0.0, nz, step, *R, 2)
+                if hit >= 0:
+                    return d + hit
         return PAVED_EDGE_SEARCH_M
 
     half = np.zeros((2, N))        # [0] = positive cross-track side, [1] = negative side
@@ -176,7 +194,7 @@ def build(world, fs, de):
         w = np.array([abs(m['lateral']) for m in ms])
         if len(s):
             joined = np.interp(line.arc, np.r_[s - line.lap, s, s + line.lap], np.r_[w, w, w])
-        else:                      # no markers on this side: the paving is the course
+        else:                      # no markers on this side: the paving (up to a wall) is the course
             joined = np.full(N, np.inf)
         half[side] = np.maximum(np.minimum(joined, paved), MIN_HALF_WIDTH_M)
         from_marker[side] = joined <= paved
@@ -295,7 +313,7 @@ def main(argv=None):
           f"({sum(1 for m in used if m['lateral'] > 0)} on the positive cross-track side, "
           f"{sum(1 for m in used if m['lateral'] < 0)} on the negative)")
     print(f"course width: {width.min():.1f} - {width.max():.1f} m, median {np.median(width):.1f} m; "
-          f"edge set by markers on {course['from_marker'].mean():.0%} of it, by the paved edge on the rest")
+          f"edge set by markers on {course['from_marker'].mean():.0%} of it, by the paved edge or a wall on the rest")
     print(f"written: {edges}\n         {marks}")
     if args.plot:
         plot(world, course, track)
