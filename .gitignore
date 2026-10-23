@@ -1,0 +1,34 @@
+__pycache__/
+*.pyc
+bin/
+obj/
+.vs/
+
+# Track files from the game or a mod, and everything generated from them
+drift_rl/tracks/
+closed_loop_sweep_bundle/
+*_triangles.csv*
+*_collision.csv*
+*.kn5
+
+# Car files from the game or a mod (only the extracted numbers are kept)
+*.acd
+unpacked/
+
+# Test output
+results/
+drift_physics_telemetry*.csv
+ai_car_monitor_*.csv
+*_telemetria_*.csv
+*.zip
+*.log
+
+# Car and track data, and anything drawn from them, are never shipped: each user generates
+# their own from their own game content.
+car_numbers.json
+car_pool.json
+course_*.png
+
+# PyInstaller output (setup/gradient-drift-setup.spec)
+/build/
+/dist/

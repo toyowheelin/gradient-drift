@@ -1,0 +1,83 @@
+# Builds the packaged setup app: a Windows zip (window + command line) and a Linux zip (command
+# line only). Run it from the Actions tab ("Run workflow"), or push a tag like setup-v0.1.0 to
+# also get a draft release with both zips attached. The zips stay on the run page for 3 days;
+# download them before then (a release keeps its own copy).
+name: build setup
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['setup-v*']
+
+permissions:
+  contents: write   # the draft release on tags
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r setup/requirements-build.txt
+      - run: pyinstaller --noconfirm setup/gradient-drift-setup.spec
+      - name: smoke test (from a terminal it is the command line)
+        run: dist/gradient-drift-setup/gradient-drift-setup.exe --help
+      - name: smoke test (the track tools it carries make a generated course's data)
+        run: dist/gradient-drift-setup/gradient-drift-setup.exe selftest
+      - name: the licences ship with it
+        shell: bash
+        run: test -s dist/gradient-drift-setup/THIRD_PARTY_NOTICES.txt && test -s dist/gradient-drift-setup/LICENSE && ls dist/gradient-drift-setup/licenses
+      - name: smoke test (started like a double-click, with a console of its own, it opens the window)
+        shell: pwsh
+        run: |
+          $p = Start-Process dist/gradient-drift-setup/gradient-drift-setup.exe -PassThru
+          Start-Sleep 15
+          $p.Refresh()
+          if ($p.HasExited) { throw "setup exited instead of opening its window (code $($p.ExitCode))" }
+          $title = $p.MainWindowTitle
+          Stop-Process -Id $p.Id -Force
+          if ($title -ne 'Gradient Drift Setup') { throw "expected the setup window, found '$title'" }
+      - run: Compress-Archive -Path dist/gradient-drift-setup -DestinationPath gradient-drift-setup-windows.zip
+      - uses: actions/upload-artifact@v5
+        with:
+          name: gradient-drift-setup-windows
+          path: gradient-drift-setup-windows.zip
+          retention-days: 3   # ~140 MB each; the account's Actions storage is 500 MB
+
+  linux:
+    runs-on: ubuntu-latest
+    # built on Debian 11 (glibc 2.31) so the program runs on older server distributions too
+    container: python:3.12-slim-bullseye
+    env:
+      GRADIENTDRIFT_GUI: '0'
+    steps:
+      - uses: actions/checkout@v5
+      - run: apt-get update && apt-get install -y --no-install-recommends binutils zip
+      - run: python -m pip install ruamel.yaml "pyinstaller>=6.10,<7" "numpy<2.5" numba pandas scipy
+      - run: pyinstaller --noconfirm setup/gradient-drift-setup.spec
+      - name: smoke test
+        run: dist/gradient-drift-setup/gradient-drift-setup --help
+      - name: smoke test (the track tools it carries make a generated course's data)
+        run: dist/gradient-drift-setup/gradient-drift-setup selftest
+      - name: the licences ship with it
+        run: test -s dist/gradient-drift-setup/THIRD_PARTY_NOTICES.txt && test -s dist/gradient-drift-setup/LICENSE && ls dist/gradient-drift-setup/licenses
+      - run: cd dist && zip -qr ../gradient-drift-setup-linux.zip gradient-drift-setup
+      - uses: actions/upload-artifact@v5
+        with:
+          name: gradient-drift-setup-linux
+          path: gradient-drift-setup-linux.zip
+          retention-days: 3   # ~140 MB each; the account's Actions storage is 500 MB
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" gradient-drift-setup-windows.zip gradient-drift-setup-linux.zip
+        env:
+          GH_TOKEN: ${{ github.token }}

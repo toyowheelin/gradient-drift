@@ -1,0 +1,8 @@
+# building the packaged setup (see gradient-drift-setup.spec); the Linux build leaves PySide6 out
+-r requirements.txt
+pyinstaller>=6.10,<7
+# the track tools setup runs to make a track's data (drift_rl/setup_track.py)
+numpy<2.5
+numba
+pandas
+scipy

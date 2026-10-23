@@ -1,0 +1,119 @@
+# Compiles the plugin against the AssettoServer version it is built for, on every push that touches
+# it, so a C# mistake shows up here before anyone builds it by hand, and packages it as the download
+# (a workflow artifact; a tag like plugin-v0.1.0 also makes a draft release with it attached). The
+# download's name and README say which AssettoServer version it is for. The plugin's .csproj
+# references AssettoServer by relative path, so the plugin is placed inside an AssettoServer checkout
+# as AssettoServer/GradientDriftPlugin/, as on a developer's machine.
+name: build plugin
+
+on:
+  push:
+    branches: [main]
+    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', '.github/workflows/build-plugin.yml']
+    tags: ['plugin-v*']
+  pull_request:
+    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', '.github/workflows/build-plugin.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read   # it only reads the code; the release job alone writes
+
+env:
+  ASSETTOSERVER_REF: v0.0.54   # setup/gradientdrift_setup/identify.py TESTED_VERSION
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      package: ${{ steps.package.outputs.name }}
+      assettoserver: ${{ steps.version.outputs.assettoserver }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: gradient-drift
+      - uses: actions/checkout@v5
+        with:
+          repository: compujuckel/AssettoServer
+          ref: ${{ env.ASSETTOSERVER_REF }}
+          path: AssettoServer
+          fetch-depth: 0       # its build reads its version from git
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 8.0.x
+      - name: place the plugin in the AssettoServer tree
+        run: cp -r gradient-drift/GradientDriftPlugin AssettoServer/GradientDriftPlugin
+      - name: build
+        run: dotnet build AssettoServer/GradientDriftPlugin/GradientDriftPlugin.csproj -c Debug
+      - name: the build has what the server loads
+        run: |
+          out=AssettoServer/GradientDriftPlugin/bin/Debug/net8.0
+          ls -l $out/GradientDriftPlugin.dll $out/GradientDriftPlugin.deps.json $out/GradientDriftPlugin.policy.json
+      - name: the plugin, setup and this build name the same AssettoServer version, the one it ran with
+        id: version
+        shell: pwsh
+        run: |
+          $want = "$env:ASSETTOSERVER_REF".TrimStart('v')
+          $plugin = [regex]::Match((Get-Content -Raw gradient-drift/GradientDriftPlugin/GradientDriftPlugin.cs), 'BuiltForAssettoServer = "([^"]+)"').Groups[1].Value
+          $setup = [regex]::Match((Get-Content -Raw gradient-drift/setup/gradientdrift_setup/identify.py), "TESTED_VERSION = '([^']+)'").Groups[1].Value
+          # what the plugin reads at start: AssettoServer's informational version, "0.0.54+51737e2c2e"
+          $info = (Get-ChildItem -Recurse AssettoServer/AssettoServer/bin -Filter AssettoServer.dll | Select-Object -First 1 | ForEach-Object { [Diagnostics.FileVersionInfo]::GetVersionInfo($_.FullName).ProductVersion })
+          $running = [regex]::Match("$info", '^\d+\.\d+\.\d+').Value
+          "workflow $want, plugin $plugin, setup $setup, AssettoServer.dll '$info'"
+          if ($plugin -ne $want -or $setup -ne $want -or $running -ne $want) { throw "AssettoServer versions disagree" }
+          "ASSETTOSERVER_VERSION=$want" >> $env:GITHUB_ENV
+          "assettoserver=$want" >> $env:GITHUB_OUTPUT
+      - name: package the download
+        id: package
+        run: |
+          out=AssettoServer/GradientDriftPlugin/bin/Debug/net8.0
+          version=${GITHUB_REF_NAME#plugin-}
+          [[ "$GITHUB_REF" == refs/tags/* ]] || version=$(git -C gradient-drift rev-parse --short HEAD)
+          name=GradientDriftPlugin-$version-for-AssettoServer-$ASSETTOSERVER_VERSION
+          mkdir -p pkg/GradientDriftPlugin
+          cp $out/GradientDriftPlugin.dll $out/GradientDriftPlugin.deps.json $out/GradientDriftPlugin.policy.json pkg/GradientDriftPlugin/
+          cp gradient-drift/LICENSE gradient-drift/CREDITS.md pkg/
+          cat > pkg/README.txt <<EOF
+          Gradient Drift plugin $version, built for AssettoServer $ASSETTOSERVER_VERSION.
+
+          It is built and tested against AssettoServer $ASSETTOSERVER_VERSION only. On another version it
+          says so in the server log at start, and the bots may misbehave: use the release made for your
+          version, or build the plugin from the source against it.
+
+          Copy the GradientDriftPlugin folder into the server's plugins folder, then run
+          gradient-drift-setup on the server folder for the track data, car files and settings.
+
+          Source, licence (AGPL-3.0, in LICENSE) and documentation:
+          $GITHUB_SERVER_URL/$GITHUB_REPOSITORY (built from commit $GITHUB_SHA)
+          It builds on AssettoServer (AGPL-3.0); CREDITS.md lists what else it uses.
+          EOF
+          echo "name=$name" >> $GITHUB_OUTPUT
+      # not on pull requests: the repository's artifact storage is small
+      - if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v5
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: pkg/
+          retention-days: 3
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # the draft release
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ needs.build.outputs.package }}
+          path: pkg
+      - run: (cd pkg && zip -qr "../$PACKAGE.zip" .)
+        env:
+          PACKAGE: ${{ needs.build.outputs.package }}
+      - run: >
+          gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME (AssettoServer $ASSETTOSERVER)"
+          --notes "Built and tested for AssettoServer $ASSETTOSERVER. On another version the plugin warns in the server log at start."
+          --repo "$GITHUB_REPOSITORY" "$PACKAGE.zip"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE: ${{ needs.build.outputs.package }}
+          ASSETTOSERVER: ${{ needs.build.outputs.assettoserver }}

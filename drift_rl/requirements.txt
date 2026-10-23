@@ -1,0 +1,11 @@
+# CPU side (everything except the GPU simulator):
+numpy<2.5
+numba
+pandas
+matplotlib
+# build_course.py, and the trainer with --generated (generate_track.py):
+scipy
+# the trainer needs PyTorch (its CPU build is enough with --sim cpu); on a GPU machine install it
+# separately, see README.md:
+#   PyTorch with CUDA: the pip command from https://pytorch.org/get-started/locally/
+#   numba-cuda[cu12]   (or [cu13], matching PyTorch's CUDA major version)
