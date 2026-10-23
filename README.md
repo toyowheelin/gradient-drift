@@ -200,6 +200,18 @@ AssettoServer/
     └── *.cs
 ```
 
+The plugin is one folder of this repository, so git can't clone it into that spot on its own. To
+build from a clone you can update with `git pull`, clone this repository somewhere else and link its
+folder into the AssettoServer tree instead of copying it. On Windows (PowerShell, from the folder
+holding both clones):
+
+```
+git clone https://github.com/toyowheelin/gradient-drift.git
+New-Item -ItemType Junction -Path AssettoServer\GradientDriftPlugin -Target (Resolve-Path gradient-drift\GradientDriftPlugin)
+```
+
+On Linux: `ln -s ../gradient-drift/GradientDriftPlugin AssettoServer/GradientDriftPlugin`.
+
 **3. Build it:**
 
 ```
