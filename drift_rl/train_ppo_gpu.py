@@ -137,6 +137,10 @@ def main():
                     help='leave this car out of training (to test on a car the policy never drove)')
     ap.add_argument('--car-mass-randomisation', type=float, default=0.10, help='+- share on each episode\'s car weight')
     ap.add_argument('--car-power-randomisation', type=float, default=0.20, help='+- share on its engine force')
+    ap.add_argument('--chase', type=float, default=0.0, metavar='SHARE',
+                    help="share of episodes chasing a ghost leader (each track's <track>_ghosts.npz, record_ghosts.py)")
+    ap.add_argument('--chase-gap', type=float, nargs=2, default=(0.0, 1.0), metavar=('LOW', 'HIGH'),
+                    help='the asked gap drawn per chase episode, 0 - 1 (door to door ... a few lengths)')
     ap.add_argument('--skill', type=float, nargs=2, default=None, metavar=('LOW', 'HIGH'),
                     help='train the skill input (drift_env SKILL_*): each episode a skill drawn from LOW - HIGH '
                          '(0 = a driver allowed out with others, 1 = the best it can do)')
@@ -379,6 +383,17 @@ def main():
         flat = [float(w.sp_length.sum() / np.sum(w.sp_length / (w.pace_ref / 3.6)) * 3.6) for _, w in named[:len(tracks)]]
         print(f"pace reference ready in {time.time() - t_ref:.0f} s; flat out: "
               + ", ".join(f"{c} {v:.1f} km/h" for c, v in zip(tracks, flat)), flush=True)
+    if args.chase > 0.0:
+        if sim == 'gpu':
+            sys.exit("chase episodes run on the CPU simulator only for now: add --sim cpu")
+        env_cfg.chase_share = args.chase
+        env_cfg.chase_gap_low, env_cfg.chase_gap_high = args.chase_gap
+        for t, w in zip(tracks, worlds):
+            w.ghosts = de.load_ghosts(args.tracks, t)
+            if w.ghosts is None:
+                sys.exit(f"--chase: no ghosts for {t}; make them with record_ghosts.py --track {t}")
+        print(f"chase: {args.chase:.0%} of episodes behind a ghost leader ({', '.join(f'{t} {len(w.ghosts)}' for t, w in zip(tracks, worlds))}), "
+              f"asked gap {args.chase_gap[0]:g} - {args.chase_gap[1]:g}", flush=True)
     if args.skill:
         env_cfg.skill_low, env_cfg.skill_high = args.skill
         print(f"skill: {args.skill[0]:g} - {args.skill[1]:g} per episode, shown to the policy (input {de.SKILL_OBS_SLOT})")
@@ -576,6 +591,9 @@ def main():
         meta['tracks'] = list(tracks)
         if pool:
             meta['generated'] = {'count': args.generated, 'seed': args.gen_seed}
+    if args.chase > 0.0:
+        # the policy reads the chase inputs: it can follow a car ahead
+        meta['chase'] = {'share': args.chase, 'gap_range': [float(g) for g in args.chase_gap]}
     if args.skill:
         # the plugin reads this: the skills it may ask the policy for
         meta['skill_range'] = [float(args.skill[0]), float(args.skill[1])]

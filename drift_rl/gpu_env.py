@@ -29,7 +29,7 @@ def kernel_arg_names():
     """Argument order of drift_env.step_kernel / step_batch, in one place."""
     return (['states', 'mids', 'diags', 'actions', 'prev_act', 'counters', 'ep', 'params', 'rw', 'obs',
              'rewards', 'terminated', 'truncated', 'final_obs', 'ep_out', 'rnd', 'env_cfg',
-             'episode_ticks', 'sp_dir', 'la_idx', 'la_min_radius', 'pace_ref'], _WORLD_NAMES)
+             'episode_ticks', 'sp_dir', 'la_idx', 'la_min_radius', 'pace_ref'], _WORLD_NAMES + ['gh', 'gh_len'])
 
 
 _WORLD_NAMES = ['sp_pos', 'sp_radius', 'sp_length', 'sp_next', 'sp_prev', 'sp_fwd', 'sp_cum', 'tri_v',
@@ -67,6 +67,8 @@ def host_arrays(world, n_envs, env_cfg, rew_cfg):
     }
     for name, arr in zip(_WORLD_NAMES, world.arrays()):
         a[name] = arr
+    # ghost leaders (chase episodes): passed to the step, but the GPU environment starts no chases yet
+    a['gh'], a['gh_len'] = de_cpu.ghost_arrays(world)
     a['_base_params'] = base
     return a
 
