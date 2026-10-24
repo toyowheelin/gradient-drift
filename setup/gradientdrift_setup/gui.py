@@ -6,8 +6,8 @@ import sys
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont, QPalette
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
-                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-                               QSpinBox, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea,
+                               QSizePolicy, QSpinBox, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
                                QWizard, QWizardPage)
 
 from .apply import apply_plan, last_run, undo
@@ -57,6 +57,7 @@ class PathPicker(QWidget):
         lay.addWidget(self.list)
         row = QHBoxLayout()
         self.message = QLabel('' if found else none_found)
+        self.message.setWordWrap(True)
         row.addWidget(self.message, 1)
         row.addWidget(browse)
         lay.addLayout(row)
@@ -373,23 +374,19 @@ class ChangesPage(QWizardPage):
                                  none_found="Not found: unzip the plugin download into setup's folder, or Browse.")
         self.track_data = PathPicker([p for p in [default_track_data()] if p],
                                      lambda p: os.path.isdir(p) and not in_game_content(p),
-                                     "The track files folder (setup_track.py's output, a folder per track, e.g. drift_rl\\tracks)",
+                                     "A folder of track data you already have (a folder per track, e.g. drift_rl\\tracks)",
                                      normalize=lambda p: track_data_root(p) or p,
-                                     refusal=lambda p: "That is a track's folder in the game or server content. Pick "
-                                     "the track files folder setup_track.py makes, with a folder per track "
-                                     "(drift_rl\\tracks).",
-                                     none_found='None: setup makes it from the game.')
+                                     refusal=lambda p: "That is a track's folder in the game or server content. "
+                                     "Leave Track files empty and setup makes the data from it.",
+                                     none_found="Usually left empty: setup makes the track's data from the game. Browse only to use track "
+                                     "data you already have.")
         for picker in (self.plugin, self.track_data):
             picker.list.setMaximumHeight(48)
+            picker.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
             picker.list.currentItemChanged.connect(lambda *_: self.initializePage())
         files = QFormLayout()
         files.addRow('Plugin build', self.plugin)
-        files.addRow('', hint('The plugin setup installs on the server. Found by itself when the plugin download '
-                              "is unzipped into setup's folder."))
-        files.addRow('Track files (optional)', self.track_data)
-        files.addRow('', hint("Usually leave this empty: setup makes the track's data from the game install. Pick "
-                              "a folder only if you already have track data from the trainer "
-                              "(<code>drift_rl\\tracks</code>, a folder per track)."))
+        files.addRow('Track files', self.track_data)
         self.apply_button = QPushButton('Make these changes')
         self.apply_button.clicked.connect(self.apply)
         self.undo_button = QPushButton('Undo the last changes')
@@ -406,7 +403,11 @@ class ChangesPage(QWizardPage):
         lay = QVBoxLayout(self)
         lay.addWidget(self.summary)
         lay.addWidget(self.tree, 1)
-        lay.addWidget(self.issues)
+        issues = QScrollArea()          # a long list of problems scrolls instead of squeezing the fields below
+        issues.setWidget(self.issues)
+        issues.setWidgetResizable(True)
+        issues.setFrameShape(QScrollArea.NoFrame)
+        lay.addWidget(issues, 1)
         lay.addLayout(files)
         lay.addWidget(hint('<b>To finish:</b> stop the server, click <b>Make these changes</b>, then start the '
                            'server again. Its log should say <code>GradientDrift: policy loaded from</code>; the '

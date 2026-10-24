@@ -54,9 +54,10 @@ def pace_source(policy, track_data, server_folder, track, made_here=False):
     track's data in track_data before the cars' scales are worked out."""
     if not (track_data and (made_here or os.path.exists(os.path.join(track_data, track, f'{track}_fast_lane.ai')))):
         where = (f"{track_data} has no {track} folder with its AI line ({track}_fast_lane.ai)" if track_data
-                 else "setup has no track files folder")
-        return None, (f"{where}. Pick the folder setup_track.py writes into, with a folder per track "
-                      "(drift_rl/tracks), under Track files")
+                 else f"setup has no copy of {track}'s data")
+        return None, (f"{where}, so it cannot work out each car's pace there. Setup makes that data itself when the "
+                      "server lacks it; if the server got it from elsewhere, pick the folder holding it (a folder "
+                      "per track) under Track files")
     return (policy, track_data, track, None, f"{PACE_MODEL} on {track}"), None
 
 

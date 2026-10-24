@@ -337,9 +337,9 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     pace_missing = [m for m in needed_missing if m.endswith('_pace_reference.csv')]
     needed_missing = [m for m in needed_missing if m not in pace_missing]
     if needed_missing:
-        p.blockers.append(f"the plugin needs {' and '.join(needed_missing)} in the server folder: make them with "
-                          f"drift_rl/setup_track.py <game>/content/tracks/{server.track} --server <this folder>"
-                          + (", or give setup the folder they are in" if not track_data else ''))
+        p.blockers.append(f"the plugin needs {' and '.join(needed_missing)} in the server folder. Setup makes them "
+                          f"from the game's copy of {server.track} once what stops it above is fixed (the track "
+                          "missing from the game install, or no AI line)")
     if pace_missing:
         # made here from the track's shape (drift_rl/pace_model.py), as training makes it, when the
         # track's data is (or is about to be) there
@@ -367,9 +367,8 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
                                 "written, and stop if they look wrong",
                                 op=('track_check', policy, home, server.track, final_pace_reference())))
     if pace_missing:
-        p.blockers.append(f"this policy needs {pace_missing[0]} in the server folder: training with paces on "
-                          f"{server.track} writes it into drift_rl/tracks/{server.track}/"
-                          + (", or give setup the folder it is in" if not track_data else ''))
+        p.blockers.append(f"this policy needs {pace_missing[0]} in the server folder. Setup works it out from the "
+                          "track's data, which it makes from the game install once what stops it above is fixed")
 
     # --- the cars, slot by slot ---
     p.slots = bot_slots(server, game, bots, car, skin, slots)
