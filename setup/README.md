@@ -41,30 +41,37 @@ It does not train a policy for a track. The trainer can polish the shipped polic
 
 ## Download and run
 
-Download two things from the [latest release](https://github.com/toyowheelin/gradient-drift/releases/latest): the setup zip for
-your system (`gradient-drift-setup-windows.zip` or `gradient-drift-setup-linux.zip`) and the plugin
-(`GradientDriftPlugin-<version>-for-AssettoServer-0.0.54.zip`). Unzip the setup zip anywhere, then
-unzip the plugin download into the same folder, so it looks like this:
+Download `gradient-drift-<version>.zip` from the [latest release](https://github.com/toyowheelin/gradient-drift/releases/latest)
+and unzip it anywhere. It has a folder per system, each a complete setup program with the plugin
+already inside:
 
 ```
-gradient-drift-setup/
-├── gradient-drift-setup.exe      (gradient-drift-setup on Linux)
-├── GradientDriftPlugin/          <- from the plugin download: the files setup installs
-│   ├── GradientDriftPlugin.dll
-│   ├── GradientDriftPlugin.deps.json
-│   └── GradientDriftPlugin.policy.json
-└── ...
+gradient-drift-<version>/
+├── README.txt
+├── windows/
+│   ├── gradient-drift-setup.exe
+│   ├── GradientDriftPlugin/      <- the plugin: the files setup installs
+│   │   ├── GradientDriftPlugin.dll
+│   │   ├── GradientDriftPlugin.deps.json
+│   │   └── GradientDriftPlugin.policy.json
+│   └── ...
+└── linux/
+    ├── gradient-drift-setup
+    ├── GradientDriftPlugin/      (the same plugin)
+    └── ...
 ```
 
-Setup finds the plugin there and installs it on the server (or updates an older one). Windows'
-**Extract All** puts the download in a folder of its own (`GradientDriftPlugin-v0.1.0-for-...`);
-that's fine inside setup's folder too, and with several, setup takes the newest. It carries its
-own Python and Qt; nothing to install. The plugin can live anywhere else too: pick its
+Use the folder for the machine you run setup on; the other can be deleted. Setup finds the plugin
+beside it and installs it on the server (or updates an older one). It carries its own Python and
+Qt; nothing to install. Track data setup made before (its `tracks` folder) is kept per folder:
+copy `tracks` over from an older setup folder to skip making it again. The plugin can live anywhere else too: pick its
 `GradientDriftPlugin` folder under **Plugin build** on the last page, or give `--plugin`.
+
+The zip is about 290 MB, about half for each system (most of it is the track tools).
 
 ### Windows
 
-`gradient-drift-setup-windows.zip`, about 140 MB (most of it is the track tools).
+The `windows` folder.
 
 - **The window:** double-click `gradient-drift-setup.exe`.
 - **The command line:** run the same program from a Command Prompt or PowerShell
@@ -78,10 +85,10 @@ own Python and Qt; nothing to install. The plugin can live anywhere else too: pi
 
 ### Linux
 
-`gradient-drift-setup-linux.zip`, about 145 MB, command line only:
+The `linux` folder, command line only (unzip with `unzip`, which keeps the program executable):
 
 ```
-./gradient-drift-setup/gradient-drift-setup check ...
+./gradient-drift-<version>/linux/gradient-drift-setup check ...
 ```
 
 It's built on Debian 11, so it runs on that and anything newer (glibc 2.31+). Not yet tried on a
@@ -237,7 +244,7 @@ py -m gradientdrift_setup check ...          # or any command above
 
 The zips come from the "build setup" workflow (`.github/workflows/build-setup.yml`): run it from
 the Actions tab. A `v*` tag (`.github/workflows/release.yml`) builds them with the plugin and
-makes one draft release with all three attached. To build one
+makes one draft release with one zip: both programs, each with the plugin in it. To build one
 yourself, from the repo root:
 
 ```

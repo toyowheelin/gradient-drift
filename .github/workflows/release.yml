@@ -1,7 +1,9 @@
 # One release for everything: push a tag like v0.2.0 and this builds the plugin (build-plugin.yml,
 # with its checks: the policy is in setup's SHIPPED_POLICIES, and the plugin, setup and build agree
 # on the AssettoServer version) and the setup program for Windows and Linux (build-setup.yml, with
-# its smoke tests), then makes one draft release with all three zips attached, to publish by hand.
+# its smoke tests), then makes one draft release with one zip, to publish by hand:
+#   gradient-drift-<tag>/windows/  and  linux/   each the setup program with the plugin already in
+#   its GradientDriftPlugin/ folder (where setup looks for it), so either folder stands on its own.
 name: release
 
 on:
@@ -27,33 +29,58 @@ jobs:
       - uses: actions/download-artifact@v5
         with:
           name: ${{ needs.plugin.outputs.package }}
-          path: pkg
-      - run: (cd pkg && zip -qr "../$PACKAGE.zip" .)
-        env:
-          PACKAGE: ${{ needs.plugin.outputs.package }}
+          path: plugin
       - uses: actions/download-artifact@v5
         with:
           pattern: gradient-drift-setup-*
           merge-multiple: true
+      - name: one folder per system, each with the plugin in it
+        run: |
+          top=gradient-drift-$GITHUB_REF_NAME
+          for os in windows linux; do
+            mkdir -p unz/$os
+            unzip -q gradient-drift-setup-$os.zip -d unz/$os
+            mkdir -p "$top"
+            mv unz/$os/gradient-drift-setup "$top/$os"
+            cp -r plugin/GradientDriftPlugin "$top/$os/"
+            test -s "$top/$os/GradientDriftPlugin/GradientDriftPlugin.dll"
+          done
+          test -x "$top/linux/gradient-drift-setup"
+          cp plugin/LICENSE plugin/CREDITS.md "$top/"
+          cat > "$top/README.txt" <<EOF
+          Gradient Drift $GITHUB_REF_NAME: drift bots for AssettoServer $ASSETTOSERVER.
+
+          windows/  the setup program for Windows: double-click gradient-drift-setup.exe for the
+                    window, or run it from a Command Prompt for the command line.
+          linux/    the setup program for Linux, command line only: ./linux/gradient-drift-setup --help
+
+          Use the one for the machine you run setup on (the one with the game installed); you can
+          delete the other. Each has the plugin already in its GradientDriftPlugin folder, and setup
+          installs it on the server, with the track data, car files and settings the bots need.
+
+          The plugin ($PACKAGE) is the same for Windows and Linux servers (tested on Windows only).
+          It is built and tested for AssettoServer $ASSETTOSERVER; on another version it says so in
+          the server log at start.
+
+          Source, licence (AGPL-3.0, in LICENSE) and documentation:
+          $GITHUB_SERVER_URL/$GITHUB_REPOSITORY (built from commit $GITHUB_SHA)
+          EOF
+          zip -qry "$top.zip" "$top"
+          echo "ZIP=$top.zip" >> $GITHUB_ENV
+        env:
+          PACKAGE: ${{ needs.plugin.outputs.package }}
+          ASSETTOSERVER: ${{ needs.plugin.outputs.assettoserver }}
       - name: draft release
         run: |
           cat > notes.md <<NOTES
           Built and tested for AssettoServer $ASSETTOSERVER.
 
-          **Download two zips:** the setup program for your system, and the plugin.
+          **Download \`$ZIP\`** and unzip it. It has the setup program for Windows (\`windows/\`, window and command line) and for Linux (\`linux/\`, command line), each with the plugin already inside. Run the one for your system on your server folder: it installs the plugin and makes the track data, car files and settings. See [setup/README.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/setup/README.md).
 
-          - \`gradient-drift-setup-windows.zip\`: setup for Windows (window and command line)
-          - \`gradient-drift-setup-linux.zip\`: setup for Linux (command line)
-          - \`$PACKAGE.zip\`: the plugin, one download for Windows and Linux servers (a .NET plugin; tested on Windows only, Linux untested)
-
-          Unzip the setup program anywhere, unzip the plugin into the same folder so its \`GradientDriftPlugin\` folder sits beside the program, and run setup on your server folder. See [setup/README.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/setup/README.md).
-
-          On another AssettoServer version the plugin warns in the server log at start.
+          The plugin is one build for Windows and Linux servers (a .NET plugin; tested on Windows only, Linux untested). On another AssettoServer version it warns in the server log at start.
           NOTES
           gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME (AssettoServer $ASSETTOSERVER)" \
-            --notes-file notes.md --repo "$GITHUB_REPOSITORY" \
-            "$PACKAGE.zip" gradient-drift-setup-windows.zip gradient-drift-setup-linux.zip
+            --notes-file notes.md --repo "$GITHUB_REPOSITORY" "$ZIP"
         env:
           GH_TOKEN: ${{ github.token }}
-          PACKAGE: ${{ needs.plugin.outputs.package }}
           ASSETTOSERVER: ${{ needs.plugin.outputs.assettoserver }}
