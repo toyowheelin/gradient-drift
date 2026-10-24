@@ -99,10 +99,18 @@ CHASE_OBS_SLOT = OBS_SIZE_V5
 N_CHASE_OBS = 13
 CHASE_GAP_M = (0.5, 6.0)         # the asked gap, bumper to bumper, at chase_gap 0 and 1
 CHASE_DELAY_S = (0.04, 0.2)      # how old the lead's state is, drawn per episode (18 Hz updates, ping)
-CHASE_START_M = (2.0, 15.0)      # where the lead starts, ahead of the car's nose
-CHASE_ROLL_S = 3.0               # the lead waits for the car to get going (it starts from rest)
+CHASE_START_M = (2.0, 15.0)      # where the lead pulls in, ahead of the car's nose
+CHASE_JOIN_S = (1.0, 4.0)        # when it does, into the episode: the car is already driving, as a
+                                 # bot is when a player pulls in front of it
 CHASE_LOST_M = -5.0              # a lead this far behind has been passed: dropped for the episode
 CHASE_HISTORY = 400              # ticks of the lead's past searched for where it passed a spot
+# While chasing, the pace asked (the pace input and the pay for driving it) comes from the lead: its
+# speed along the line (over the last CHASE_LEAD_SPEED_TICKS samples) as a share of this car's
+# reference speed, plus CHASE_PACE_PER_M for each metre the gap is over the asked one (less for
+# under), held inside the pace range - so a lead too slow to drift at the bottom of it is caught and
+# passed. The plugin is to ask the same.
+CHASE_PACE_PER_M = 0.06
+CHASE_LEAD_SPEED_TICKS = 10
 # ghost columns (record_ghosts.py)
 GH_T, GH_X, GH_Z, GH_HEADING, GH_SLIP, GH_YAW, GH_SPEED, GH_ARC, GH_CTE = range(9)
 GH_COLS = 9
@@ -334,7 +342,7 @@ class RewardConfig:
     swing_rate_degs: float = 60.0
     swing_window_s: float = 2.0
     # TANDEM (chase episodes, EnvConfig.chase_share; drift_rl TANDEM design): while there is a car
-    # ahead, the pace's pay cut and cap are off (the asked speed is the lead's) and, per metre of
+    # ahead, the pace asked follows it (CHASE_PACE_PER_M) and, per metre of
     # progress: proximity, paid at the asked gap (chase_gap), falling to nothing at no gap and
     # chase_far_m past it, times this car's drift quality and the lead's (following in grip pays
     # nothing, so a lead too slow to drift behind is passed); the slip angle against the lead's where
@@ -785,14 +793,12 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     contact = False
     gap = 0.0
     lead_q = 0.0
+    lead_v = 0.0
     here = -1
     g = int(counters[i, C_GHOST]) - 1
     if 0 <= g < gh_len.shape[0] and not math.isnan(s[S_ARC]):
         k = int(counters[i, C_GHOST_K])
-        rate = 1.0
-        if counters[i, 0] * dt < CHASE_ROLL_S:
-            rate = min(1.0, s[S_OWN_SPEED] / max(gh[g, k, GH_SPEED], 1.0))
-        t_g = counters[i, C_GHOST_T] + dt * rate
+        t_g = counters[i, C_GHOST_T] + dt
         k = _ghost_index(gh, g, gh_len[g], t_g, k)
         if k < 0:
             counters[i, C_GHOST] = 0.0
@@ -808,6 +814,9 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
                 contact = _cars_overlap(s[S_X], s[S_Z], s[S_HEADING], lx, lz, lh)
                 lead_q = _drift_quality(abs(ls) * (180.0 / math.pi), rw)
                 here = _ghost_here(gh, g, k, s[S_ARC], lap)
+                k0 = max(0, k - CHASE_LEAD_SPEED_TICKS)
+                if k > k0:
+                    lead_v = _wrap_arc(gh[g, k, GH_ARC] - gh[g, k0, GH_ARC], lap) / max(gh[g, k, GH_T] - gh[g, k0, GH_T], 1e-3)
 
     # ---- reward ----
     progress = max(-2.0, min(5.0, d[D_ProgressM]))
@@ -822,7 +831,12 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     # pace_model's 216 km/h ceiling, which no car limited to 72 - 88 km/h reaches, and the pace
     # error it sees there read 27% slow (Black Cat County, 2026-10-19). The plugin's UpdatePaceOver
     # asks the same.
-    asked_kmh = 0.0 if chasing else pace * min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6)
+    ask = CHASE_GAP_M[0] + counters[i, C_CHASE_ASK] * (CHASE_GAP_M[1] - CHASE_GAP_M[0])
+    if chasing and pace > 0.0 and ref_kmh > 0.0:
+        lead_pace = lead_v * 3.6 / min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6) + CHASE_PACE_PER_M * (gap - ask)
+        pace = max(env_cfg[13], min(env_cfg[14], lead_pace))
+        s[fs.S_PACE] = pace
+    asked_kmh = pace * min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6)
     paid_speed = asked_kmh if asked_kmh > 0.0 else rw[R_PAID_SPEED]
     paid = progress
     if paid_speed > 0.0:
@@ -941,7 +955,6 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     slip_diff = 0.0
     line_diff = 0.0
     if chasing:
-        ask = CHASE_GAP_M[0] + counters[i, C_CHASE_ASK] * (CHASE_GAP_M[1] - CHASE_GAP_M[0])
         if gap <= ask:
             near_pay = max(0.0, gap / ask)
         else:
@@ -1323,6 +1336,7 @@ class DriftVecEnv:
         ref = getattr(world, 'pace_ref', None)
         self.pace_ref = np.ascontiguousarray(ref if ref is not None else np.zeros(len(world.sp_pos)), dtype=np.float64)
         self.gh, self.gh_len = ghost_arrays(world)
+        self.chase_join = np.full(n_envs, -1.0)
         self.lap = float(world.sp_cum[-1] + world.sp_length[-1])
         self.base_params = fs.make_params()
         apply_plugin_settings(self.base_params, self.cfg.plugin_settings)
@@ -1380,12 +1394,21 @@ class DriftVecEnv:
         self.params[idx, fs.P_SKILL] = self.rng.uniform(self.cfg.skill_low, self.cfg.skill_high, size=len(idx))
 
     def _start_chases(self, idx):
-        """A ghost leader (EnvConfig.chase_share of new episodes) a little ahead of each of these
-        cars, just reset: it shows from the episode's second tick."""
+        """EnvConfig.chase_share of these cars, just reset, get a ghost leader: it pulls in ahead
+        of the car CHASE_JOIN_S into the episode (_join_chases)."""
+        self.chase_join[idx] = -1.0
         if self.cfg.chase_share <= 0.0 or len(self.gh_len) == 0:
             return
         idx = idx[self.rng.random(len(idx)) < self.cfg.chase_share]
-        for i in idx:
+        self.chase_join[idx] = self.rng.uniform(*CHASE_JOIN_S, size=len(idx))
+
+    def _join_chases(self):
+        """Each car whose leader is due pulls one in a little ahead of its nose."""
+        due = np.nonzero((self.chase_join >= 0.0) & (self.counters[:, 0] * self.mids[:, M_DT] >= self.chase_join))[0]
+        self.chase_join[due] = -1.0
+        for i in due:
+            if np.isnan(self.states[i, S_ARC]):
+                continue
             g = int(self.rng.integers(len(self.gh_len)))
             ghost = self.gh[g, :self.gh_len[g]]
             k = int(fs.world_to_spline(self.states[i, S_X], self.states[i, S_Y], self.states[i, S_Z],
@@ -1441,6 +1464,7 @@ class DriftVecEnv:
                    self.terminated, self.truncated, self.final_obs, self.ep_out, rnd,
                    self.env_cfg, float(self.cfg.episode_ticks), self.sp_dir, self.la_idx,
                    self.la_min_radius, self.pace_ref, *self.W, self.gh, self.gh_len)
+        self._join_chases()
         info = {'final_obs': self.final_obs}
         done_idx = np.nonzero(self.terminated | self.truncated)[0]
         if len(done_idx):
