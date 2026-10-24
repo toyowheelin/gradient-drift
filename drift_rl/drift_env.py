@@ -110,6 +110,10 @@ CHASE_HISTORY = 400              # ticks of the lead's past searched for where i
 # under), held inside the pace range - so a lead too slow to drift at the bottom of it is caught and
 # passed. The plugin is to ask the same.
 CHASE_PACE_PER_M = 0.06
+# ... and the gap it goes by is the one CHASE_LOOKAHEAD_S ahead at the speed it is closing in: the
+# pace answers in about a second and a drifting lead can slow hard into a corner, so easing off only
+# once the gap is gone is too late.
+CHASE_LOOKAHEAD_S = 2.0
 CHASE_LEAD_SPEED_TICKS = 10
 # ghost columns (record_ghosts.py)
 GH_T, GH_X, GH_Z, GH_HEADING, GH_SLIP, GH_YAW, GH_SPEED, GH_ARC, GH_CTE = range(9)
@@ -833,7 +837,9 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     # asks the same.
     ask = CHASE_GAP_M[0] + counters[i, C_CHASE_ASK] * (CHASE_GAP_M[1] - CHASE_GAP_M[0])
     if chasing and pace > 0.0 and ref_kmh > 0.0:
-        lead_pace = lead_v * 3.6 / min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6) + CHASE_PACE_PER_M * (gap - ask)
+        closing = max(0.0, progress / max(dt, 1e-3) - lead_v)
+        lead_pace = (lead_v * 3.6 / min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6)
+                     + CHASE_PACE_PER_M * (gap - CHASE_LOOKAHEAD_S * closing - ask))
         pace = max(env_cfg[13], min(env_cfg[14], lead_pace))
         s[fs.S_PACE] = pace
     asked_kmh = pace * min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6)

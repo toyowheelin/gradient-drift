@@ -28,7 +28,7 @@ def main():
     ap.add_argument('--cars', type=int, default=16, help='ghosts per pace and skill')
     ap.add_argument('--ticks', type=int, default=2400)
     ap.add_argument('--skip', type=int, default=100, help='ticks dropped at the start')
-    ap.add_argument('--paces', type=float, nargs='+', default=[0.85, 0.9, 0.95, 1.0])
+    ap.add_argument('--paces', type=float, nargs='+', default=[0.85, 0.9, 0.95])
     ap.add_argument('--skills', type=float, nargs='+', default=[1.0, 0.5])
     args = ap.parse_args()
 

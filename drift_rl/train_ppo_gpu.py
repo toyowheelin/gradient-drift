@@ -141,6 +141,9 @@ def main():
                     help="share of episodes chasing a ghost leader (each track's <track>_ghosts.npz, record_ghosts.py)")
     ap.add_argument('--chase-gap', type=float, nargs=2, default=(0.0, 1.0), metavar=('LOW', 'HIGH'),
                     help='the asked gap drawn per chase episode, 0 - 1 (door to door ... a few lengths)')
+    ap.add_argument('--chase-gap-anneal-ticks', type=int, default=0,
+                    help='with --chase: start the asked gaps in the top half of --chase-gap and lower the bottom to '
+                         'LOW over this many ticks (0 = the whole range from the start)')
     ap.add_argument('--skill', type=float, nargs=2, default=None, metavar=('LOW', 'HIGH'),
                     help='train the skill input (drift_env SKILL_*): each episode a skill drawn from LOW - HIGH '
                          '(0 = a driver allowed out with others, 1 = the best it can do)')
@@ -697,9 +700,22 @@ def main():
         f = min(1.0, max(0.0, (steps_done - grip_anneal_from) / grip_anneal_ticks))
         return grip_low_start + (grip_range[0] - grip_low_start) * f
 
+    chase_low_start = 0.5 * (args.chase_gap[0] + args.chase_gap[1])
+    if args.chase > 0.0 and args.chase_gap_anneal_ticks > 0:
+        print(f"chase: the closest gap asked goes {chase_low_start:g} -> {args.chase_gap[0]:g} over the first "
+              f"{args.chase_gap_anneal_ticks:,} ticks", flush=True)
+
+    def chase_gap_low_now():
+        if args.chase_gap_anneal_ticks <= 0:
+            return args.chase_gap[0]
+        f = min(1.0, max(0.0, (steps_done - grip_anneal_from) / args.chase_gap_anneal_ticks))
+        return chase_low_start + (args.chase_gap[0] - chase_low_start) * f
+
     env.set_sliding_grip_low(grip_low_now())
     if pace_range != (0.0, 0.0):
         env.set_pace_low(pace_low_now())
+    if args.chase > 0.0:
+        env.set_chase_gap_low(chase_gap_low_now())
     obs = env.reset().to(dev)
     if not freeze_obs_norm:
         obs_mean, obs_var, obs_count = rms_update(obs_mean, obs_var, obs_count, obs)
@@ -744,6 +760,8 @@ def main():
             env.set_sliding_grip_low(grip_low_now())
             if pace_range != (0.0, 0.0):
                 env.set_pace_low(pace_low_now())
+            if args.chase > 0.0:
+                env.set_chase_gap_low(chase_gap_low_now())
             with torch.no_grad():
                 for t in range(T):
                     x = norm_obs(obs)

@@ -146,6 +146,9 @@ class DriftGpuEnv:
         """Bottom of the range paces are drawn from (the trainer walks it down)."""
         self.t['env_cfg'][de_cpu.ENV_CFG_PACE_LOW] = low
 
+    def set_chase_gap_low(self, low):
+        """No chase episodes on the GPU simulator."""
+
     def reset(self):
         self._randomise_grip(self.torch.ones(self.n, dtype=self.torch.bool, device=self.device))
         self._fill_random()
@@ -189,6 +192,10 @@ class TorchCpuEnv:
     def set_pace_low(self, low):
         """Bottom of the range paces are drawn from (the trainer walks it down)."""
         self.env.env_cfg[de_cpu.ENV_CFG_PACE_LOW] = low
+
+    def set_chase_gap_low(self, low):
+        """Bottom of the range chase episodes draw the asked gap from (the trainer walks it down)."""
+        self.env.cfg.chase_gap_low = low
 
     def reset(self):
         self.env.reset()
@@ -257,6 +264,10 @@ class MultiTrackCpuEnv:
         self.pace_low = low
         for e in self.groups:
             e.set_pace_low(low)
+
+    def set_chase_gap_low(self, low):
+        for e in self.groups:
+            e.set_chase_gap_low(low)
 
     def reset(self):
         for e in self.groups:
