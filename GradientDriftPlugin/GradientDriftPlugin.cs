@@ -48,6 +48,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     // height difference between two samples beyond which they are not the same surface.
     private const float AttitudeHalfTrackM = 0.8f;
     private const float AttitudeMaxStepM = 0.4f;
+    private const int RideHeightSamples = 9;
 
     // Status bits 1, 2, 4 and 8, which the server has no names for: "this tire is skidding" for
     // the front left, front right, rear left and rear right wheel. Clients draw rubber on the
@@ -1183,31 +1184,24 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         var (verticalPointId, _) = _spline.WorldToSpline(position);
         float targetHeight;
         float heightSmoothingFactor;
-        float groundRate = 0f;
         float attitudeHeading = state.Heading ?? aiState.Status.Rotation.X + MathF.PI / 2f;
         long groundStart = PluginTiming.Now();
         bool foundGround = TryFindGround(collision, position, out float groundY);
-        bool foundAttitude = TryFindGroundAttitude(collision, position, attitudeHeading,
-            out float rawPitch, out float rawRoll, out float footprintY);
         _timing.Add(PluginTiming.Part.Sensors, groundStart);
         if (foundGround)
         {
-            // The ground under the axles and both sides counts with the ground under the centre,
-            // so the body rides over bumps shorter than the car instead of following each one
-            // (a rough road surface showed as the car hopping a few cm every update).
-            float rideGroundY = foundAttitude ? (groundY + 4f * footprintY) / 5f : groundY;
+            // Over a few metres along the way the car is going, the straight line that best fits
+            // the ground: the body follows hills but not bumps shorter than the span (a rough road
+            // surface showed as the car hopping a few cm every update).
+            Vector3 along = new Vector3(velocity.X, 0f, velocity.Z);
+            along = along.LengthSquared() > 1f
+                ? Vector3.Normalize(along)
+                : new Vector3(MathF.Cos(attitudeHeading), 0f, MathF.Sin(attitudeHeading));
+            long rideStart = PluginTiming.Now();
+            float rideGroundY = RideGroundHeight(collision, position, along, groundY);
+            _timing.Add(PluginTiming.Part.Sensors, rideStart);
             targetHeight = rideGroundY + _configuration.GroundRayHeightOffsetM;
             heightSmoothingFactor = _configuration.GroundRayHeightSmoothingFactor;
-            if (foundAttitude)
-            {
-                // How fast the ground under the car rises along the way it is moving, from the
-                // slope the axle and side rays found: the smoothing below follows this, so it
-                // filters bumps without lagging behind on a hill.
-                var forward = new Vector3(MathF.Cos(attitudeHeading), 0f, MathF.Sin(attitudeHeading));
-                var across = new Vector3(-forward.Z, 0f, forward.X);
-                Vector3 grade = forward * MathF.Tan(rawPitch) + across * MathF.Tan(rawRoll);
-                groundRate = grade.X * velocity.X + grade.Z * velocity.Z;
-            }
             state.GroundMissTicks = 0;
             row.GroundRayUsed = true;
             row.GroundRayY = groundY;
@@ -1229,11 +1223,10 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float height = targetHeight;
         if (state.SmoothedHeight.HasValue)
         {
-            float predicted = state.SmoothedHeight.Value + groundRate * dt;
-            float heightGap = targetHeight - predicted;
+            float heightGap = targetHeight - state.SmoothedHeight.Value;
             if (MathF.Abs(heightGap) <= _configuration.HeightSnapThresholdMeters)
             {
-                height = predicted + heightSmoothingFactor * heightGap;
+                height = state.SmoothedHeight.Value + heightSmoothingFactor * heightGap;
             }
         }
         state.SmoothedHeight = height;
@@ -1269,6 +1262,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         // points, plus how far the body leans under the acceleration the car is making. Where
         // the rays find no ground the last attitude is held; a car that has none yet takes the
         // racing line's slope and camber.
+        long attitudeStart = PluginTiming.Now();
+        bool foundAttitude = TryFindGroundAttitude(collision, position, attitudeHeading, out float rawPitch, out float rawRoll);
+        _timing.Add(PluginTiming.Part.Sensors, attitudeStart);
         if (foundAttitude)
         {
             rawPitch += _configuration.BodyPitchDegPerG * (MathF.PI / 180f) * bodyAccelForwardG;
@@ -1755,16 +1751,58 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         return false;
     }
 
+    // The ground height under the car as the least-squares straight line through the ground at
+    // RideHeightSamples points spread RideHeightSpanMeters either side of it along `along`, on
+    // three lanes (the car's centre line and half a track to either side): exact on a steady
+    // slope, and bumps shorter than the span average out. Points with no ground are left out;
+    // with fewer than half of them, the ground straight below (centreY) is used.
+    private float RideGroundHeight(TriangleGrid collision, Vector3 position, Vector3 along, float centreY)
+    {
+        float span = _configuration.RideHeightSpanMeters;
+        if (span <= 0f)
+        {
+            return centreY;
+        }
+
+        var across = new Vector3(-along.Z, 0f, along.X);
+        int n = 0;
+        float sumS = 0f, sumY = 0f, sumSS = 0f, sumSY = 0f;
+        for (int lane = -1; lane <= 1; lane++)
+        {
+            Vector3 laneStart = position + across * (lane * AttitudeHalfTrackM);
+            for (int i = 0; i < RideHeightSamples; i++)
+            {
+                float s = span * (2f * i / (RideHeightSamples - 1) - 1f);
+                if (TryFindGround(collision, laneStart + along * s, out float y))
+                {
+                    n++;
+                    sumS += s;
+                    sumY += y;
+                    sumSS += s * s;
+                    sumSY += s * y;
+                }
+            }
+        }
+
+        if (n < 3 * RideHeightSamples / 2)
+        {
+            return centreY;
+        }
+
+        float meanS = sumS / n;
+        float meanY = sumY / n;
+        float varS = sumSS / n - meanS * meanS;
+        float slope = varS > 1e-6f ? (sumSY / n - meanS * meanY) / varS : 0f;
+        return meanY - slope * meanS;
+    }
+
     // Pitch and roll of the ground under the car, in the sense clients are sent them (as
     // measured from a human's car: HISTORY.md), from its height under the two axles and half
-    // a track to either side, and the mean of those four heights. False where a ray finds no
-    // ground or the heights are a step apart.
-    private bool TryFindGroundAttitude(TriangleGrid collision, Vector3 position, float heading, out float pitch, out float roll,
-        out float meanY)
+    // a track to either side. False where a ray finds no ground or the heights are a step apart.
+    private bool TryFindGroundAttitude(TriangleGrid collision, Vector3 position, float heading, out float pitch, out float roll)
     {
         pitch = 0f;
         roll = 0f;
-        meanY = 0f;
         var forward = new Vector3(MathF.Cos(heading), 0f, MathF.Sin(heading));
         var across = new Vector3(-forward.Z, 0f, forward.X);
         float toFront = _car.DistanceCgToFrontAxleM;
@@ -1780,7 +1818,6 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
         pitch = MathF.Atan2(frontY - rearY, toFront + toRear);
         roll = MathF.Atan2(nearY - farY, 2f * AttitudeHalfTrackM);
-        meanY = (frontY + rearY + nearY + farY) / 4f;
         return true;
     }
 

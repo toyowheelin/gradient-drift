@@ -165,10 +165,11 @@ The policy reads these sensors' outputs directly, so their geometry has to match
 | `CarOutlineContact` | `false` | Policy file. Walls touch the car's own outline (a rectangle turned with its heading: each axle's distance from the centre plus `CarOutlineOverhangMeters`, half the wider track plus `CarOutlineSideMarginMeters`) instead of the contact distance's circle, so a sliding car's tail can't pass through a wall |
 | `CarOutlineOverhangMeters` | `0.8` | |
 | `CarOutlineSideMarginMeters` | `0.1` | |
-| `GroundRayHeightOffsetM` | `0.40` | Ride height above the ground found below the car (the mean of the ground under its centre and, where found, under both axles and both sides, so short bumps don't make it hop). The bot drives and senses at this height; clients are sent each car at its own CG height (`CG_HEIGHT_M` in its car file) instead |
+| `GroundRayHeightOffsetM` | `0.40` | Ride height above the ground found below the car. The bot drives and senses at this height; clients are sent each car at its own CG height (`CG_HEIGHT_M` in its car file) instead |
 | `GroundRayStartAboveMeters` | `1.5` | |
 | `GroundRayMaxDistanceMeters` | `6.0` | |
-| `GroundRayHeightSmoothingFactor` | `0.5` | Per tick, how much of the gap to the ground the height closes after following the slope under the car: eases bumps on a rough road surface without lagging on hills. 1 follows the ground exactly |
+| `GroundRayHeightSmoothingFactor` | `1.0` | |
+| `RideHeightSpanMeters` | `3.0` | The car rides on the straight line best fitting the ground this far ahead of and behind it along its path (27 points: 9 along each of its centre line and both sides): bumps shorter than about twice this smooth out, hills are followed exactly. `0` = the ground straight below only |
 | `GroundRayMissHoldSeconds` | `0.5` | Where the ground ray finds nothing (a crack in the track's ground mesh), the last height is held this long before the fallback below |
 | `RoadMeshHeightOffsetM` | `0.44` | Fallback height when the ground ray finds nothing |
 | `CrossTrackBlendStartM` | `5.0` | |
