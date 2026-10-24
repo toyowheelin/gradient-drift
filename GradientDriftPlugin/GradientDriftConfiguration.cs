@@ -55,6 +55,11 @@ public class GradientDriftConfiguration
     // The same for a gen4 policy, whose paces are km/h along the line ("pace_kmh_range").
     public float BotPaceKmh { get; set; } = 0f;
 
+    // Tandem with a player chasing: a bot (or train) with a player close behind waits for them -
+    // full pace with the player right on its tail, slowing to BotPaceMinPercent as they drop back
+    // 40 m; further back, spacing as usual. A policy that reads its pace only.
+    public bool LeadPlayers { get; set; } = false;
+
     // Tandem trains: bots in order of their entry, this many to a train. The first of each train is
     // driven by the policy; the others replay what it sent a moment earlier (TandemTrains.cs), so
     // they follow its line exactly. 1 = every bot drives alone. With HoldBotSpacing the trains are
