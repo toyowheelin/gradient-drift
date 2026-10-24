@@ -417,11 +417,17 @@ class ChangesPage(QWizardPage):
 
     def apply(self):
         plan = self.state['plan']
-        answer = QMessageBox.question(self, 'Make the changes?',
-                                      f'Setup will make {len(plan.changes)} change(s) to\n{plan.server.folder}\n\n'
-                                      'The originals are kept, and Undo puts them back. Stop the server first if it '
-                                      'is running; start it again afterwards.')
-        if answer != QMessageBox.Yes:
+        slow = any(c.op[:1] == ('track_data',) for c in plan.changes)
+        box = QMessageBox(QMessageBox.Question, 'Make the changes?',
+                          f'Make {len(plan.changes)} change(s) to {plan.server.folder} now?', parent=self)
+        box.setInformativeText('Stop the server first if it is running, and start it again afterwards. Setup keeps '
+                               'the originals, and Undo puts them back.'
+                               + (" Making the track's data takes a few minutes." if slow else ''))
+        go = box.addButton('Make the changes', QMessageBox.AcceptRole)
+        box.addButton('Cancel', QMessageBox.RejectRole)
+        box.setDefaultButton(go)
+        box.exec()
+        if box.clickedButton() is not go:
             return
         done = []
         QApplication.setOverrideCursor(Qt.WaitCursor)     # making a track's data takes a few minutes
@@ -468,7 +474,11 @@ class ChangesPage(QWizardPage):
 
     def undo(self):
         server = self.state['server'].folder
-        if QMessageBox.question(self, 'Undo?', 'Put back the files the last run of setup changed?') != QMessageBox.Yes:
+        box = QMessageBox(QMessageBox.Question, 'Undo?', 'Put back the files the last run of setup changed?', parent=self)
+        go = box.addButton('Put them back', QMessageBox.AcceptRole)
+        box.addButton('Cancel', QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not go:
             return
         done = []
         undo(server, log=done.append)
