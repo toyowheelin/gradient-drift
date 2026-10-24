@@ -56,9 +56,10 @@ the one behind.
 reads the track and the cars from it).
 
 1. **Download the plugin and the setup program** from the
-   [releases](https://github.com/toyowheelin/gradient-drift/releases). They are separate releases:
-   `plugin-v…` has the plugin (`GradientDriftPlugin-<version>-for-AssettoServer-0.0.54.zip`),
-   `setup-v…` has the setup program for Windows or Linux. Unzip the setup program anywhere, then unzip the plugin download into the
+   [latest release](https://github.com/toyowheelin/gradient-drift/releases/latest). It has both:
+   the plugin (`GradientDriftPlugin-<version>-for-AssettoServer-0.0.54.zip`) and the setup program
+   for Windows or Linux (`gradient-drift-setup-windows.zip` or `gradient-drift-setup-linux.zip`).
+   Unzip the setup program anywhere, then unzip the plugin download into the
    same folder, so its `GradientDriftPlugin` folder sits beside `gradient-drift-setup.exe`; setup
    finds it there. Each plugin download is built for one AssettoServer version, named in its file
    name and README; on another version the plugin says so in the server log at start. To build the

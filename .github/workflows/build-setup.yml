@@ -1,16 +1,15 @@
 # Builds the packaged setup app: a Windows zip (window + command line) and a Linux zip (command
-# line only). Run it from the Actions tab ("Run workflow"), or push a tag like setup-v0.1.0 to
-# also get a draft release with both zips attached. The zips stay on the run page for 3 days;
+# line only). Run it from the Actions tab ("Run workflow"); release.yml also calls it on a v* tag
+# and attaches both zips to the draft release. The zips stay on the run page for 3 days;
 # download them before then (a release keeps its own copy).
 name: build setup
 
 on:
   workflow_dispatch:
-  push:
-    tags: ['setup-v*']
+  workflow_call:   # from release.yml on a v* tag
 
 permissions:
-  contents: write   # the draft release on tags
+  contents: read   # release.yml makes the release
 
 jobs:
   windows:
@@ -70,14 +69,3 @@ jobs:
           path: gradient-drift-setup-linux.zip
           retention-days: 3   # ~140 MB each; the account's Actions storage is 500 MB
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: [windows, linux]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v5
-        with:
-          merge-multiple: true
-      - run: gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME" --notes "The setup program for Windows (window and command line) or Linux (command line). Unzip it, unzip the plugin download (the newest plugin-v release) into the same folder, and run it. See setup/README.md." --repo "$GITHUB_REPOSITORY" gradient-drift-setup-windows.zip gradient-drift-setup-linux.zip
-        env:
-          GH_TOKEN: ${{ github.token }}
