@@ -18,7 +18,7 @@ from .find import (default_plugin_source, default_track_data, find_games, find_s
                    is_server, track_data_root)
 from .game import car_facts, track_facts
 from .identify import identify
-from .plan import bot_slots, plan_bot
+from .plan import bot_name_now, bot_slots, plan_bot
 from .server import read_server
 
 OK, WARN, BAD = '✔', '⚠', '✖'
@@ -365,6 +365,7 @@ class CarPage(QWizardPage):
         config = s.plugin_config or {}
         self.train.setValue(int(config.get('TrainSize', 0) or 0))
         self.pace.setValue(int(float(config.get('BotPacePercent', 0) or 0)))
+        self.name.setText(bot_name_now(s))         # a name chosen before is kept, not set back to DriftBot
         self.all_car.clear()
         self.all_car.addItems([self.SAME] + s.cars)
         self.slots.setRowCount(0)

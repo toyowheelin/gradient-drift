@@ -83,6 +83,13 @@ def choose_car(server):
     return server.cars[0] if server.cars else ''
 
 
+def bot_name_now(server, default='DriftBot'):
+    """The bots' name the server already gives them (AiParams.NamePrefix), unless it is still
+    AssettoServer's own Traffic: the name to offer, so running setup again keeps a chosen name."""
+    name = str(server.ai_params.get('NamePrefix', '') or '').strip()
+    return name if name and name != 'Traffic' else default
+
+
 def bot_slots(server, game=None, bots=1, car=None, skin=None, slots=None):
     """[(entry index, car, skin)] for each bot the server has after setup, existing AI entries first
     (in the entry list's order; index None for a bot setup adds). slots: [(car, skin)] slot by slot
@@ -481,7 +488,7 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
                      f"room to spawn {bots} bots round the {lap_m:.0f} m lap")
             if a.get('MinAiSafetyDistanceMeters', 20) > gap:
                 ai_param('MinAiSafetyDistanceMeters', a.get('MinAiSafetyDistanceMeters', 20), gap,
-                         f"room to spawn {bots} bots round the {lap_m:.0f} m lap")
+                         f"room to spawn {bots} bots round the {lap_m:.0f} m lap: the least gap too")
     # AssettoServer names AI cars '<NamePrefix> <slot>' and ignores the entry list's DRIVERNAME
     name_now = str(a.get('NamePrefix', 'Traffic'))
     if bot_name and name_now != bot_name:
@@ -492,7 +499,9 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     for key in ('MinCollisionStopTimeSeconds', 'MaxCollisionStopTimeSeconds'):
         if a.get(key, 1 if key.startswith('Min') else 3) != 0:
             ai_param(key, a.get(key, 1 if key.startswith('Min') else 3), 0,
-                     "don't freeze a bot for seconds when a player touches it (traffic stops; a drift bot drives on)")
+                     "don't freeze a bot when a player touches it: "
+                     + ('the shortest stop to 0 s (traffic stops for seconds; a drift bot drives on)'
+                        if key.startswith('Min') else 'the longest stop to 0 s'))
 
     config = server.plugin_config or {}
     if not config.get('EnableLearnedPolicy'):
