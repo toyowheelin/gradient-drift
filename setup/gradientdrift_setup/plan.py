@@ -38,6 +38,13 @@ OPTIONAL_TRACK_FILES = ('_road_mesh.csv', '_course_edges.csv', '_pace_reference.
 # unless it covers half a lap.
 MIN_DISTANCE_TO_LINE_M = 100
 MIN_AFK_TIMEOUT_S = 600
+# AssettoServer spawns an AI car only at a point of the line at least
+# SpawnSafetyDistanceToPlayerMeters (150) from every player and a random 20-70 m
+# (Min/MaxAiSafetyDistanceMeters) from the AI cars either side: on a small track no point is
+# that far from a player, so bots spawn only by luck. Setup sizes these to the track: the player
+# distance to this share of the track's span, the AI gap to this share of the even spacing.
+SPAWN_PLAYER_DISTANCE_SHARE = 0.25
+SPAWN_AI_GAP_SHARE = 0.5
 
 
 @dataclass
@@ -222,6 +229,7 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     t = track_facts(game, server.track, server.layout) if game else None
     where = server.track + (f' ({server.layout})' if server.layout else '')
     lap_m = 0.0
+    span_m = 0.0
     ai_copy = None          # the game's AI line copied as it is, when the server lacks one
     rel_ai = ''
     if t is None:
@@ -230,6 +238,7 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         p.blockers.append(f"the game install has no content/tracks/{server.track}")
     else:
         lap_m = t.lap_m
+        span_m = t.span_m
         server_ai = server.server_ai_line()
         rel_ai = os.path.relpath(server_ai, server.folder).replace(os.sep, '/')
         if t.ai_points < 2 and not t.recorded:
@@ -459,6 +468,23 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         if a.get('PlayerRadiusMeters', 200) < want:
             ai_param('PlayerRadiusMeters', a.get('PlayerRadiusMeters', 200), want,
                      f"keep bots spaced round the {lap_m:.0f} m lap instead of taking away the ones far from a player")
+    if span_m:
+        want = max(20, int(span_m * SPAWN_PLAYER_DISTANCE_SHARE))
+        if a.get('SpawnSafetyDistanceToPlayerMeters', 150) > want:
+            ai_param('SpawnSafetyDistanceToPlayerMeters', a.get('SpawnSafetyDistanceToPlayerMeters', 150), want,
+                     f"let bots spawn on a track {span_m:.0f} m across (no point of it is 150 m from a player)")
+    if lap_m and bots > 1:
+        gap = int(lap_m / (bots + 1) * SPAWN_AI_GAP_SHARE)
+        if a.get('MaxAiSafetyDistanceMeters', 70) > gap:
+            ai_param('MaxAiSafetyDistanceMeters', a.get('MaxAiSafetyDistanceMeters', 70), gap,
+                     f"room to spawn {bots} bots round the {lap_m:.0f} m lap")
+            if a.get('MinAiSafetyDistanceMeters', 20) > gap:
+                ai_param('MinAiSafetyDistanceMeters', a.get('MinAiSafetyDistanceMeters', 20), gap,
+                         f"room to spawn {bots} bots round the {lap_m:.0f} m lap")
+    for key in ('MinCollisionStopTimeSeconds', 'MaxCollisionStopTimeSeconds'):
+        if a.get(key, 1 if key.startswith('Min') else 3) != 0:
+            ai_param(key, a.get(key, 1 if key.startswith('Min') else 3), 0,
+                     "don't freeze a bot for seconds when a player touches it (traffic stops; a drift bot drives on)")
 
     config = server.plugin_config or {}
     if not config.get('EnableLearnedPolicy'):

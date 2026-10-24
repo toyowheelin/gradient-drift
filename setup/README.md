@@ -181,7 +181,12 @@ changed, and no bot is taken away.
   idle, and a drift player is often well off it, or parked watching, so setup sets
   `MaxPlayerCount` (the player slots), `MaxPlayerDistanceToAiSplineMeters` at least 100 and
   `PlayerAfkTimeoutSeconds` at least 600. With several bots it also sets `PlayerRadiusMeters` to at
-  least 5/8 of a lap (AssettoServer takes away AI cars further than that from every player);
+  least 5/8 of a lap (AssettoServer takes away AI cars further than that from every player).
+  On a small track it lowers `SpawnSafetyDistanceToPlayerMeters` to a quarter of the track's span
+  and `MaxAiSafetyDistanceMeters` to half the even gap between bots, or no point of the AI line
+  is far enough from a player and other bots for a bot to spawn. It sets
+  `MinCollisionStopTimeSeconds` and `MaxCollisionStopTimeSeconds` to 0: AssettoServer otherwise
+  freezes an AI car for 1-3 s when a player touches it;
 - the plugin's own section with `EnableLearnedPolicy: true`, and `TrainSize` and `BotPacePercent`
   when given.
 
