@@ -323,7 +323,9 @@ public class GradientDriftConfiguration
     public float GroundRayHeightOffsetM { get; set; } = 0.40f;
     public float GroundRayStartAboveMeters { get; set; } = 1.5f;
     public float GroundRayMaxDistanceMeters { get; set; } = 6.0f;
-    public float GroundRayHeightSmoothingFactor { get; set; } = 1.0f;
+    // Per tick, how much of the gap to the ground the height closes, after following the slope
+    // under the car (so a hill adds no lag; only bumps shorter than a few car lengths are eased).
+    public float GroundRayHeightSmoothingFactor { get; set; } = 0.5f;
     // Where the ray finds nothing (a crack in the ground mesh), the last height is held this long
     // before the fallback below takes over.
     public float GroundRayMissHoldSeconds { get; set; } = 0.5f;

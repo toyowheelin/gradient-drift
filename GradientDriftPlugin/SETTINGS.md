@@ -168,7 +168,7 @@ The policy reads these sensors' outputs directly, so their geometry has to match
 | `GroundRayHeightOffsetM` | `0.40` | Ride height above the ground found below the car (the mean of the ground under its centre and, where found, under both axles and both sides, so short bumps don't make it hop). The bot drives and senses at this height; clients are sent each car at its own CG height (`CG_HEIGHT_M` in its car file) instead |
 | `GroundRayStartAboveMeters` | `1.5` | |
 | `GroundRayMaxDistanceMeters` | `6.0` | |
-| `GroundRayHeightSmoothingFactor` | `1.0` | |
+| `GroundRayHeightSmoothingFactor` | `0.5` | Per tick, how much of the gap to the ground the height closes after following the slope under the car: eases bumps on a rough road surface without lagging on hills. 1 follows the ground exactly |
 | `GroundRayMissHoldSeconds` | `0.5` | Where the ground ray finds nothing (a crack in the track's ground mesh), the last height is held this long before the fallback below |
 | `RoadMeshHeightOffsetM` | `0.44` | Fallback height when the ground ray finds nothing |
 | `CrossTrackBlendStartM` | `5.0` | |

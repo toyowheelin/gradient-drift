@@ -1183,6 +1183,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         var (verticalPointId, _) = _spline.WorldToSpline(position);
         float targetHeight;
         float heightSmoothingFactor;
+        float groundRate = 0f;
         float attitudeHeading = state.Heading ?? aiState.Status.Rotation.X + MathF.PI / 2f;
         long groundStart = PluginTiming.Now();
         bool foundGround = TryFindGround(collision, position, out float groundY);
@@ -1197,6 +1198,16 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             float rideGroundY = foundAttitude ? (groundY + 4f * footprintY) / 5f : groundY;
             targetHeight = rideGroundY + _configuration.GroundRayHeightOffsetM;
             heightSmoothingFactor = _configuration.GroundRayHeightSmoothingFactor;
+            if (foundAttitude)
+            {
+                // How fast the ground under the car rises along the way it is moving, from the
+                // slope the axle and side rays found: the smoothing below follows this, so it
+                // filters bumps without lagging behind on a hill.
+                var forward = new Vector3(MathF.Cos(attitudeHeading), 0f, MathF.Sin(attitudeHeading));
+                var across = new Vector3(-forward.Z, 0f, forward.X);
+                Vector3 grade = forward * MathF.Tan(rawPitch) + across * MathF.Tan(rawRoll);
+                groundRate = grade.X * velocity.X + grade.Z * velocity.Z;
+            }
             state.GroundMissTicks = 0;
             row.GroundRayUsed = true;
             row.GroundRayY = groundY;
@@ -1218,10 +1229,11 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float height = targetHeight;
         if (state.SmoothedHeight.HasValue)
         {
-            float heightGap = targetHeight - state.SmoothedHeight.Value;
+            float predicted = state.SmoothedHeight.Value + groundRate * dt;
+            float heightGap = targetHeight - predicted;
             if (MathF.Abs(heightGap) <= _configuration.HeightSnapThresholdMeters)
             {
-                height = state.SmoothedHeight.Value + heightSmoothingFactor * heightGap;
+                height = predicted + heightSmoothingFactor * heightGap;
             }
         }
         state.SmoothedHeight = height;
