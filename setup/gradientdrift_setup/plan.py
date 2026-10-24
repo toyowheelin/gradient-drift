@@ -325,6 +325,14 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         if needs_line:
             p.notes.append(f"{where} has no AI line of its own: setup makes one from the recorded lap "
                            f"({os.path.basename(t.recorded)}) and puts it in the server")
+    # each car's pace scale is measured on the track's data in the track files (drift_rl/pace_model.py):
+    # a server that has its own copy (set up from another folder or computer) still needs one here
+    elif (inputs > 55 and paces and t is not None and t.exists and (t.ai_points >= 2 or t.recorded)
+          and not os.path.exists(os.path.join(home, server.track, f'{server.track}_fast_lane.ai'))):
+        p.changes.append(Change('(track data)', f"make {server.track}'s data from the game install into "
+                                f"{os.path.join(home, server.track)}, to work out each bot car's pace there (the "
+                                "server's own copy and AI line stay as they are); a few minutes",
+                                op=('track_data', t.folder, server.layout or '', home, server.track, '')))
     # the track's data is made per point of one AI line (setup_track.py saves it beside the data as
     # <track>_fast_lane.ai, rebuilt down the middle of the road if the game's needed it): the server
     # must run that line, or the course edges and pace reference do not fit it
