@@ -324,6 +324,9 @@ public class GradientDriftConfiguration
     public float GroundRayStartAboveMeters { get; set; } = 1.5f;
     public float GroundRayMaxDistanceMeters { get; set; } = 6.0f;
     public float GroundRayHeightSmoothingFactor { get; set; } = 1.0f;
+    // Where the ray finds nothing (a crack in the ground mesh), the last height is held this long
+    // before the fallback below takes over.
+    public float GroundRayMissHoldSeconds { get; set; } = 0.5f;
 
     // Only when that ray finds no ground: the racing line's own height, blended toward the
     // nearest road-mesh point (plus RoadMeshHeightOffsetM) as the car gets between

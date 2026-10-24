@@ -1183,15 +1183,31 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         var (verticalPointId, _) = _spline.WorldToSpline(position);
         float targetHeight;
         float heightSmoothingFactor;
+        float attitudeHeading = state.Heading ?? aiState.Status.Rotation.X + MathF.PI / 2f;
         long groundStart = PluginTiming.Now();
         bool foundGround = TryFindGround(collision, position, out float groundY);
+        bool foundAttitude = TryFindGroundAttitude(collision, position, attitudeHeading,
+            out float rawPitch, out float rawRoll, out float footprintY);
         _timing.Add(PluginTiming.Part.Sensors, groundStart);
         if (foundGround)
         {
-            targetHeight = groundY + _configuration.GroundRayHeightOffsetM;
+            // The ground under the axles and both sides counts with the ground under the centre,
+            // so the body rides over bumps shorter than the car instead of following each one
+            // (a rough road surface showed as the car hopping a few cm every update).
+            float rideGroundY = foundAttitude ? (groundY + 4f * footprintY) / 5f : groundY;
+            targetHeight = rideGroundY + _configuration.GroundRayHeightOffsetM;
             heightSmoothingFactor = _configuration.GroundRayHeightSmoothingFactor;
+            state.GroundMissTicks = 0;
             row.GroundRayUsed = true;
             row.GroundRayY = groundY;
+        }
+        else if (state.SmoothedHeight.HasValue && state.GroundMissTicks * dt < _configuration.GroundRayMissHoldSeconds)
+        {
+            // A ray that slips through a crack in the ground keeps the last height rather than
+            // dropping to the racing line's for one update.
+            state.GroundMissTicks++;
+            targetHeight = state.SmoothedHeight.Value;
+            heightSmoothingFactor = 1f;
         }
         else
         {
@@ -1237,10 +1253,6 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         // points, plus how far the body leans under the acceleration the car is making. Where
         // the rays find no ground the last attitude is held; a car that has none yet takes the
         // racing line's slope and camber.
-        float attitudeHeading = state.Heading ?? aiState.Status.Rotation.X + MathF.PI / 2f;
-        long attitudeStart = PluginTiming.Now();
-        bool foundAttitude = TryFindGroundAttitude(collision, position, attitudeHeading, out float rawPitch, out float rawRoll);
-        _timing.Add(PluginTiming.Part.Sensors, attitudeStart);
         if (foundAttitude)
         {
             rawPitch += _configuration.BodyPitchDegPerG * (MathF.PI / 180f) * bodyAccelForwardG;
@@ -1729,11 +1741,14 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
     // Pitch and roll of the ground under the car, in the sense clients are sent them (as
     // measured from a human's car: HISTORY.md), from its height under the two axles and half
-    // a track to either side. False where a ray finds no ground or the heights are a step apart.
-    private bool TryFindGroundAttitude(TriangleGrid collision, Vector3 position, float heading, out float pitch, out float roll)
+    // a track to either side, and the mean of those four heights. False where a ray finds no
+    // ground or the heights are a step apart.
+    private bool TryFindGroundAttitude(TriangleGrid collision, Vector3 position, float heading, out float pitch, out float roll,
+        out float meanY)
     {
         pitch = 0f;
         roll = 0f;
+        meanY = 0f;
         var forward = new Vector3(MathF.Cos(heading), 0f, MathF.Sin(heading));
         var across = new Vector3(-forward.Z, 0f, forward.X);
         float toFront = _car.DistanceCgToFrontAxleM;
@@ -1749,6 +1764,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
         pitch = MathF.Atan2(frontY - rearY, toFront + toRear);
         roll = MathF.Atan2(nearY - farY, 2f * AttitudeHalfTrackM);
+        meanY = (frontY + rearY + nearY + farY) / 4f;
         return true;
     }
 

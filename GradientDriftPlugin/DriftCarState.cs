@@ -50,6 +50,9 @@ internal sealed class DriftCarState
     public float? SmoothedPitch;
     public float? SmoothedRoll;
 
+    // Consecutive ticks the ground ray has found nothing (see GroundRayMissHoldSeconds).
+    public int GroundMissTicks;
+
     // Front-wheel angle last sent to clients, degrees (see EnableSteeringVisual).
     public float? VisualSteerDeg;
 
