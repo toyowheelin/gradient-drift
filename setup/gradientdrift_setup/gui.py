@@ -4,7 +4,7 @@ import os
 import sys
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QPalette
 from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
                                QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
                                QSpinBox, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
@@ -27,10 +27,20 @@ def heading(text):
     return label
 
 
+def hint(text):
+    """A line of help under a field or at the foot of a page, in the window's quieter text colour."""
+    label = QLabel(text)
+    label.setWordWrap(True)
+    label.setTextFormat(Qt.RichText)
+    label.setForegroundRole(QPalette.PlaceholderText)
+    return label
+
+
 class PathPicker(QWidget):
     """A list of what was found, and a Browse button for anything else."""
 
-    def __init__(self, found, check, browse_title, label=None, parent=None, normalize=None, refusal=None):
+    def __init__(self, found, check, browse_title, label=None, parent=None, normalize=None, refusal=None,
+                 none_found='Nothing found automatically - use Browse.'):
         super().__init__(parent)
         self.check, self.browse_title, self.label = check, browse_title, label or (lambda p: p)
         self.normalize = normalize or (lambda p: p)
@@ -46,7 +56,7 @@ class PathPicker(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.list)
         row = QHBoxLayout()
-        self.message = QLabel('' if found else 'Nothing found automatically - use Browse.')
+        self.message = QLabel('' if found else none_found)
         row.addWidget(self.message, 1)
         row.addWidget(browse)
         lay.addLayout(row)
@@ -99,6 +109,10 @@ class GamePage(QWizardPage):
         self.picker.list.currentItemChanged.connect(lambda *_: self.completeChanged.emit())
         lay = QVBoxLayout(self)
         lay.addWidget(self.picker)
+        lay.addWidget(hint('This is the game you play, not the server. With Steam it is usually '
+                           '<code>steamapps\\common\\assettocorsa</code> in your Steam library. Setup builds the '
+                           "plugin's track data and each bot car's numbers from what is in its <code>content</code> "
+                           'folder, so the server\'s track and cars must be installed here too.'))
 
     def isComplete(self):
         return bool(self.picker.value())
@@ -124,6 +138,9 @@ class ServerPage(QWizardPage):
         lay = QVBoxLayout(self)
         lay.addWidget(self.picker, 1)
         lay.addWidget(self.info)
+        lay.addWidget(hint('Setup lists the AssettoServer folders it finds in or beside the game; Browse for one '
+                           'elsewhere. Start the server once before setup if you have not yet, so AssettoServer '
+                           'writes <code>cfg\\extra_cfg.yml</code>. Nothing is changed until the last page.'))
 
     def initializePage(self):
         if not self.picker.list.count():
@@ -168,6 +185,7 @@ class TrackPage(QWizardPage):
         super().__init__()
         self.state = state
         self.setTitle('Checking the track')
+        self.setSubTitle("Is the server's track in the game install, with what the bots need? Nothing to choose here.")
         self.text = QLabel()
         self.text.setWordWrap(True)
         self.text.setTextFormat(Qt.RichText)
@@ -189,7 +207,9 @@ class TrackPage(QWizardPage):
             else:
                 rows.append(f'{BAD} AI line: {t.ai_note}. AssettoServer needs one for any AI car; '
                             'recording one by driving a lap is coming in a later version.')
-        rows.append('<br><i>The course map (edges, zones, direction of travel) will be shown here.</i>')
+        rows.append("<br>The plugin also needs data about this track (its walls, road and course). If the server "
+                    "does not have it yet, setup makes it from the game install when you make the changes on the "
+                    "last page; that takes a few minutes.")
         self.text.setText('<br>'.join(rows))
 
 
@@ -241,6 +261,9 @@ class CarPage(QWizardPage):
         form.addRow('Bots to a train', self.train)
         form.addRow('Pace', self.pace)
         form.addRow(self.note)
+        form.addRow(hint('Pick how many bots you want and their car; the rest can stay as it is. '
+                         'Each bot takes a car slot on the server, so players keep the other slots. '
+                         'Hover over a field for more about it.'))
 
     def initializePage(self):
         s = self.state['server']
@@ -346,20 +369,27 @@ class ChangesPage(QWizardPage):
         self.issues.setTextFormat(Qt.RichText)
         self.plugin = PathPicker([p for p in [default_plugin_source()] if p],
                                  lambda p: os.path.exists(os.path.join(p, 'GradientDriftPlugin.dll')),
-                                 "The plugin's build folder (with GradientDriftPlugin.dll)")
+                                 "The plugin's build folder (with GradientDriftPlugin.dll)",
+                                 none_found="Not found: unzip the plugin download into setup's folder, or Browse.")
         self.track_data = PathPicker([p for p in [default_track_data()] if p],
                                      lambda p: os.path.isdir(p) and not in_game_content(p),
                                      "The track files folder (setup_track.py's output, a folder per track, e.g. drift_rl\\tracks)",
                                      normalize=lambda p: track_data_root(p) or p,
                                      refusal=lambda p: "That is a track's folder in the game or server content. Pick "
                                      "the track files folder setup_track.py makes, with a folder per track "
-                                     "(drift_rl\\tracks).")
+                                     "(drift_rl\\tracks).",
+                                     none_found='None: setup makes it from the game.')
         for picker in (self.plugin, self.track_data):
             picker.list.setMaximumHeight(48)
             picker.list.currentItemChanged.connect(lambda *_: self.initializePage())
         files = QFormLayout()
         files.addRow('Plugin build', self.plugin)
-        files.addRow('Track files', self.track_data)
+        files.addRow('', hint('The plugin setup installs on the server. Found by itself when the plugin download '
+                              "is unzipped into setup's folder."))
+        files.addRow('Track files (optional)', self.track_data)
+        files.addRow('', hint("Usually leave this empty: setup makes the track's data from the game install. Pick "
+                              "a folder only if you already have track data from the trainer "
+                              "(<code>drift_rl\\tracks</code>, a folder per track)."))
         self.apply_button = QPushButton('Make these changes')
         self.apply_button.clicked.connect(self.apply)
         self.undo_button = QPushButton('Undo the last changes')
@@ -378,6 +408,10 @@ class ChangesPage(QWizardPage):
         lay.addWidget(self.tree, 1)
         lay.addWidget(self.issues)
         lay.addLayout(files)
+        lay.addWidget(hint('<b>To finish:</b> stop the server, click <b>Make these changes</b>, then start the '
+                           'server again. Its log should say <code>GradientDrift: policy loaded from</code>; the '
+                           'bots join when a player is on. A server on a hosting plan: '
+                           '<b>Export for a hosted server</b> instead.'))
         lay.addLayout(buttons)
 
     def apply(self):
