@@ -17,7 +17,7 @@ PLUGIN_FILES = ['GradientDriftPlugin.dll', 'GradientDriftPlugin.deps.json', 'Gra
 # Every policy a plugin release shipped (SHA-256 of the file, line endings as LF), with the release.
 # A server's policy that is one of these is a stock one, replaced by the policy setup carries even
 # beside the same plugin; any other was made for the server (polished for its track) and is kept.
-# Add each release's policy here (build-plugin.yml refuses a plugin-v* tag whose policy is missing).
+# Add each release's policy here (build-plugin.yml refuses a v* release tag whose policy is missing).
 SHIPPED_POLICIES = {
     'd4388a8477bf5284d0d358e12908eb7293a7018b0140a46fd55f13bac99d2212': 'plugin-v0.1.0',
 }

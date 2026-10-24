@@ -1,0 +1,59 @@
+# One release for everything: push a tag like v0.2.0 and this builds the plugin (build-plugin.yml,
+# with its checks: the policy is in setup's SHIPPED_POLICIES, and the plugin, setup and build agree
+# on the AssettoServer version) and the setup program for Windows and Linux (build-setup.yml, with
+# its smoke tests), then makes one draft release with all three zips attached, to publish by hand.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read   # the release job alone writes
+
+jobs:
+  plugin:
+    uses: ./.github/workflows/build-plugin.yml
+
+  setup:
+    uses: ./.github/workflows/build-setup.yml
+
+  release:
+    needs: [plugin, setup]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # the draft release
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ needs.plugin.outputs.package }}
+          path: pkg
+      - run: (cd pkg && zip -qr "../$PACKAGE.zip" .)
+        env:
+          PACKAGE: ${{ needs.plugin.outputs.package }}
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: gradient-drift-setup-*
+          merge-multiple: true
+      - name: draft release
+        run: |
+          cat > notes.md <<NOTES
+          Built and tested for AssettoServer $ASSETTOSERVER.
+
+          **Download two zips:** the setup program for your system, and the plugin.
+
+          - \`gradient-drift-setup-windows.zip\`: setup for Windows (window and command line)
+          - \`gradient-drift-setup-linux.zip\`: setup for Linux (command line)
+          - \`$PACKAGE.zip\`: the plugin, one download for Windows and Linux servers (a .NET plugin; tested on Windows only, Linux untested)
+
+          Unzip the setup program anywhere, unzip the plugin into the same folder so its \`GradientDriftPlugin\` folder sits beside the program, and run setup on your server folder. See [setup/README.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/setup/README.md).
+
+          On another AssettoServer version the plugin warns in the server log at start.
+          NOTES
+          gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME (AssettoServer $ASSETTOSERVER)" \
+            --notes-file notes.md --repo "$GITHUB_REPOSITORY" \
+            "$PACKAGE.zip" gradient-drift-setup-windows.zip gradient-drift-setup-linux.zip
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE: ${{ needs.plugin.outputs.package }}
+          ASSETTOSERVER: ${{ needs.plugin.outputs.assettoserver }}

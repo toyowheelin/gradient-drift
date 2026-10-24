@@ -41,9 +41,9 @@ It does not train a policy for a track. The trainer can polish the shipped polic
 
 ## Download and run
 
-Download two things from the [releases](https://github.com/toyowheelin/gradient-drift/releases): the setup zip for
-your system (from the newest `setup-v…` release) and the plugin (from the newest `plugin-v…` release,
-`GradientDriftPlugin-<version>-for-AssettoServer-0.0.54.zip`). Unzip the setup zip anywhere, then
+Download two things from the [latest release](https://github.com/toyowheelin/gradient-drift/releases/latest): the setup zip for
+your system (`gradient-drift-setup-windows.zip` or `gradient-drift-setup-linux.zip`) and the plugin
+(`GradientDriftPlugin-<version>-for-AssettoServer-0.0.54.zip`). Unzip the setup zip anywhere, then
 unzip the plugin download into the same folder, so it looks like this:
 
 ```
@@ -236,7 +236,8 @@ py -m gradientdrift_setup check ...          # or any command above
 ## Building the package
 
 The zips come from the "build setup" workflow (`.github/workflows/build-setup.yml`): run it from
-the Actions tab, or push a `setup-v*` tag to get a draft release with both attached. To build one
+the Actions tab. A `v*` tag (`.github/workflows/release.yml`) builds them with the plugin and
+makes one draft release with all three attached. To build one
 yourself, from the repo root:
 
 ```
