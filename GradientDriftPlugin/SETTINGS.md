@@ -165,7 +165,7 @@ The policy reads these sensors' outputs directly, so their geometry has to match
 | `CarOutlineContact` | `false` | Policy file. Walls touch the car's own outline (a rectangle turned with its heading: each axle's distance from the centre plus `CarOutlineOverhangMeters`, half the wider track plus `CarOutlineSideMarginMeters`) instead of the contact distance's circle, so a sliding car's tail can't pass through a wall |
 | `CarOutlineOverhangMeters` | `0.8` | |
 | `CarOutlineSideMarginMeters` | `0.1` | |
-| `GroundRayHeightOffsetM` | `0.40` | Ride height above the ground found below the car (the mean of the ground under its centre and, where found, under both axles and both sides, so short bumps don't make it hop) |
+| `GroundRayHeightOffsetM` | `0.40` | Ride height above the ground found below the car (the mean of the ground under its centre and, where found, under both axles and both sides, so short bumps don't make it hop). The bot drives and senses at this height; clients are sent each car at its own CG height (`CG_HEIGHT_M` in its car file) instead |
 | `GroundRayStartAboveMeters` | `1.5` | |
 | `GroundRayMaxDistanceMeters` | `6.0` | |
 | `GroundRayHeightSmoothingFactor` | `1.0` | |

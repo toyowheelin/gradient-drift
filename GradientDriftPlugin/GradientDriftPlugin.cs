@@ -1234,7 +1234,11 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
         state.Position = position;
         state.Velocity = velocity;
-        aiState.Status.Position = position;
+        // Clients draw the car with its body at the height they are sent, so each car model is
+        // sent at its own CG height above the ground (its car file's CG_HEIGHT_M) rather than the
+        // one ride height the bot drives and senses at: a low car no longer floats, a tall one
+        // no longer sinks its nose into the road.
+        aiState.Status.Position = position + new Vector3(0f, _car.CgHeightMeters - _configuration.GroundRayHeightOffsetM, 0f);
         if (_paceReferenceKmh != null)
         {
             UpdatePaceOver(state, position, paceAskedPointId, aiState.MaxSpeed, dt, policy.PaceAverageSeconds);
