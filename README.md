@@ -7,10 +7,19 @@
 </p>
 
 <p align="center">
-  <img alt="Licence: AGPL-3.0" src="https://img.shields.io/badge/licence-AGPL--3.0-blue">
-  <img alt="AssettoServer v0.0.54" src="https://img.shields.io/badge/AssettoServer-v0.0.54-orange">
-  <img alt="Server: Windows tested" src="https://img.shields.io/badge/server-Windows%20tested-lightgrey">
-  <img alt="Trainer: Python 3.12+" src="https://img.shields.io/badge/trainer-Python%203.12%2B-green">
+  <a href="https://github.com/toyowheelin/gradient-drift/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/toyowheelin/gradient-drift?logo=github&label=release"></a>
+  <a href="https://github.com/toyowheelin/gradient-drift/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/toyowheelin/gradient-drift/total?logo=github&color=brightgreen"></a>
+  <a href="https://github.com/toyowheelin/gradient-drift/actions/workflows/build-plugin.yml"><img alt="Plugin build" src="https://img.shields.io/github/actions/workflow/status/toyowheelin/gradient-drift/build-plugin.yml?branch=main&logo=githubactions&logoColor=white&label=plugin%20build"></a>
+  <a href="LICENSE"><img alt="Licence: AGPL-3.0" src="https://img.shields.io/badge/licence-AGPL--3.0-blue?logo=gnu&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/compujuckel/AssettoServer"><img alt="AssettoServer v0.0.54" src="https://img.shields.io/badge/AssettoServer-v0.0.54-orange?logo=steam&logoColor=white"></a>
+  <img alt="Plugin: .NET 8" src="https://img.shields.io/badge/plugin-.NET%208-512BD4?logo=dotnet&logoColor=white">
+  <img alt="Trainer: Python 3.12+" src="https://img.shields.io/badge/trainer-Python%203.12%2B-3776AB?logo=python&logoColor=white">
+  <img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-PPO-EE4C2C?logo=pytorch&logoColor=white">
+  <img alt="Server: Windows tested" src="https://img.shields.io/badge/Windows-tested-0078D6?logo=windows&logoColor=white">
+  <img alt="Server: Linux untested" src="https://img.shields.io/badge/Linux-untested-lightgrey?logo=linux&logoColor=white">
 </p>
 
 <p align="center">
