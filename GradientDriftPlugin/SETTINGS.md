@@ -82,6 +82,8 @@ stopped for 30 seconds, and a line when it moves again. Nothing while the bots d
 | `LogLearnedPolicyObservations` | `true` | Adds the network's inputs to every telemetry row (about 330 bytes a row). The check tools need them. |
 | `LogHumanCarForCalibration` | `false` | Adds the first connected player's car to the telemetry: position, steering, RPM, gear, throttle, wheel speeds. No name, IP or Steam ID. Used to compare the bots with a human driver. |
 | `VerboseLogging` | `false` | The plugin's routine lines as well: what it loaded, each setting the policy file brings, each bot car's numbers, spawns and placements, and the timing line every 60 s. Off, the log has warnings only. |
+| `ShowEntryListNames` | `true` | Show each bot in game under its entry list `DRIVERNAME` instead of AssettoServer's `<NamePrefix> <slot>` (`Traffic 16`). A bot with no `DRIVERNAME` keeps AssettoServer's name. |
+| `BotNation` | `""` | Country code shown with the bots' names (e.g. `ITA`); empty = none. |
 | `LogTimingIntervalSeconds` | `0` | Every this many seconds, a log line with how long the plugin took per server tick (network, sensors, telemetry, followers), the worst tick, and the share of one CPU core. 0 = off (every 60 s with `VerboseLogging`). |
 
 ## Developer settings

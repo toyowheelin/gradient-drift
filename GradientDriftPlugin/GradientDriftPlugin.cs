@@ -139,6 +139,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private readonly float _skill = 1f;           // how good a driver the bots are (BotSkill), for a policy that reads it
     private readonly Random _skillRandom = new();
     private int _failedUpdates;
+    private readonly BotNames? _botNames;
     private bool _updatesStopped;
     private const int MaxFailedUpdates = 5;
 
@@ -159,6 +160,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             ? configuration.LogTimingIntervalSeconds : 60f);
         _tickRateHz = serverConfiguration.Server.RefreshRateHz;
         _spline = spline;
+        _botNames = configuration.ShowEntryListNames
+            ? new BotNames(entryCarManager, serverConfiguration, configuration.BotNation)
+            : null;
         _health = new BotHealth(s => _cars.TryGetValue(s, out DriftCarState? c) && !c.HeldByStock,
             p => _spline.WorldToSpline(p).PointId);
         _sessionManager = sessionManager;
@@ -649,6 +653,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         try
         {
             UpdateCars();
+            _botNames?.Update();
             _failedUpdates = 0;
         }
         catch (Exception ex)

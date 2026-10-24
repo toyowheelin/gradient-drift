@@ -92,6 +92,12 @@ public class GradientDriftConfiguration
     // line every 60 s (unless LogTimingIntervalSeconds says otherwise). Off: warnings only.
     public bool VerboseLogging { get; set; } = false;
 
+    // Show each bot in game under its entry list DRIVERNAME (and this country code's flag, e.g.
+    // ITA; empty = none) instead of AssettoServer's "<NamePrefix> <slot>". A bot with no
+    // DRIVERNAME keeps AssettoServer's name.
+    public bool ShowEntryListNames { get; set; } = true;
+    public string BotNation { get; set; } = "";
+
     // Every this many seconds, a line in the server log with the time the plugin took on the
     // server's update thread: milliseconds a tick, split into the network, the sensors (rays,
     // ground and wall checks), telemetry and the tandem followers, the worst tick, and the share
