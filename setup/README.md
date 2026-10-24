@@ -186,7 +186,9 @@ changed, and no bot is taken away.
   and `MaxAiSafetyDistanceMeters` to half the even gap between bots, or no point of the AI line
   is far enough from a player and other bots for a bot to spawn. It sets
   `MinCollisionStopTimeSeconds` and `MaxCollisionStopTimeSeconds` to 0: AssettoServer otherwise
-  freezes an AI car for 1-3 s when a player touches it;
+  freezes an AI car for 1-3 s when a player touches it. It sets `NamePrefix` to the bot name:
+  AssettoServer shows each AI car as `<NamePrefix> <slot number>` (`Traffic 16`), whatever its
+  `DRIVERNAME` in the entry list;
 - the plugin's own section with `EnableLearnedPolicy: true`, and `TrainSize` and `BotPacePercent`
   when given.
 
