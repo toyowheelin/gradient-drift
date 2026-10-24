@@ -100,9 +100,15 @@ scipy, pandas, numba and the others), each one's licence, and its full text.
 In the window, the pages walk you through it: the game install, the server, the track check, the
 bots and their cars, and the change list. The bots' page has a row per bot slot (the server's
 existing AI entries first, then the new ones) with its car and skin, and "Every bot in" to put them
-all in one car. Under "Track files" on the last page, pick the folder setup_track.py writes into,
-with a folder per track (`tracks\` beside the packaged program, or `drift_rl\tracks`); setup
-turns down a track's own folder in the game or server content.
+all in one car.
+
+**Track files** on the last page is usually left empty. The plugin needs some data about the track
+(its walls, road and course, made from the game's track files), and setup makes it for you from
+your game install the first time, into a `tracks\` folder beside the program; the change list
+shows it as "make <track>'s data from the game install" (a few minutes). Fill it in only if you
+already have track data made by the trainer (`drift_rl/setup_track.py`): pick the folder with a
+folder per track in it (`drift_rl\tracks`). Don't pick the track's own folder in the game or
+server's `content\tracks`; setup turns that down.
 
 On the command line (the packaged program is `gradient-drift-setup.exe`; from source it is
 `py -m gradientdrift_setup`):
