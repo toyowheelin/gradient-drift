@@ -10,6 +10,10 @@ import tempfile
 from . import game  # puts drift_rl on the path
 from .plan import PACE_MODEL
 
+# the server's own track files the pace is worked out on when setup has no copy of the track's data
+SERVER_SENSES = ('triangles', 'collision')
+SERVER_EXTRAS = ('road_mesh.csv', 'course_edges.csv')
+
 
 def car_file_text(game_folder, model):
     """(the car file's JSON text, None) or (None, the reason it cannot be made)."""
@@ -48,17 +52,23 @@ def car_file_text(game_folder, model):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def pace_source(policy, track_data, server_folder, track, made_here=False):
+def pace_source(policy, track_data, server_folder, track, made_here=False, server_line=None):
     """(how to work out the cars' PACE_SCALE on this track, None) or (None, why it cannot be): the
-    track's data folder (drift_rl/pace_model.py reads its AI line). made_here: this run makes the
-    track's data in track_data before the cars' scales are worked out."""
-    if not (track_data and (made_here or os.path.exists(os.path.join(track_data, track, f'{track}_fast_lane.ai')))):
-        where = (f"{track_data} has no {track} folder with its AI line ({track}_fast_lane.ai)" if track_data
-                 else f"setup has no copy of {track}'s data")
-        return None, (f"{where}, so it cannot work out each car's pace there. Setup makes that data itself when the "
-                      "server lacks it; if the server got it from elsewhere, pick the folder holding it (a folder "
-                      "per track) under Track files")
-    return (policy, track_data, track, None, f"{PACE_MODEL} on {track}"), None
+    server's own copy of the track's data (its AI line server_line and its track files), which is
+    what its bots run on, else the track's data folder (drift_rl/pace_model.py reads its AI line).
+    made_here: this run makes or copies the track's data before the cars' scales are worked out, so
+    the track data folder's copy is the one the server will run."""
+    tag = f"{PACE_MODEL} on {track}"
+    if (not made_here and server_line and os.path.exists(server_line)
+            and all(os.path.exists(os.path.join(server_folder, f'{track}_{kind}.csv.gz')) for kind in SERVER_SENSES)):
+        return (policy, server_folder, track, server_line, tag), None
+    if track_data and (made_here or os.path.exists(os.path.join(track_data, track, f'{track}_fast_lane.ai'))):
+        return (policy, track_data, track, None, tag), None
+    where = (f"{track_data} has no {track} folder with its AI line ({track}_fast_lane.ai)" if track_data
+             else f"setup has no copy of {track}'s data")
+    return None, (f"{where}, and the server has no copy of its own, so it cannot work out each car's pace there. "
+                  "Setup makes that data itself when the server lacks it; if the server got it from elsewhere, "
+                  "pick the folder holding it (a folder per track) under Track files")
 
 
 def same_car_file(old_text, new_text, tag):
@@ -79,11 +89,32 @@ def measure_pace_scale(text, source):
     """The car file text with PACE_SCALE worked out on the track (drift_env.car_pace_scale: pace_model)."""
     import fast_sim as fs
     import drift_env as de
-    _policy, track_data, track, _pace, tag = source
-    world = fs.load_world(track_data, track=track)
+    _policy, track_data, track, server_line, tag = source
+    if server_line:
+        world = _server_world(track_data, track, server_line)
+    else:
+        world = fs.load_world(track_data, track=track)
     values = json.loads(text)
     values['PACE_SCALE'] = round(de.car_pace_scale([world], values), 4)
     values['_pace'] = tag
     values['_note'] = values['_note'].replace("PACE_SCALE 1 = not measured for this car",
                                               "PACE_SCALE: its speed on this track over the reference car's")
     return json.dumps(values, indent=1, sort_keys=True) + '\n'
+
+
+def _server_world(server_folder, track, server_line):
+    """The track as the server's bots see it (its AI line and track files), loaded from a scratch
+    copy laid out as a track data folder."""
+    import fast_sim as fs
+    tmp = tempfile.mkdtemp(prefix='gradientdrift-pace-')
+    try:
+        folder = os.path.join(tmp, track)
+        os.makedirs(folder)
+        shutil.copyfile(server_line, os.path.join(folder, f'{track}_fast_lane.ai'))
+        for name in [f'{kind}.csv.gz' for kind in SERVER_SENSES] + list(SERVER_EXTRAS):
+            there = os.path.join(server_folder, f'{track}_{name}')
+            if os.path.exists(there):
+                shutil.copyfile(there, os.path.join(folder, f'{track}_{name}'))
+        return fs.load_world(tmp, track=track)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
