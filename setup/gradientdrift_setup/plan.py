@@ -325,14 +325,6 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         if needs_line:
             p.notes.append(f"{where} has no AI line of its own: setup makes one from the recorded lap "
                            f"({os.path.basename(t.recorded)}) and puts it in the server")
-    # each car's pace scale is measured on the track's data in the track files (drift_rl/pace_model.py):
-    # a server that has its own copy (set up from another folder or computer) still needs one here
-    elif (inputs > 55 and paces and t is not None and t.exists and (t.ai_points >= 2 or t.recorded)
-          and not os.path.exists(os.path.join(home, server.track, f'{server.track}_fast_lane.ai'))):
-        p.changes.append(Change('(track data)', f"make {server.track}'s data from the game install into "
-                                f"{os.path.join(home, server.track)}, to work out each bot car's pace there (the "
-                                "server's own copy and AI line stay as they are); a few minutes",
-                                op=('track_data', t.folder, server.layout or '', home, server.track, '')))
     # the track's data is made per point of one AI line (setup_track.py saves it beside the data as
     # <track>_fast_lane.ai, rebuilt down the middle of the road if the game's needed it): the server
     # must run that line, or the course edges and pace reference do not fit it
@@ -590,9 +582,12 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     # an any-car policy (it reads the car inputs: more than 55) drives each bot with its own car's numbers
     if inputs > 55 and game:
         from .carfile import car_file_text, pace_source, same_car_file
-        # the track's data this run makes (or its pace reference, made from it) is there before the cars' scales
-        pace_made = any(c.op[:1] in (('track_data',), ('pace_reference',)) for c in p.changes)
-        source, why_not = pace_source(policy, home, server.folder, server.track, made_here=pace_made) \
+        # the track's data this run makes or puts in the server (its files, its AI line) is there
+        # before the cars' scales are worked out
+        pace_made = any(c.op[:1] in (('track_data',), ('pace_reference',))
+                        or (c.op[:1] == ('copy',) and (c.file in track_names or c.file == rel_ai)) for c in p.changes)
+        source, why_not = pace_source(policy, home, server.folder, server.track, made_here=pace_made,
+                                     server_line=server.server_ai_line()) \
             if paces else (None, None)
         if why_not:
             p.notes.append(f"the bots' cars keep PACE_SCALE 1 (each asked for the reference car's speed): {why_not}")
