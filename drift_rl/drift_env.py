@@ -99,7 +99,7 @@ CHASE_OBS_SLOT = OBS_SIZE_V5
 N_CHASE_OBS = 13
 CHASE_GAP_M = (0.5, 6.0)         # the asked gap, bumper to bumper, at chase_gap 0 and 1
 CHASE_DELAY_S = (0.04, 0.2)      # how old the lead's state is, drawn per episode (18 Hz updates, ping)
-CHASE_START_M = (3.0, 30.0)      # where the lead starts, ahead of the car's nose
+CHASE_START_M = (2.0, 15.0)      # where the lead starts, ahead of the car's nose
 CHASE_ROLL_S = 3.0               # the lead waits for the car to get going (it starts from rest)
 CHASE_LOST_M = -5.0              # a lead this far behind has been passed: dropped for the episode
 CHASE_HISTORY = 400              # ticks of the lead's past searched for where it passed a spot
@@ -341,8 +341,8 @@ class RewardConfig:
     # it passed this spot, free within chase_slip_free_deg, nothing past chase_slip_zero_deg, times
     # the drift quality; the line against the lead's there, the same with metres. Touching the lead
     # costs chase_contact_penalty and ends the episode.
-    chase_proximity_per_m: float = 0.5
-    chase_far_m: float = 20.0
+    chase_proximity_per_m: float = 1.0
+    chase_far_m: float = 10.0
     chase_angle_per_m: float = 0.25
     chase_slip_free_deg: float = 5.0
     chase_slip_zero_deg: float = 20.0
