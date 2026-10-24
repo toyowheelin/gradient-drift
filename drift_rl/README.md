@@ -101,7 +101,7 @@ python train_ppo_gpu.py --sim cpu --resume runs/mine/checkpoint.pt --steps 40000
 | `--pace 0.8 1.0 --pace-reference P` | paces (a share of each course's flat-out speed, as driven by policy P), for spacing bots |
 | `--car-pool cars/car_pool.json` | train on many cars (see [Cars](#cars)); `--car-exclude CAR` holds one out |
 | `--skill 0 1` | train the skill input (the plugin's `BotSkill`): 0 = careful, 1 = best |
-| `--chase 0.5` | (tandem branch, CPU simulator only) half the episodes chase a ghost leader, a recorded run replayed ahead of the car (`record_ghosts.py` makes them); `--chase-gap LOW HIGH` the asked gaps, `--chase-gap-anneal-ticks N` starting them in the top half of that range and widening it to LOW over N ticks. The plugin cannot drive such a policy yet |
+| `--chase 0.5` | (tandem branch, CPU simulator only) half the episodes chase a ghost leader, a recorded run replayed ahead of the car (`record_ghosts.py` makes them); `--chase-gap LOW HIGH` the asked gaps, `--chase-gap-anneal-ticks N` starting them in the top half of that range and widening it to LOW over N ticks. While chasing, the pace input comes from the Intelligent Driver Model (with the lead's plan for half the episodes, a bot lead), and the policy sees the lead's path 0.5, 1 and 2 s ahead. The plugin cannot drive such a policy yet |
 | `--reward NAME=VALUE` | changes one reward term (see `RewardConfig` in `drift_env.py`) |
 | `--reward-from runs/<run>/config.json` | starts from an earlier run's reward |
 | `--reward weave_penalty=5` | charges flicks the course does not ask for (weaving to shed speed) |

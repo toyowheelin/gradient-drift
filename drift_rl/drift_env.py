@@ -76,12 +76,14 @@ OBS_NAMES = (
     + ['lead_present', 'lead_gap/20', 'lead_gap_s', 'lead_fwd/20', 'lead_left/20', 'lead_closing/10',
        'lead_rel_heading/pi', 'lead_slip/(pi/2)', 'lead_yaw/2', 'lead_line/5', 'lead_line_here/5',
        'lead_slip_here/(pi/2)', 'chase_gap']
+    + ['lead_plan'] + [f'lead_{n}_{h:g}s' for h in (0.5, 1.0, 2.0) for n in ('gap/20', 'line/5', 'slip/(pi/2)')]
 )
 OBS_SIZE_V1 = 46                 # policies from before the course-room inputs read only the first 46
 OBS_SIZE_V2 = 52                 # ... and from before the pace and brake inputs, the first 52
 OBS_SIZE_V3 = 54                 # ... and from before the pace error input, the first 54
 OBS_SIZE_V4 = 55                 # ... and from before the car inputs, the first 55
 OBS_SIZE_V5 = 67                 # ... and from before the chase inputs, the first 67
+OBS_SIZE_V6 = 80                 # ... and from before the lead's path ahead, the first 80
 OBS_SIZE = len(OBS_NAMES)
 # The car (car_inputs()): what tells one car from another, each scaled to sit near 0 for a typical
 # drift car, from the same numbers the vehicle model drives with - so the plugin works them out
@@ -97,6 +99,15 @@ SKILL_OBS_SLOT = CAR_OBS_SLOT + N_CAR_OBS
 # slip angle there. chase_gap (0 - 1) is how close it is asked to run (CHASE_GAP_M).
 CHASE_OBS_SLOT = OBS_SIZE_V5
 N_CHASE_OBS = 13
+# The lead's path ahead (after GT Sophy's look-ahead in time, Wurman et al. 2022, and the TRI / Stanford
+# tandem cars sharing planned paths, 2024): lead_plan is 1 when the lead is a bot that hands over its
+# plan (CHASE_PLAN_SHARE), and for each of CHASE_PATH_AHEAD_S the lead's gap, line offset less this
+# car's and slip angle that far ahead. With a plan they are the lead's own; without (a player) they
+# are predicted the standard simple way: it keeps its speed along the line, its offset and its slip,
+# from the late state the plugin has.
+PLAN_OBS_SLOT = CHASE_OBS_SLOT + N_CHASE_OBS
+CHASE_PATH_AHEAD_S = (0.5, 1.0, 2.0)
+N_PLAN_OBS = 1 + 3 * len(CHASE_PATH_AHEAD_S)
 CHASE_GAP_M = (0.5, 6.0)         # the asked gap, bumper to bumper, at chase_gap 0 and 1
 CHASE_DELAY_S = (0.04, 0.2)      # how old the lead's state is, drawn per episode (18 Hz updates, ping)
 CHASE_START_M = (2.0, 15.0)      # where the lead pulls in, ahead of the car's nose
@@ -104,16 +115,27 @@ CHASE_JOIN_S = (1.0, 4.0)        # when it does, into the episode: the car is al
                                  # bot is when a player pulls in front of it
 CHASE_LOST_M = -5.0              # a lead this far behind has been passed: dropped for the episode
 CHASE_HISTORY = 400              # ticks of the lead's past searched for where it passed a spot
-# While chasing, the pace asked (the pace input and the pay for driving it) comes from the lead: its
-# speed along the line (over the last CHASE_LEAD_SPEED_TICKS samples) as a share of this car's
-# reference speed, plus CHASE_PACE_PER_M for each metre the gap is over the asked one (less for
-# under), held inside the pace range - so a lead too slow to drift at the bottom of it is caught and
-# passed. The plugin is to ask the same.
-CHASE_PACE_PER_M = 0.06
-# ... and the gap it goes by is the one CHASE_LOOKAHEAD_S ahead at the speed it is closing in: the
-# pace answers in about a second and a drifting lead can slow hard into a corner, so easing off only
-# once the gap is gone is too late.
-CHASE_LOOKAHEAD_S = 2.0
+# While chasing, the pace asked (the pace input and the pay for driving it) comes from the
+# Intelligent Driver Model (Treiber, Hennecke, Helbing 2000; https://traffic-simulation.de/info/info_IDM.html),
+# the standard car-following law of traffic simulation, in its cooperative form (CACC): the lead's
+# speed is the one it will have over the next CHASE_PREVIEW_S, known when the lead is a bot that hands
+# over its plan (as the TRI / Stanford autonomous tandem cars shared planned paths, 2024) and taken as
+# its present speed otherwise (a player). IDM's acceleration
+#   a = IDM_ACCEL * (1 - (v / v0)^4 - (s* / s)^2),  s* = ask + v * IDM_TIME_GAP_S + v * dv / (2 sqrt(IDM_ACCEL * IDM_BRAKE))
+# (s the gap, v this car's speed along the line, v0 its top pace's speed, dv the closing speed) is
+# turned into a speed IDM_RESPONSE_S ahead - about how long the policy takes to answer its pace - and
+# that into the pace, held inside the pace range, so a lead too slow to drift at the bottom of it is
+# caught and passed. The plugin is to ask the same.
+IDM_ACCEL = 4.0            # m/s^2
+IDM_BRAKE = 3.0            # m/s^2, a drift car scrubs speed with angle and the front brake
+IDM_TIME_GAP_S = 0.3       # CACC time gap with a known plan; a reactive follower needs about twice
+                           # (delay + lag) (Xiao, Darbha, Gao 2008), ~0.6 s here
+IDM_TIME_GAP_BLIND_S = 0.6
+IDM_RESPONSE_S = 1.0
+IDM_FREE_SPEED = 1.5        # v0 as a share of the top pace's speed: the pace range caps the speed, so IDM's
+                           # free-road easing must not hold the car back while it catches up
+CHASE_PREVIEW_S = 1.0
+CHASE_PLAN_SHARE = 0.5     # chase episodes whose lead hands over its plan (a bot), the rest a player
 CHASE_LEAD_SPEED_TICKS = 10
 # ghost columns (record_ghosts.py)
 GH_T, GH_X, GH_Z, GH_HEADING, GH_SLIP, GH_YAW, GH_SPEED, GH_ARC, GH_CTE = range(9)
@@ -155,7 +177,8 @@ NEW_INPUT_NORM = {'pace_fraction': (0.88, 0.1), 'pace/50': (1.0, 0.12), 'prev_ac
                   **{name: (0.0, 0.3) for name in OBS_NAMES[OBS_SIZE_V4:SKILL_OBS_SLOT]},
                   'skill': (0.6, 0.3),
                   **{name: (0.0, 0.5) for name in OBS_NAMES[CHASE_OBS_SLOT:CHASE_OBS_SLOT + N_CHASE_OBS - 1]},
-                  'chase_gap': (0.5, 0.3)}
+                  'chase_gap': (0.5, 0.3),
+                  **{name: (0.0, 0.5) for name in OBS_NAMES[PLAN_OBS_SLOT:PLAN_OBS_SLOT + N_PLAN_OBS]}}
 # steer, speed (pedal), and brake WITH the throttle (fast_sim.step_post): the third is used as
 # max(0, output), so an output at or below zero is no brake at all
 ACT_SIZE = 3
@@ -185,11 +208,12 @@ SLIDE_MIN_DEG, HIGH_ANGLE_MIN_DEG, SLIDE_MAX_DEG = 20.0, 40.0, 80.0
 # speed its pace asked for (pace x the course's reference speed where the car was), averaged the
 # same way (m/s), seconds since its last transition, and which way the course was turning there
 # (fast_sim co[:, 9]; 2 = no transition yet)]
-N_COUNTERS = 29       # ... [12, 13] the steering and pedal noise of a lower skill (SKILL_*), [14 - 19] its last two asked actions,
+N_COUNTERS = 30       # ... [12, 13] the steering and pedal noise of a lower skill (SKILL_*), [14 - 19] its last two asked actions,
 # [20 - 22] the way the car last rotated at swing_rate_degs or more (+1 / -1, 0 = not yet), seconds since, and which
 # way the course was turning there, [23 - 28] the chase: the lead's ghost (1 + its index; 0 = no lead), the ghost's
-# clock, its sample at that time, the asked gap (chase_gap), how late the lead is seen, and the gap last seen
-C_GHOST, C_GHOST_T, C_GHOST_K, C_CHASE_ASK, C_CHASE_DELAY, C_CHASE_GAP = range(23, 29)
+# clock, its sample at that time, the asked gap (chase_gap), how late the lead is seen, the gap last seen,
+# [29] 1 when the lead hands over its plan (a bot lead, CHASE_PLAN_SHARE)
+C_GHOST, C_GHOST_T, C_GHOST_K, C_CHASE_ASK, C_CHASE_DELAY, C_CHASE_GAP, C_CHASE_PLAN = range(23, 30)
 # a steering reversal for the statistics: the steering action turning back by more than this
 # (fraction of full lock) in one tick
 STEER_REVERSAL_MIN = 0.05
@@ -352,7 +376,9 @@ class RewardConfig:
     # nothing, so a lead too slow to drift behind is passed); the slip angle against the lead's where
     # it passed this spot, free within chase_slip_free_deg, nothing past chase_slip_zero_deg, times
     # the drift quality; the line against the lead's there, the same with metres. Touching the lead
-    # costs chase_contact_penalty and ends the episode.
+    # ends the episode and costs, as GT Sophy's contact terms do (Wurman et al., Nature 2022):
+    # chase_contact_penalty for any touch plus chase_rear_end_per_ms2 x the closing speed squared, so
+    # a rub at matched speed door to door costs little and running into the lead a lot.
     chase_proximity_per_m: float = 1.0
     chase_far_m: float = 10.0
     chase_angle_per_m: float = 0.25
@@ -361,7 +387,8 @@ class RewardConfig:
     chase_line_per_m: float = 0.15
     chase_line_free_m: float = 1.0
     chase_line_zero_m: float = 4.0
-    chase_contact_penalty: float = 10.0
+    chase_contact_penalty: float = 5.0
+    chase_rear_end_per_ms2: float = 1.0
 
     def vector(self):
         return np.array(list(asdict(self).values()), dtype=np.float64)
@@ -375,7 +402,7 @@ class RewardConfig:
  R_WRONG_SIDE, R_SIDE_CHANGE, R_PACE_OVER, R_PACE_MIN_PAY, R_PACE_AVG, R_PACE_UNDER, R_WEAVE,
  R_WEAVE_GAP, R_SWING, R_SWING_RATE, R_SWING_WINDOW, R_CHASE_PROX, R_CHASE_FAR, R_CHASE_ANGLE,
  R_CHASE_SLIP_FREE, R_CHASE_SLIP_ZERO, R_CHASE_LINE, R_CHASE_LINE_FREE, R_CHASE_LINE_ZERO,
- R_CHASE_CONTACT) = range(54)
+ R_CHASE_CONTACT, R_CHASE_REAR_END) = range(55)
 
 
 @dataclass
@@ -549,7 +576,7 @@ def build_obs(s, mid, prev_act, p, obs, sp_dir, la_idx, la_min_radius, co, pace_
     obs[k + 2] = max(-PACE_OVER_CLIP, min(PACE_OVER_CLIP, pace_over))
     car_inputs(p, obs, k + 3)
     obs[k + 3 + N_CAR_OBS] = p[fs.P_SKILL]
-    for j in range(N_CHASE_OBS):
+    for j in range(N_CHASE_OBS + N_PLAN_OBS):
         obs[CHASE_OBS_SLOT + j] = 0.0
 
 
@@ -723,6 +750,10 @@ def _chase_obs(s, c, obs, gh, gh_len, lap, dt, cte):
     if k < 0:
         return
     lx, lz, lh, ls, ly, lv, larc, lcte = _lead_state(gh, g, k, t, lap)
+    k0 = max(0, k - CHASE_LEAD_SPEED_TICKS)
+    lv_line = lv
+    if k > k0:
+        lv_line = _wrap_arc(gh[g, k, GH_ARC] - gh[g, k0, GH_ARC], lap) / max(gh[g, k, GH_T] - gh[g, k0, GH_T], 1e-3)
     gap = _wrap_arc(larc - s[S_ARC], lap) - CAR_FRONT_M - CAR_REAR_M
     closing = 0.0 if c[C_CHASE_GAP] < -1e8 else (c[C_CHASE_GAP] - gap) / max(dt, 1e-3)
     c[C_CHASE_GAP] = gap
@@ -746,6 +777,26 @@ def _chase_obs(s, c, obs, gh, gh_len, lap, dt, cte):
         obs[k0 + 10] = max(-3.0, min(3.0, (gh[g, j, GH_CTE] - cte) / 5.0))
         obs[k0 + 11] = gh[g, j, GH_SLIP] / (math.pi / 2)
     obs[k0 + 12] = c[C_CHASE_ASK]
+    kp = PLAN_OBS_SLOT
+    plan = c[C_CHASE_PLAN] > 0.0
+    obs[kp] = 1.0 if plan else 0.0
+    for m in range(3):
+        h = CHASE_PATH_AHEAD_S[m]
+        if plan:
+            tf = c[C_GHOST_T] + h
+            kf = _ghost_index(gh, g, gh_len[g], tf, int(c[C_GHOST_K]))
+            if kf < 0:
+                kf = gh_len[g] - 2
+                tf = gh[g, kf + 1, GH_T]
+            fx, fz, fh, fslip, fy, fv, farc, fcte = _lead_state(gh, g, kf, tf, lap)
+        else:
+            farc = larc + lv_line * (h + c[C_CHASE_DELAY])
+            fcte = lcte
+            fslip = ls
+        fgap = _wrap_arc(farc - s[S_ARC], lap) - CAR_FRONT_M - CAR_REAR_M
+        obs[kp + 1 + 3 * m] = max(-1.0, min(3.0, fgap / 20.0))
+        obs[kp + 2 + 3 * m] = max(-3.0, min(3.0, (fcte - cte) / 5.0))
+        obs[kp + 3 + 3 * m] = fslip / (math.pi / 2)
 
 
 @njit(cache=True)
@@ -798,6 +849,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     gap = 0.0
     lead_q = 0.0
     lead_v = 0.0
+    lead_v_ahead = 0.0
     here = -1
     g = int(counters[i, C_GHOST]) - 1
     if 0 <= g < gh_len.shape[0] and not math.isnan(s[S_ARC]):
@@ -821,6 +873,13 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
                 k0 = max(0, k - CHASE_LEAD_SPEED_TICKS)
                 if k > k0:
                     lead_v = _wrap_arc(gh[g, k, GH_ARC] - gh[g, k0, GH_ARC], lap) / max(gh[g, k, GH_T] - gh[g, k0, GH_T], 1e-3)
+                lead_v_ahead = lead_v
+                if counters[i, C_CHASE_PLAN] > 0.0:
+                    k1 = k
+                    while k1 + 1 < gh_len[g] and gh[g, k1, GH_T] < t_g + CHASE_PREVIEW_S:
+                        k1 += 1
+                    if k1 > k:
+                        lead_v_ahead = _wrap_arc(gh[g, k1, GH_ARC] - gh[g, k, GH_ARC], lap) / max(gh[g, k1, GH_T] - gh[g, k, GH_T], 1e-3)
 
     # ---- reward ----
     progress = max(-2.0, min(5.0, d[D_ProgressM]))
@@ -836,11 +895,18 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     # error it sees there read 27% slow (Black Cat County, 2026-10-19). The plugin's UpdatePaceOver
     # asks the same.
     ask = CHASE_GAP_M[0] + counters[i, C_CHASE_ASK] * (CHASE_GAP_M[1] - CHASE_GAP_M[0])
+    closing = 0.0
+    if chasing:
+        closing = progress / max(dt, 1e-3) - lead_v
     if chasing and pace > 0.0 and ref_kmh > 0.0:
-        closing = max(0.0, progress / max(dt, 1e-3) - lead_v)
-        lead_pace = (lead_v * 3.6 / min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6)
-                     + CHASE_PACE_PER_M * (gap - CHASE_LOOKAHEAD_S * closing - ask))
-        pace = max(env_cfg[13], min(env_cfg[14], lead_pace))
+        ref_ms = min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6) / 3.6
+        v = max(0.0, progress / max(dt, 1e-3))
+        v0 = max(1.0, IDM_FREE_SPEED * env_cfg[14] * ref_ms)
+        time_gap = IDM_TIME_GAP_S if counters[i, C_CHASE_PLAN] > 0.0 else IDM_TIME_GAP_BLIND_S
+        s_star = max(0.0, ask + v * time_gap + v * (v - lead_v_ahead) / (2.0 * math.sqrt(IDM_ACCEL * IDM_BRAKE)))
+        a_idm = IDM_ACCEL * (1.0 - (v / v0) ** 4 - (s_star / max(gap, 0.1)) ** 2)
+        a_idm = max(-3.0 * IDM_BRAKE, a_idm)
+        pace = max(env_cfg[13], min(env_cfg[14], (v + a_idm * IDM_RESPONSE_S) / ref_ms))
         s[fs.S_PACE] = pace
     asked_kmh = pace * min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6)
     paid_speed = asked_kmh if asked_kmh > 0.0 else rw[R_PAID_SPEED]
@@ -977,7 +1043,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
                 fit = 1.0 - max(0.0, line_diff - rw[R_CHASE_LINE_FREE]) / max(rw[R_CHASE_LINE_ZERO] - rw[R_CHASE_LINE_FREE], 1e-3)
                 r += rw[R_CHASE_LINE] * moved * max(0.0, fit)
         if contact:
-            r -= rw[R_CHASE_CONTACT]
+            r -= rw[R_CHASE_CONTACT] + rw[R_CHASE_REAR_END] * max(0.0, closing) ** 2
     front_over = abs(d[fs.D_FrontSlipAngleDeg]) - rw[R_FRONT_SLIP_FREE]
     if front_over > 0.0:
         r -= rw[R_FRONT_SLIP_PEN] * front_over
@@ -1435,6 +1501,7 @@ class DriftVecEnv:
             c[C_CHASE_ASK] = self.rng.uniform(self.cfg.chase_gap_low, self.cfg.chase_gap_high)
             c[C_CHASE_DELAY] = self.rng.uniform(*CHASE_DELAY_S)
             c[C_CHASE_GAP] = -1e9
+            c[C_CHASE_PLAN] = 1.0 if self.rng.random() < CHASE_PLAN_SHARE else 0.0
 
     def _rnd(self):
         """The step's uniforms; two more per car (the noise of a lower skill) only when skill is
