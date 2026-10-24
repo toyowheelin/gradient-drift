@@ -92,6 +92,12 @@ public class GradientDriftConfiguration
     // line every 60 s (unless LogTimingIntervalSeconds says otherwise). Off: warnings only.
     public bool VerboseLogging { get; set; } = false;
 
+    // Show each bot in game under its entry list DRIVERNAME (and this country code's flag, e.g.
+    // ITA; empty = none) instead of AssettoServer's "<NamePrefix> <slot>". A bot with no
+    // DRIVERNAME keeps AssettoServer's name.
+    public bool ShowEntryListNames { get; set; } = true;
+    public string BotNation { get; set; } = "";
+
     // Every this many seconds, a line in the server log with the time the plugin took on the
     // server's update thread: milliseconds a tick, split into the network, the sensors (rays,
     // ground and wall checks), telemetry and the tandem followers, the worst tick, and the share
@@ -324,6 +330,13 @@ public class GradientDriftConfiguration
     public float GroundRayStartAboveMeters { get; set; } = 1.5f;
     public float GroundRayMaxDistanceMeters { get; set; } = 6.0f;
     public float GroundRayHeightSmoothingFactor { get; set; } = 1.0f;
+    // The ground the car rides on is the straight line best fitting the ground this far ahead of
+    // and behind it along the way it is going, so bumps shorter than about twice this are
+    // smoothed out while hills are followed exactly. 0 = the ground straight below only.
+    public float RideHeightSpanMeters { get; set; } = 3.0f;
+    // Where the ray finds nothing (a crack in the ground mesh), the last height is held this long
+    // before the fallback below takes over.
+    public float GroundRayMissHoldSeconds { get; set; } = 0.5f;
 
     // Only when that ray finds no ground: the racing line's own height, blended toward the
     // nearest road-mesh point (plus RoadMeshHeightOffsetM) as the car gets between

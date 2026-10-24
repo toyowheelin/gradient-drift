@@ -82,6 +82,8 @@ stopped for 30 seconds, and a line when it moves again. Nothing while the bots d
 | `LogLearnedPolicyObservations` | `true` | Adds the network's inputs to every telemetry row (about 330 bytes a row). The check tools need them. |
 | `LogHumanCarForCalibration` | `false` | Adds the first connected player's car to the telemetry: position, steering, RPM, gear, throttle, wheel speeds. No name, IP or Steam ID. Used to compare the bots with a human driver. |
 | `VerboseLogging` | `false` | The plugin's routine lines as well: what it loaded, each setting the policy file brings, each bot car's numbers, spawns and placements, and the timing line every 60 s. Off, the log has warnings only. |
+| `ShowEntryListNames` | `true` | Show each bot in game under its entry list `DRIVERNAME` instead of AssettoServer's `<NamePrefix> <slot>` (`Traffic 16`). A bot with no `DRIVERNAME` keeps AssettoServer's name. |
+| `BotNation` | `""` | Country code shown with the bots' names (e.g. `ITA`); empty = none. |
 | `LogTimingIntervalSeconds` | `0` | Every this many seconds, a log line with how long the plugin took per server tick (network, sensors, telemetry, followers), the worst tick, and the share of one CPU core. 0 = off (every 60 s with `VerboseLogging`). |
 
 ## Developer settings
@@ -165,10 +167,12 @@ The policy reads these sensors' outputs directly, so their geometry has to match
 | `CarOutlineContact` | `false` | Policy file. Walls touch the car's own outline (a rectangle turned with its heading: each axle's distance from the centre plus `CarOutlineOverhangMeters`, half the wider track plus `CarOutlineSideMarginMeters`) instead of the contact distance's circle, so a sliding car's tail can't pass through a wall |
 | `CarOutlineOverhangMeters` | `0.8` | |
 | `CarOutlineSideMarginMeters` | `0.1` | |
-| `GroundRayHeightOffsetM` | `0.40` | Ride height above the ground found below the car |
+| `GroundRayHeightOffsetM` | `0.40` | Ride height above the ground found below the car. The bot drives and senses at this height; clients are sent each car at its own CG height (`CG_HEIGHT_M` in its car file) instead |
 | `GroundRayStartAboveMeters` | `1.5` | |
 | `GroundRayMaxDistanceMeters` | `6.0` | |
 | `GroundRayHeightSmoothingFactor` | `1.0` | |
+| `RideHeightSpanMeters` | `3.0` | The car rides on the straight line best fitting the ground this far ahead of and behind it along its path (27 points: 9 along each of its centre line and both sides): bumps shorter than about twice this smooth out, hills are followed exactly. `0` = the ground straight below only |
+| `GroundRayMissHoldSeconds` | `0.5` | Where the ground ray finds nothing (a crack in the track's ground mesh), the last height is held this long before the fallback below |
 | `RoadMeshHeightOffsetM` | `0.44` | Fallback height when the ground ray finds nothing |
 | `CrossTrackBlendStartM` | `5.0` | |
 | `CrossTrackBlendEndM` | `12.0` | |
