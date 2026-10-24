@@ -590,7 +590,8 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     # an any-car policy (it reads the car inputs: more than 55) drives each bot with its own car's numbers
     if inputs > 55 and game:
         from .carfile import car_file_text, pace_source, same_car_file
-        pace_made = any(c.op[:1] == ('pace_reference',) for c in p.changes)
+        # the track's data this run makes (or its pace reference, made from it) is there before the cars' scales
+        pace_made = any(c.op[:1] in (('track_data',), ('pace_reference',)) for c in p.changes)
         source, why_not = pace_source(policy, home, server.folder, server.track, made_here=pace_made) \
             if paces else (None, None)
         if why_not:
