@@ -104,7 +104,7 @@ def main(argv=None):
         c.add_argument('--pace', type=float, default=None, metavar='PERCENT',
                        help="the bots' pace, %% of the flat-out speed at each point of the lap (a policy trained with paces)")
         c.add_argument('--plugin', default=None, help="the folder with the plugin's build (GradientDriftPlugin.dll ...)")
-        c.add_argument('--track-data', default=None, help="the folder with the track's files (setup_track.py's output)")
+        c.add_argument('--track-data', default=None, help="a folder of track data you already have (a folder per track); leave out and setup makes it from the game")
         c.add_argument('--details', action='store_true', help='show each change as before / after')
         if name == 'apply':
             c.add_argument('--yes', action='store_true', help="don't ask")
