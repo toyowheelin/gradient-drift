@@ -25,7 +25,11 @@ jobs:
         run: dist/gradient-drift-setup/gradient-drift-setup.exe --help
       - name: smoke test (the walk-through starts, and stops cleanly when its input ends)
         shell: bash
-        run: echo | dist/gradient-drift-setup/gradient-drift-setup.exe walk | grep -q 'Where is Assetto Corsa installed'
+        run: |
+          # it exits 1 when its input ends (stopped before the end), so only its output is checked
+          echo | dist/gradient-drift-setup/gradient-drift-setup.exe walk > walk.txt || true
+          cat walk.txt
+          grep -q 'Where is Assetto Corsa installed' walk.txt
       - name: smoke test (the track tools it carries make a generated course's data)
         run: dist/gradient-drift-setup/gradient-drift-setup.exe selftest
       - name: the licences ship with it
@@ -62,7 +66,11 @@ jobs:
       - name: smoke test
         run: dist/gradient-drift-setup/gradient-drift-setup --help
       - name: smoke test (the walk-through starts, and stops cleanly when its input ends)
-        run: echo | dist/gradient-drift-setup/gradient-drift-setup walk | grep -q 'Where is Assetto Corsa installed'
+        run: |
+          # it exits 1 when its input ends (stopped before the end), so only its output is checked
+          echo | dist/gradient-drift-setup/gradient-drift-setup walk > walk.txt || true
+          cat walk.txt
+          grep -q 'Where is Assetto Corsa installed' walk.txt
       - name: smoke test (the track tools it carries make a generated course's data)
         run: dist/gradient-drift-setup/gradient-drift-setup selftest
       - name: the licences ship with it
