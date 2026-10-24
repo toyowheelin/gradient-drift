@@ -1,12 +1,15 @@
 """The Qt face of setup: the walk-through, one page per step. Everything it shows comes from the
 core (find, server, game, plan); this file only lays it out."""
+import contextlib
 import os
 import sys
+import threading
+import time
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QFont, QPalette
-from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
-                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea,
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
+                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QScrollArea,
                                QSizePolicy, QSpinBox, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
                                QWizard, QWizardPage)
 
@@ -34,6 +37,97 @@ def hint(text):
     label.setTextFormat(Qt.RichText)
     label.setForegroundRole(QPalette.PlaceholderText)
     return label
+
+
+class _Relay(QObject):
+    """Carries the worker's lines (and its end) to the window's thread."""
+    line = Signal(str, bool)        # the line, and whether it names a step
+    finished = Signal()
+
+
+class _Stream:
+    """stdout for the worker: each finished line goes to the progress window (the track tools print
+    their numbered steps)."""
+    def __init__(self, relay):
+        self.relay, self.buf = relay, ''
+
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            if line.strip():        # an unindented line is a step ("3. AI line"), an indented one its detail
+                self.relay.line.emit(line.strip(), not line[:1].isspace())
+        return len(text)
+
+    def flush(self):
+        pass
+
+
+class _BusyDialog(QDialog):
+    """The progress window: Esc and the close button do nothing while setup works."""
+    def reject(self):
+        pass
+
+
+def run_busy(parent, title, work):
+    """Runs work(log) off the window's thread behind a progress window: a moving bar, the step it is
+    on, the latest line and the time so far, so a few minutes of making track data does not look like
+    a hang. Returns (result, error, the lines logged); work's own prints count as lines."""
+    dlg = _BusyDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowCloseButtonHint & ~Qt.WindowContextHelpButtonHint)
+    dlg.setModal(True)
+    dlg.setMinimumWidth(520)
+    lay = QVBoxLayout(dlg)
+    step = QLabel('Starting')
+    step.setWordWrap(True)
+    font = step.font()
+    font.setBold(True)
+    step.setFont(font)
+    bar = QProgressBar()
+    bar.setRange(0, 0)              # no end known: the bar keeps moving while setup works
+    detail = hint('')
+    detail.setTextFormat(Qt.PlainText)
+    clock = hint('')
+    lay.addWidget(QLabel("Setup is working. Making a track's data takes a few minutes."))
+    lay.addWidget(step)
+    lay.addWidget(bar)
+    lay.addWidget(detail)
+    lay.addWidget(clock)
+    lines, out = [], {}
+    relay = _Relay()
+
+    def show(text, is_step):
+        if is_step:
+            step.setText(text)
+        detail.setText(text[:160])
+
+    relay.line.connect(show)
+    relay.finished.connect(dlg.accept)
+    t0 = time.time()
+    ticker = QTimer(dlg)
+    ticker.timeout.connect(lambda: clock.setText(f'{int(time.time() - t0)} s so far. Please leave this window open.'))
+    ticker.start(1000)
+
+    def log(line):
+        lines.append(line)
+        relay.line.emit(line.strip(), True)     # setup's own lines name what it is doing
+
+    def worker():
+        try:
+            with contextlib.redirect_stdout(_Stream(relay)):
+                out['result'] = work(log)
+        except Exception as e:      # shown by the caller
+            out['error'] = e
+        finally:
+            relay.finished.emit()
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    dlg.exec()
+    thread.join()
+    ticker.stop()
+    return out.get('result'), out.get('error'), lines
 
 
 class PathPicker(QWidget):
@@ -429,15 +523,10 @@ class ChangesPage(QWizardPage):
         box.exec()
         if box.clickedButton() is not go:
             return
-        done = []
-        QApplication.setOverrideCursor(Qt.WaitCursor)     # making a track's data takes a few minutes
-        try:
-            backup = apply_plan(plan, log=done.append)
-        except Exception as e:
-            QMessageBox.critical(self, 'Nothing was changed', f'{type(e).__name__}: {e}')
+        _, error, done = run_busy(self, 'Making the changes', lambda log: apply_plan(plan, log=log))
+        if error:
+            QMessageBox.critical(self, 'Nothing was changed', f'{type(error).__name__}: {error}')
             return
-        finally:
-            QApplication.restoreOverrideCursor()
         QMessageBox.information(self, 'Done', '\n'.join(done) + f'\n\nRestart the server for the changes to take effect.')
         self.state['server'] = read_server(plan.server.folder)
         self.initializePage()
@@ -448,19 +537,15 @@ class ChangesPage(QWizardPage):
         out = QFileDialog.getExistingDirectory(self, 'An empty folder for the files to upload')
         if not out:
             return
-        done = []
-        QApplication.setOverrideCursor(Qt.WaitCursor)     # making a track's data takes a few minutes
-        try:
-            plan, files = export_server(st['server'].folder, os.path.normpath(out), st['game'], log=done.append,
-                                        slots=st.get('slots'), bots=st['bots'], bot_name=st['bot_name'],
-                                        plugin_source=self.plugin.value() or None,
-                                        track_data=self.track_data.value() or None,
-                                        train_size=st.get('train_size'), pace_percent=st.get('pace_percent'))
-        except Exception as e:
-            QMessageBox.critical(self, 'Nothing was exported', f'{type(e).__name__}: {e}')
+        plugin, track_data = self.plugin.value() or None, self.track_data.value() or None
+        result, error, _ = run_busy(self, 'Exporting', lambda log: export_server(
+            st['server'].folder, os.path.normpath(out), st['game'], log=log, slots=st.get('slots'), bots=st['bots'],
+            bot_name=st['bot_name'], plugin_source=plugin, track_data=track_data,
+            train_size=st.get('train_size'), pace_percent=st.get('pace_percent')))
+        if error:
+            QMessageBox.critical(self, 'Nothing was exported', f'{type(error).__name__}: {error}')
             return
-        finally:
-            QApplication.restoreOverrideCursor()
+        plan, files = result
         if files is None:
             QMessageBox.warning(self, 'Nothing was exported', '\n'.join(plan.blockers) or 'The server needs no changes.')
             return
