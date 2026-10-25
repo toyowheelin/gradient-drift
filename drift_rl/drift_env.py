@@ -252,7 +252,7 @@ SLIDE_MIN_DEG, HIGH_ANGLE_MIN_DEG, SLIDE_MAX_DEG = 20.0, 40.0, 80.0
 # speed its pace asked for (pace x the course's reference speed where the car was), averaged the
 # same way (m/s), seconds since its last transition, and which way the course was turning there
 # (fast_sim co[:, 9]; 2 = no transition yet)]
-N_COUNTERS = 32       # ... [12, 13] the steering and pedal noise of a lower skill (SKILL_*), [14 - 19] its last two asked actions,
+N_COUNTERS = 33       # ... [12, 13] the steering and pedal noise of a lower skill (SKILL_*), [14 - 19] its last two asked actions,
 # [20 - 22] the way the car last rotated at swing_rate_degs or more (+1 / -1, 0 = not yet), seconds since, and which
 # way the course was turning there, [23 - 28] the chase: the lead's ghost (1 + its index; 0 = no lead), the ghost's
 # clock, its sample at that time, the asked gap (chase_gap), how late the lead is seen, the gap last seen,
@@ -260,6 +260,8 @@ N_COUNTERS = 32       # ... [12, 13] the steering and pedal noise of a lower ski
 C_GHOST, C_GHOST_T, C_GHOST_K, C_CHASE_ASK, C_CHASE_DELAY, C_CHASE_GAP, C_CHASE_PLAN = range(23, 30)
 # [30, 31] the lead's mistake (CHASE_SCENARIOS): when it starts, episode seconds, and how long it lasts (0 = none)
 C_MISTAKE_AT, C_MISTAKE_LEN = 30, 31
+# [32] how far the gap was from the gap paid for last tick (chase_gain_per_m; -1 = not yet)
+C_CHASE_OFF = 32
 # a steering reversal for the statistics: the steering action turning back by more than this
 # (fraction of full lock) in one tick
 STEER_REVERSAL_MIN = 0.05
@@ -435,6 +437,19 @@ class RewardConfig:
     chase_line_zero_m: float = 4.0
     chase_contact_penalty: float = 5.0
     chase_rear_end_per_ms2: float = 1.0
+    # per metre the gap comes closer to the gap paid for, and charged the same per metre it drifts
+    # away: GT Sophy's passing reward (Wurman et al. 2022: 0.5 per metre gained on a car near ahead,
+    # the same lost), aimed at the chase slot. A difference of a distance (potential-based shaping, Ng,
+    # Harada, Russell 1999), so it adds no loop to exploit and does not move what is best; it tells the
+    # chaser at once which way is better. 0 = off.
+    chase_gain_per_m: float = 0.0
+    # The chase pays above are scaled by both cars' drift quality, a slip-angle band that falls to
+    # nothing as the slip passes through zero - at every transition, where chasing is hardest. TRI
+    # (RL drifting, arXiv 2410.20990) leave slip out of their drift reward for that reason and Deep Drifting
+    # (Domberg et al., ICRA 2022) traced its late, over-corrected switches to its slip-band reward.
+    # 1 = through the lead's transitions (the breathing window, CHASE_BREATHE_*) the chase pays count
+    # both cars as drifting; 0 = as before.
+    chase_transition_pay: float = 0.0
 
     def vector(self):
         return np.array(list(asdict(self).values()), dtype=np.float64)
@@ -448,7 +463,7 @@ class RewardConfig:
  R_WRONG_SIDE, R_SIDE_CHANGE, R_PACE_OVER, R_PACE_MIN_PAY, R_PACE_AVG, R_PACE_UNDER, R_WEAVE,
  R_WEAVE_GAP, R_SWING, R_SWING_RATE, R_SWING_WINDOW, R_CHASE_PROX, R_CHASE_FAR, R_CHASE_ANGLE,
  R_CHASE_SLIP_FREE, R_CHASE_SLIP_ZERO, R_CHASE_LINE, R_CHASE_LINE_FREE, R_CHASE_LINE_ZERO,
- R_CHASE_CONTACT, R_CHASE_REAR_END) = range(55)
+ R_CHASE_CONTACT, R_CHASE_REAR_END, R_CHASE_GAIN, R_CHASE_SWITCH_PAY) = range(57)
 
 
 @dataclass
@@ -1210,15 +1225,23 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
             near_pay = max(0.0, 1.0 - max(0.0, gap - target - 0.5) / rw[R_CHASE_FAR])
         in_band = abs(gap - target) <= 1.0
         moved = max(paid, 0.0)
-        r += rw[R_CHASE_PROX] * moved * q * lead_q * near_pay
+        q_c = q
+        if rw[R_CHASE_SWITCH_PAY] > 0.0:
+            q_c = max(q, breathe)
+            lead_q = max(lead_q, breathe)
+        r += rw[R_CHASE_PROX] * moved * q_c * lead_q * near_pay
         if here >= 0:
             slip_diff = abs(slip_signed - gh[g, here, GH_SLIP] * (180.0 / math.pi))
             line_diff = abs(d[D_CrossTrackErrorM] - (gh[g, here, GH_CTE] + CHASE_INSIDE_M * inside))
             if near_pay > 0.0:
                 fit = 1.0 - max(0.0, slip_diff - rw[R_CHASE_SLIP_FREE]) / max(rw[R_CHASE_SLIP_ZERO] - rw[R_CHASE_SLIP_FREE], 1e-3)
-                r += rw[R_CHASE_ANGLE] * moved * q * max(0.0, fit)
+                r += rw[R_CHASE_ANGLE] * moved * q_c * max(0.0, fit)
                 fit = 1.0 - max(0.0, line_diff - rw[R_CHASE_LINE_FREE]) / max(rw[R_CHASE_LINE_ZERO] - rw[R_CHASE_LINE_FREE], 1e-3)
                 r += rw[R_CHASE_LINE] * moved * max(0.0, fit)
+        off = abs(gap - target)
+        if rw[R_CHASE_GAIN] > 0.0 and counters[i, C_CHASE_OFF] >= 0.0:
+            r += rw[R_CHASE_GAIN] * (counters[i, C_CHASE_OFF] - off)
+        counters[i, C_CHASE_OFF] = off
         if contact:
             r -= rw[R_CHASE_CONTACT] + rw[R_CHASE_REAR_END] * max(0.0, closing) ** 2
     front_over = abs(d[fs.D_FrontSlipAngleDeg]) - rw[R_FRONT_SLIP_FREE]
@@ -1767,6 +1790,7 @@ class DriftVecEnv:
             c[C_CHASE_PLAN] = 1.0 if self.rng.random() < CHASE_PLAN_SHARE else 0.0
             c[C_MISTAKE_AT] = 0.0
             c[C_MISTAKE_LEN] = 0.0
+            c[C_CHASE_OFF] = -1.0
             if scenario == 3:
                 c[C_MISTAKE_AT] = self.ep[i, E_TIME_S] + self.rng.uniform(*CHASE_MISTAKE_AFTER_S)
                 c[C_MISTAKE_LEN] = self.rng.uniform(*CHASE_MISTAKE_S)
