@@ -26,7 +26,7 @@ import json
 import os
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import numpy as np
 import track_files as tf
@@ -467,7 +467,10 @@ def main():
         sys.exit('--residual needs --init-policy (the frozen network) and --chase')
     res = mlp(de.ACT_SIZE, 0.01, args.residual) if args.residual else None
     gate_slot = de.CHASE_OBS_SLOT            # lead_present, raw 0 / 1
-    trained = (list(res.parameters()) if res is not None else list(pi.parameters())) + list(vf.parameters()) + [log_std]
+    # with a residual the exploration noise stays where it starts: solo ticks give the entropy bonus a
+    # free hand to widen it (the frozen network cannot answer), and the chase add-on then trains
+    # under ever more noise (std of the brake 0.16 -> 0.35 in 10M ticks, chase_debug1)
+    trained = (list(res.parameters()) if res is not None else list(pi.parameters()) + [log_std]) + list(vf.parameters())
     opt = torch.optim.Adam(trained, lr=args.lr, eps=1e-5)
 
     def actor(x, lead):
@@ -760,6 +763,8 @@ def main():
 
     per_track = {}
 
+    last_chase = {}
+
     def evaluate_now():
         nonlocal best_eval, last_eval
         policy = make_policy()
@@ -768,6 +773,18 @@ def main():
             ev = de.evaluate(w, policy, episodes, seed=999, env_config=env_cfg, reward_config=rew_cfg)
             per_track[name] = {k: float(ev[k].mean()) for k in EVAL_KEYS}
         last_eval = {k: float(np.mean([v[k] for v in per_track.values()])) for k in EVAL_KEYS}
+        if args.chase > 0.0:
+            # chase episodes only, at the whole --chase-gap range (what chase_report.py shows)
+            name, w = eval_worlds[0]
+            ev = de.evaluate(w, policy, episodes, seed=998, env_config=replace(env_cfg, chase_share=1.0),
+                             reward_config=rew_cfg)
+            had = ev['chase_fraction'] > 0
+            wt = ev['chase_fraction'][had] * ev['length'][had]
+            cmean = lambda k: float(np.sum(ev[k][had] * wt) / max(np.sum(wt), 1e-9))
+            last_chase.update({'return': float(np.mean(ev['return'][had])) if had.any() else float('nan'),
+                               'gap': cmean('chase_mean_gap_m'), 'in_band': cmean('chase_in_band_fraction'),
+                               'hits': float(np.mean(ev['end_reason'][had] == 6)) if had.any() else 0.0,
+                               'slip': cmean('chase_slip_diff_deg'), 'line': cmean('chase_line_diff_m')})
         if last_eval['return'] > best_eval:
             best_eval = last_eval['return']
             policy.meta['eval'] = last_eval
@@ -917,6 +934,9 @@ def main():
                       f"braking {last_eval['brake_fraction']:.2f}"
                       + (f"  pace-error {last_eval['pace_abs_error_pct']:.1f}% (signed {last_eval['pace_error_pct']:+.1f}%)"
                          if pace_range != (0.0, 0.0) else "")
+                      + (f"  | chase return {last_chase['return']:.1f} gap {last_chase['gap']:.1f}m "
+                         f"in-band {last_chase['in_band']:.0%} hits {last_chase['hits']:.1%} "
+                         f"slip-diff {last_chase['slip']:.1f} line-diff {last_chase['line']:.2f} |" if last_chase else "")
                       + f"  kl {mean_kl:.4f}  lr {lr:.1e}  "
                       f"std {row['std_steer']:.2f}/{row['std_speed']:.2f}/{row['std_brake']:.2f}"
                       + (f"  | training cars: grip {grip_low_now():.2f}-{grip_range[1]:.2f}"

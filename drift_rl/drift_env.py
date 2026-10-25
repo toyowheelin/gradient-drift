@@ -128,9 +128,9 @@ CHASE_HISTORY = 400              # ticks of the lead's past searched for where i
 # caught and passed. The plugin is to ask the same.
 IDM_ACCEL = 4.0            # m/s^2
 IDM_BRAKE = 3.0            # m/s^2, a drift car scrubs speed with angle and the front brake
-IDM_TIME_GAP_S = 0.3       # CACC time gap with a known plan; a reactive follower needs about twice
+IDM_TIME_GAP_S = 0.1       # CACC time gap with a known plan; a reactive follower needs about twice
                            # (delay + lag) (Xiao, Darbha, Gao 2008), ~0.6 s here
-IDM_TIME_GAP_BLIND_S = 0.6
+IDM_TIME_GAP_BLIND_S = 0.3
 IDM_RESPONSE_S = 1.0
 IDM_FREE_SPEED = 1.5        # v0 as a share of the top pace's speed: the pace range caps the speed, so IDM's
                            # free-road easing must not hold the car back while it catches up
@@ -370,7 +370,7 @@ class RewardConfig:
     swing_rate_degs: float = 60.0
     swing_window_s: float = 2.0
     # TANDEM (chase episodes, EnvConfig.chase_share; drift_rl TANDEM design): while there is a car
-    # ahead, the pace asked follows it (CHASE_PACE_PER_M) and, per metre of
+    # ahead, the pace asked comes from the IDM (its pay cut and cap are off) and, per metre of
     # progress: proximity, paid at the asked gap (chase_gap), falling to nothing at no gap and
     # chase_far_m past it, times this car's drift quality and the lead's (following in grip pays
     # nothing, so a lead too slow to drift behind is passed); the slip angle against the lead's where
@@ -909,7 +909,10 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         pace = max(env_cfg[13], min(env_cfg[14], (v + a_idm * IDM_RESPONSE_S) / ref_ms))
         s[fs.S_PACE] = pace
     asked_kmh = pace * min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6)
-    paid_speed = asked_kmh if asked_kmh > 0.0 else rw[R_PAID_SPEED]
+    # while chasing, the asked speed is the IDM's suggestion to the frozen driver, not a target the
+    # pay holds the car to: closing in past it is what the chase pay is for (chase_debug2 held ~9 m,
+    # the IDM's own gap, because the pace pay charged every metre closer)
+    paid_speed = asked_kmh if asked_kmh > 0.0 and not chasing else rw[R_PAID_SPEED]
     paid = progress
     if paid_speed > 0.0:
         paid = min(progress, paid_speed / 3.6 * dt)
@@ -926,7 +929,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         counters[i, 9] += (asked_kmh / 3.6 - counters[i, 9]) * k_avg
     pace_over = counters[i, 8] / counters[i, 9] - 1.0 if counters[i, 9] > 0.5 else 0.0    # share too fast
     pay = 1.0           # share of the driving pay this tick earns
-    if asked_kmh > 0.0 and pace_over != 0.0:
+    if asked_kmh > 0.0 and pace_over != 0.0 and not chasing:
         cut = rw[R_PACE_OVER] if pace_over > 0.0 else rw[R_PACE_UNDER]
         pay = max(rw[R_PACE_MIN_PAY], 1.0 - (1.0 - rw[R_PACE_MIN_PAY]) * abs(pace_over) / max(cut, 1e-3))
     r = pay * rw[R_PROGRESS_W] * paid * (rw[R_GRIP_FRAC] + (1.0 - rw[R_GRIP_FRAC]) * q)
@@ -1394,7 +1397,9 @@ class DriftVecEnv:
         self.world = world
         self.W = world.arrays()
         self.n = n_envs
-        self.cfg = env_config or EnvConfig()
+        # its own copy: the trainer walks some settings (set_chase_gap_low) and must not move the
+        # evaluation's with them
+        self.cfg = replace(env_config) if env_config is not None else EnvConfig()
         self.rcfg = reward_config or RewardConfig()
         if self.rcfg.wall_proximity_distance_m > fs.WALL_PROXIMITY_RANGE_M:
             raise ValueError(f"wall_proximity_distance_m above fast_sim.WALL_PROXIMITY_RANGE_M ({fs.WALL_PROXIMITY_RANGE_M} m)")
