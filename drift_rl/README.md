@@ -104,6 +104,7 @@ python train_ppo_gpu.py --sim cpu --resume runs/mine/checkpoint.pt --steps 40000
 | `--reward NAME=VALUE` | changes one reward term (see `RewardConfig` in `drift_env.py`) |
 | `--reward-from runs/<run>/config.json` | starts from an earlier run's reward |
 | `--reward weave_penalty=5` | charges flicks the course does not ask for (weaving to shed speed) |
+| `--reward tyre_energy_per_m=1.4 --reward slip_band_pay=0 --reward chain_bonus_per_m=0` | pays the rear tyres' sliding work instead of a slip-angle band and the linked-drift bonus. Being tried, not yet used for the shipped policy |
 | `--reward swing_penalty=4` | charges reversals of the rotation the course does not ask for (swinging the angle to shed speed) |
 | `--envs N` | trades ticks per second against learning per tick |
 

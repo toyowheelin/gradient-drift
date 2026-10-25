@@ -304,6 +304,16 @@ class RewardConfig:
     swing_penalty: float = 0.0
     swing_rate_degs: float = 60.0
     swing_window_s: float = 2.0
+    # TYRE ENERGY (Djeumou et al., "Reference-Free Formula Drift with Reinforcement Learning",
+    # Toyota Research Institute, 2024, https://arxiv.org/abs/2410.20990): pays the work the rear
+    # tyres do sliding - their sideways force (a share of the axle's load) times the rear axle's
+    # sideways speed over the car's speed - per metre of paid progress, instead of a slip-angle
+    # band. An angle reward has to pass through zero at every transition, so it fights them; the
+    # rear tyres' work does not care which way they slide. 0 = off. slip_band_pay scales the
+    # slip-band share of the progress pay (1 = as always, 0 = the band is gone, only the grip
+    # share is paid).
+    tyre_energy_per_m: float = 0.0
+    slip_band_pay: float = 1.0
 
     def vector(self):
         return np.array(list(asdict(self).values()), dtype=np.float64)
@@ -315,7 +325,7 @@ class RewardConfig:
  R_MARKER_HIT, R_CHAIN_BONUS, R_CHAIN_SLIP, R_CHAIN_GRACE, R_CHAIN_FULL, R_PAID_SPEED,
  R_ZONE_BONUS, R_ZONE_DEPTH, R_ZONE_REACH, R_STEER_REVERSAL, R_FRONT_SLIP_PEN, R_FRONT_SLIP_FREE,
  R_WRONG_SIDE, R_SIDE_CHANGE, R_PACE_OVER, R_PACE_MIN_PAY, R_PACE_AVG, R_PACE_UNDER, R_WEAVE,
- R_WEAVE_GAP, R_SWING, R_SWING_RATE, R_SWING_WINDOW) = range(45)
+ R_WEAVE_GAP, R_SWING, R_SWING_RATE, R_SWING_WINDOW, R_TYRE_ENERGY, R_SLIP_BAND_PAY) = range(47)
 
 
 @dataclass
@@ -647,7 +657,11 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     if asked_kmh > 0.0 and pace_over != 0.0:
         cut = rw[R_PACE_OVER] if pace_over > 0.0 else rw[R_PACE_UNDER]
         pay = max(rw[R_PACE_MIN_PAY], 1.0 - (1.0 - rw[R_PACE_MIN_PAY]) * abs(pace_over) / max(cut, 1e-3))
-    r = pay * rw[R_PROGRESS_W] * paid * (rw[R_GRIP_FRAC] + (1.0 - rw[R_GRIP_FRAC]) * q)
+    r = pay * rw[R_PROGRESS_W] * paid * (rw[R_GRIP_FRAC] + (1.0 - rw[R_GRIP_FRAC]) * q * rw[R_SLIP_BAND_PAY])
+    if rw[R_TYRE_ENERGY] > 0.0 and paid > 0.0:
+        rear_slide = abs(s[S_LATV] - p[fs.P_DIST_CG_REAR_M] * s[S_YAW])
+        speed = math.sqrt(s[S_OWN_SPEED] ** 2 + s[S_LATV] ** 2)
+        r += pay * rw[R_TYRE_ENERGY] * paid * d[fs.D_RearForceShare] * rear_slide / max(speed, 3.0)
     push = d[D_CollisionPushOutM]
     if push > 0.0:
         r -= rw[R_PUSH_FLAT] + rw[R_PUSH_M] * min(push, 3.0)

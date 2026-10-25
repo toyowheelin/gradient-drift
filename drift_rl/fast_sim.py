@@ -167,6 +167,7 @@ _DNAMES = [
     # plugin mechanisms and reward signals
     'NearestPointGlitchCorrected', 'UncontrolledSpinRecovering', 'CollisionPushOutM', 'ProgressM',
     'SurfaceUnderCar', 'MinWallDistanceM', 'Vx', 'Vz', 'RealSlipAngleRad',
+    'RearForceShare',       # the rear axle's sideways force over its load (the reward's tyre energy)
 ]
 D = {name: i for i, name in enumerate(_DNAMES)}
 DIAG_SIZE = len(_DNAMES)
@@ -1561,6 +1562,7 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
     diag[D_RearSlipAngleDeg] = math.degrees(rear_slip)
     diag[D_FrontSaturation] = front_sat
     diag[D_RearSaturation] = rear_sat
+    diag[D_RearForceShare] = abs(fy_r) / rear_load if rear_load > 1e-4 else 0.0
     diag[D_SteerSaturated] = 1.0 if abs(abs(steer_cmd) - max_steer) < 1e-6 else 0.0
     diag[D_NearestPointId] = nearest
     diag[D_Radius] = radius

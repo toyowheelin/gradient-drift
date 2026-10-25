@@ -89,4 +89,8 @@ AGPL-3.0 program carry the work, given the notices.
   D1 Grand Prix's scoring criteria.
 * Cai et al., "High-speed Autonomous Drifting with Deep Reinforcement Learning", 2020 (reward
   ideas); the analysis of Ken Gushi's drift in Stanford's MARTY (what a held drift looks like).
+* Djeumou, Thompson, Suminaka and Subosits, "Reference-Free Formula Drift with Reinforcement
+  Learning: From Driving Data to Tire Energy-Inspired, Real-World Policies", Toyota Research
+  Institute, 2024, <https://arxiv.org/abs/2410.20990> - paying the rear tyres' sliding work
+  instead of a slip angle (the reward's `tyre_energy_per_m`).
 
