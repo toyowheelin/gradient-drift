@@ -60,6 +60,12 @@ public class GradientDriftConfiguration
     // 40 m; further back, spacing as usual. A policy that reads its pace only.
     public bool LeadPlayers { get; set; } = false;
 
+    // Tandem with a bot chasing a player: a player who pulls in within ChaseOptInMeters ahead of a
+    // bot's nose is chased until they get ChaseOptOutMeters ahead. The bot's pace comes from the
+    // Intelligent Driver Model, aiming ChaseGapMeters behind them. A policy that reads its pace only.
+    public bool ChasePlayers { get; set; } = false;
+    public float ChaseGapMeters { get; set; } = 2f;
+
     // Tandem trains: bots in order of their entry, this many to a train. The first of each train is
     // driven by the policy; the others replay what it sent a moment earlier (TandemTrains.cs), so
     // they follow its line exactly. 1 = every bot drives alone. With HoldBotSpacing the trains are

@@ -72,6 +72,12 @@ internal sealed class DriftCarState
     public float Pace;
     // LeadPlayers: a player is chasing this car, and its pace waits for them.
     public bool LeadingPlayer;
+    // ChasePlayers: this car is chasing a player ahead; its pace comes from the IDM.
+    public bool ChasingPlayer;
+    // Its speed along the line last tick, and the speed a pace of 1 asks there (the course's
+    // reference, held to the car's limit), m/s: the IDM works in speeds.
+    public float LineSpeedMs;
+    public float PaceOneMs;
 
     // The wandering noise of a driver below full skill (BotSkill): steering and pedal.
     public float SkillNoiseSteer;
