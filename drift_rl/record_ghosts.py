@@ -6,7 +6,8 @@ training (drift_env chase episodes replay one ahead of the training car).
 
 Each car drives one long server-like run (server_run_configs) at a pace from --paces and a skill
 from --skills; its ticks after the first --skip become one ghost: per tick the time, position,
-heading, rear slip angle, yaw rate, speed, place along the line and offset from it. Written to
+heading, rear slip angle, yaw rate, speed, place along the line, offset from it, and its steering
+angle, pedal and brake. Written to
 the track's folder as <track>_ghosts.npz.
 """
 import argparse
@@ -58,6 +59,9 @@ def main():
                 rows[k, :, de.GH_SPEED] = d[:, fs.D_SpeedKmh] / 3.6
                 rows[k, :, de.GH_ARC] = s[:, fs.S_ARC]
                 rows[k, :, de.GH_CTE] = d[:, fs.D_CrossTrackErrorM]
+                rows[k, :, de.GH_STEER] = s[:, fs.S_LAST_STEER]
+                rows[k, :, de.GH_PEDAL] = env.prev_act[:, 1]
+                rows[k, :, de.GH_BRAKE] = env.prev_act[:, 2]
             for c in range(args.cars):
                 g = rows[args.skip:, c].copy()
                 g[:, de.GH_T] -= g[0, de.GH_T]
