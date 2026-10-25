@@ -148,6 +148,13 @@ def main():
     ap.add_argument('--chase-gap-anneal-ticks', type=int, default=0,
                     help='with --chase: start the asked gaps in the top half of --chase-gap and lower the bottom to '
                          'LOW over this many ticks (0 = the whole range from the start)')
+    ap.add_argument('--chase-scenarios', action='store_true',
+                    help='with --chase: start some chase episodes in hard situations (drift_env CHASE_SCENARIOS: '
+                         'catch-ups, alongside into a transition, a lead mistake), as GT Sophy trained')
+    ap.add_argument('--privileged-critic', action='store_true',
+                    help='with --chase: the value network also reads what the simulator knows and the policy does '
+                         'not (drift_env PRIV_NAMES: the lead with no delay, the breathing gap, its true path ahead); '
+                         'asymmetric actor-critic, training only')
     ap.add_argument('--skill', type=float, nargs=2, default=None, metavar=('LOW', 'HIGH'),
                     help='train the skill input (drift_env SKILL_*): each episode a skill drawn from LOW - HIGH '
                          '(0 = a driver allowed out with others, 1 = the best it can do)')
@@ -395,12 +402,16 @@ def main():
             sys.exit("chase episodes run on the CPU simulator only for now: add --sim cpu")
         env_cfg.chase_share = args.chase
         env_cfg.chase_gap_low, env_cfg.chase_gap_high = args.chase_gap
+        env_cfg.chase_scenarios = args.chase_scenarios
+        env_cfg.privileged = args.privileged_critic
         for t, w in zip(tracks, worlds):
             w.ghosts = de.load_ghosts(args.tracks, t)
             if w.ghosts is None:
                 sys.exit(f"--chase: no ghosts for {t}; make them with record_ghosts.py --track {t}")
         print(f"chase: {args.chase:.0%} of episodes behind a ghost leader ({', '.join(f'{t} {len(w.ghosts)}' for t, w in zip(tracks, worlds))}), "
               f"asked gap {args.chase_gap[0]:g} - {args.chase_gap[1]:g}", flush=True)
+    if (args.chase_scenarios or args.privileged_critic) and args.chase <= 0.0:
+        sys.exit('--chase-scenarios and --privileged-critic need --chase')
     if args.skill:
         env_cfg.skill_low, env_cfg.skill_high = args.skill
         print(f"skill: {args.skill[0]:g} - {args.skill[1]:g} per episode, shown to the policy (input {de.SKILL_OBS_SLOT})")
@@ -440,9 +451,9 @@ def main():
     print(f"simulator: {sim.upper()} ({n_envs} cars)   network: {dev.type.upper()}   GPU: {gpu_name}", flush=True)
 
     # ---- networks ----
-    def mlp(out, out_gain, hidden=None):
+    def mlp(out, out_gain, hidden=None, n_in=de.OBS_SIZE):
         hidden = hidden or args.hidden
-        layers, last = [], de.OBS_SIZE
+        layers, last = [], n_in
         for _ in range(2):
             lin = nn.Linear(last, hidden)
             nn.init.orthogonal_(lin.weight, 2 ** 0.5)
@@ -455,7 +466,13 @@ def main():
         return nn.Sequential(*layers, lin).to(dev)
 
     pi = mlp(de.ACT_SIZE, 0.01)            # starts ~0 = the existing controller
-    vf = mlp(1, 1.0)
+    # the value network: with --privileged-critic it also reads drift_env.PRIV_NAMES (already scaled to
+    # about +-1), the policy never does
+    n_priv = de.N_PRIV if args.privileged_critic else 0
+    vf = mlp(1, 1.0, n_in=de.OBS_SIZE + n_priv)
+
+    def value(x, pv):
+        return vf(torch.cat([x, pv], dim=1) if n_priv else x)[:, 0]
     # A policy loaded with --init-policy already drives well: explore gently around it (std 0.1)
     # rather than with the from-scratch noise, which would undo it within a few updates.
     init_log_std = args.init_log_std if args.init_log_std is not None else (-2.3 if args.init_policy else -1.2)
@@ -512,6 +529,9 @@ def main():
         pi.load_state_dict(ck['pi'])
         if res is not None and ck.get('res') is not None:
             res.load_state_dict(ck['res'])
+        if ck['vf']['0.weight'].shape[1] != de.OBS_SIZE + n_priv:
+            sys.exit(f"{args.resume} has a value network for {ck['vf']['0.weight'].shape[1]} inputs: resume "
+                     f"{'without' if n_priv else 'with'} --privileged-critic, as it was trained")
         vf.load_state_dict(ck['vf'])
         with torch.no_grad():
             log_std.copy_(ck['log_std'])
@@ -618,7 +638,9 @@ def main():
             meta['generated'] = {'count': args.generated, 'seed': args.gen_seed}
     if args.chase > 0.0:
         # the policy reads the chase inputs: it can follow a car ahead
-        meta['chase'] = {'share': args.chase, 'gap_range': [float(g) for g in args.chase_gap]}
+        meta['chase'] = {'share': args.chase, 'gap_range': [float(g) for g in args.chase_gap],
+                         'gap': 'outline', 'breathe_m': de.CHASE_BREATHE_M, 'inside_m': de.CHASE_INSIDE_M,
+                         'scenarios': bool(args.chase_scenarios), 'privileged_critic': bool(args.privileged_critic)}
     if args.skill:
         # the plugin reads this: the skills it may ask the policy for
         meta['skill_range'] = [float(args.skill[0]), float(args.skill[1])]
@@ -675,6 +697,11 @@ def main():
     obs_buf = torch.zeros((T, N, de.OBS_SIZE), dtype=f32, device=dev)
     act_buf = torch.zeros((T, N, de.ACT_SIZE), dtype=f32, device=dev)
     lead_buf = torch.zeros((T, N), dtype=f32, device=dev)
+    priv_buf = torch.zeros((T, N, n_priv), dtype=f32, device=dev)
+    no_priv = torch.zeros((N, 0), dtype=f32, device=dev)
+
+    def priv_now():
+        return env.priv.to(dev, f32) if n_priv else no_priv
     logp_buf = torch.zeros((T, N), dtype=f32, device=dev)
     rew_buf = torch.zeros((T, N), dtype=f32, device=dev)
     val_buf = torch.zeros((T + 1, N), dtype=f32, device=dev)
@@ -770,13 +797,15 @@ def main():
         policy = make_policy()
         episodes = max(32, args.eval_episodes // len(eval_worlds))
         for name, w in eval_worlds:
-            ev = de.evaluate(w, policy, episodes, seed=999, env_config=env_cfg, reward_config=rew_cfg)
+            ev = de.evaluate(w, policy, episodes, seed=999, env_config=replace(env_cfg, privileged=False),
+                             reward_config=rew_cfg)
             per_track[name] = {k: float(ev[k].mean()) for k in EVAL_KEYS}
         last_eval = {k: float(np.mean([v[k] for v in per_track.values()])) for k in EVAL_KEYS}
         if args.chase > 0.0:
             # chase episodes only, at the whole --chase-gap range (what chase_report.py shows)
             name, w = eval_worlds[0]
-            ev = de.evaluate(w, policy, episodes, seed=998, env_config=replace(env_cfg, chase_share=1.0),
+            ev = de.evaluate(w, policy, episodes, seed=998, env_config=replace(env_cfg, chase_share=1.0, chase_scenarios=False,
+                                                                                 privileged=False),
                              reward_config=rew_cfg)
             had = ev['chase_fraction'] > 0
             wt = ev['chase_fraction'][had] * ev['length'][had]
@@ -814,7 +843,8 @@ def main():
                     a = mu + log_std.exp() * torch.randn_like(mu)
                     obs_buf[t], act_buf[t] = x, a
                     logp_buf[t] = logp_of(a, mu, log_std)
-                    val_buf[t] = vf(x)[:, 0]
+                    priv_buf[t] = priv_now()
+                    val_buf[t] = value(x, priv_buf[t])
                     o, r, term, trunc = env.step(a.to(env.device, f64))
                     obs = o.to(dev)
                     r = r.to(dev)
@@ -829,14 +859,15 @@ def main():
                             # a time-limit cut-off is not a real ending: bootstrap from the value
                             # of the observation the episode was cut off at
                             fo = norm_obs(env.final_obs.to(dev)[trunc])
-                            r[trunc] += args.gamma * vf(fo)[:, 0]
+                            fp = env.final_priv.to(dev, f32)[trunc] if n_priv else no_priv[:int(trunc.sum())]
+                            r[trunc] += args.gamma * value(fo, fp)
                         running_ret[done] = 0.0
                         if len(ep_rows) < 64:
                             ep_rows.append(env.ep_out[done.to(env.device)].cpu().numpy())
                     rew_buf[t], done_buf[t] = r, done.to(f32)
                     if not freeze_obs_norm:
                         obs_mean, obs_var, obs_count = rms_update(obs_mean, obs_var, obs_count, obs)
-                val_buf[T] = vf(norm_obs(obs))[:, 0]
+                val_buf[T] = value(norm_obs(obs), priv_now())
                 steps_done += N * T
 
                 adv = torch.zeros((T, N), dtype=f32, device=dev)
@@ -850,6 +881,7 @@ def main():
 
             b_obs = obs_buf.reshape(-1, de.OBS_SIZE)
             b_lead = lead_buf.reshape(-1)
+            b_priv = priv_buf.reshape(-1, n_priv)
             b_act = act_buf.reshape(-1, de.ACT_SIZE)
             b_logp, b_adv, b_ret = logp_buf.reshape(-1), adv.reshape(-1), ret.reshape(-1)
             n = b_obs.shape[0]
@@ -874,7 +906,7 @@ def main():
                     ratio = log_ratio.exp()
                     pi_loss = -torch.min(ratio * a_mb, torch.clamp(ratio, 1 - args.clip, 1 + args.clip) * a_mb).mean()
                     entropy = (log_std + 0.5 * (LOG_2PI + 1.0)).sum()
-                    v_loss = 0.5 * ((vf(b_obs[idx])[:, 0] - b_ret[idx]) ** 2).mean()
+                    v_loss = 0.5 * ((value(b_obs[idx], b_priv[idx]) - b_ret[idx]) ** 2).mean()
                     if update <= warmup_updates:
                         loss = args.vf_coef * v_loss
                     else:

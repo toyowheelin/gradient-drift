@@ -10,8 +10,10 @@ without the chase inputs drives blind behind the ghost: the baseline.
   return         mean episode return (solo / chase; the chase return includes the chase pay)
   drift          share of ticks sliding 20 deg or more
   chase          share of chase-episode ticks with the lead still there (not passed or gone)
-  gap            mean gap, the lead's tail to the car's nose, m; in band: within 1 m of the asked gap
-  slip / line    mean difference to the lead where it passed the same spot: deg, m
+  gap            mean gap between the two cars' outlines, m; in band: within 1 m of the gap paid for
+                 (the asked gap, opened through the lead's transitions: drift_env CHASE_BREATHE_M)
+  slip / line    mean difference to the lead where it passed the same spot: deg, m (the line from
+                 CHASE_INSIDE_M inside the lead's in the turns)
   hits           share of chase episodes ended by touching the lead
 """
 import argparse
@@ -36,6 +38,8 @@ def main():
     ap.add_argument('--tracks', default=tf.TRACKS_DIR)
     ap.add_argument('--episodes', type=int, default=128)
     ap.add_argument('--gaps', type=float, nargs=2, default=(0.0, 1.0), metavar=('LOW', 'HIGH'))
+    ap.add_argument('--scenarios', action='store_true',
+                    help='start the chase episodes as training does with --chase-scenarios (drift_env CHASE_SCENARIOS)')
     args = ap.parse_args()
 
     w = fs.load_world(args.tracks, track=args.track)
@@ -47,7 +51,8 @@ def main():
           f"{'slip':>6} {'line':>6} {'hits':>6}")
     for path in args.policies:
         pol = Policy.load_json(path)
-        cfg = replace(de.env_config_for(pol.meta), chase_gap_low=args.gaps[0], chase_gap_high=args.gaps[1])
+        cfg = replace(de.env_config_for(pol.meta), chase_gap_low=args.gaps[0], chase_gap_high=args.gaps[1],
+                      chase_scenarios=args.scenarios)
         solo = run(w, pol, replace(cfg, chase_share=0.0), args.episodes, 7)
         chase = run(w, pol, replace(cfg, chase_share=1.0), args.episodes, 7)
         had = chase['chase_fraction'] > 0

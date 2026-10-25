@@ -184,6 +184,8 @@ class TorchCpuEnv:
         self.terminated, self.truncated = torch.from_numpy(e.terminated), torch.from_numpy(e.truncated)
         self.final_obs, self.ep_out = torch.from_numpy(e.final_obs), torch.from_numpy(e.ep_out)
         self.diags, self.states = torch.from_numpy(e.diags), torch.from_numpy(e.states)
+        # the privileged critic's inputs (EnvConfig.privileged; drift_env.PRIV_NAMES)
+        self.priv, self.final_priv = torch.from_numpy(e.priv), torch.from_numpy(e.final_priv)
 
     def set_sliding_grip_low(self, low):
         """Bottom of the range new episodes draw RearSlidingGrip from (the trainer walks it down)."""
@@ -254,6 +256,8 @@ class MultiTrackCpuEnv:
         self.truncated = cat([e.truncated for e in G])
         self.final_obs = cat([e.final_obs for e in G])
         self.ep_out = cat([e.ep_out for e in G])
+        self.priv = cat([e.priv for e in G])
+        self.final_priv = cat([e.final_priv for e in G])
 
     def set_sliding_grip_low(self, low):
         self.grip_low = low
