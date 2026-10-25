@@ -149,6 +149,10 @@ def main():
     ap.add_argument('--value-warmup-updates', type=int, default=60,
                     help='with --init-policy: updates that train only the value network first')
     ap.add_argument('--grip-randomisation', type=float, default=None)
+    ap.add_argument('--drift-starts', type=float, default=0.0, metavar='SHARE',
+                    help='this share of episodes starts at speed and already sideways, a third of them mid '
+                         'transition (drift_env EnvConfig.drift_start_*; randomised start states after Zhou et al. '
+                         '2025, https://arxiv.org/abs/2507.23339). Evaluations still start on the line.')
     ap.add_argument('--sliding-grip', type=float, nargs=2, default=None, metavar=('LOW', 'HIGH'),
                     help="draw the plugin's RearSlidingGrip (share of peak sideways grip the "
                          "rear axle keeps while sliding; less = a slower drift) per episode from this range and "
@@ -237,6 +241,10 @@ def main():
     env_cfg = de.EnvConfig()
     if args.grip_randomisation is not None:
         env_cfg.grip_randomisation = args.grip_randomisation
+    if not 0.0 <= args.drift_starts <= 1.0 - env_cfg.recovery_start_fraction:
+        sys.exit(f"--drift-starts: a share from 0 to {1.0 - env_cfg.recovery_start_fraction:g} "
+                 "(the recovery starts take the rest)")
+    env_cfg.drift_start_fraction = args.drift_starts
     grip_low_start = 1.0        # bottom of the range the starting network already handles
     if args.init_policy and not args.resume:
         init_meta = Policy.load_json(args.init_policy).meta

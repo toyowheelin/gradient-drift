@@ -101,6 +101,7 @@ python train_ppo_gpu.py --sim cpu --resume runs/mine/checkpoint.pt --steps 40000
 | `--pace 0.8 1.0 --pace-reference P` | paces (a share of each course's flat-out speed, as driven by policy P), for spacing bots |
 | `--car-pool cars/car_pool.json` | train on many cars (see [Cars](#cars)); `--car-exclude CAR` holds one out |
 | `--skill 0 1` | train the skill input (the plugin's `BotSkill`): 0 = careful, 1 = best |
+| `--drift-starts 0.3` | this share of episodes starts at speed and already sideways (a third mid transition); evaluations still start on the line. Being tried, not yet used for the shipped policy |
 | `--reward NAME=VALUE` | changes one reward term (see `RewardConfig` in `drift_env.py`) |
 | `--reward-from runs/<run>/config.json` | starts from an earlier run's reward |
 | `--reward weave_penalty=5` | charges flicks the course does not ask for (weaving to shed speed) |

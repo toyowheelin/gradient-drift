@@ -89,4 +89,8 @@ AGPL-3.0 program carry the work, given the notices.
   D1 Grand Prix's scoring criteria.
 * Cai et al., "High-speed Autonomous Drifting with Deep Reinforcement Learning", 2020 (reward
   ideas); the analysis of Ken Gushi's drift in Stanford's MARTY (what a held drift looks like).
+* Zhou, Lu, Yang, Li and Mo, "Learning to Drift with Individual Wheel Drive: Maneuvering
+  Autonomous Vehicle at the Handling Limits", Tsinghua University, 2025,
+  <https://arxiv.org/abs/2507.23339> - randomised start states, sideways and at speed (the
+  trainer's `--drift-starts`).
 
