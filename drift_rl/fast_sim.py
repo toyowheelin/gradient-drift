@@ -144,6 +144,12 @@ _PNAMES = [
     # around its centre: a sliding car's tail reaches a wall long before its centre does
     # (Spirit Peaks' tire stacks, 2026-10-21). The reward's nearest wall reads the same outline.
     'EXT_CAR_OUTLINE_CONTACT', 'CAR_OUTLINE_OVERHANG_M', 'CAR_OUTLINE_SIDE_MARGIN_M',
+    # RoundTireCurve (the same kind of setting): each axle's sideways force follows the brush
+    # (Fiala) curve, steep at first and rounding over into full sliding, instead of a straight line
+    # to its peak. Full sliding comes at the tyre's FRICTION_LIMIT_ANGLE plus FLEX x its static
+    # load (tyres.ini: FLEX, "the bigger the added slip angle with load", degrees per N).
+    # Assetto Corsa's E36 front gives 75 - 90% of its peak by 4 - 8 deg (the owner's laps).
+    'EXT_ROUND_TIRE_CURVE', 'FRONT_TIRE_FLEX', 'REAR_TIRE_FLEX',
 ]
 P = {name: i for i, name in enumerate(_PNAMES)}
 
@@ -235,6 +241,8 @@ def make_params():
         'FRONT_LOAD_SENSITIVITY_PER_KN': -0.044, 'REAR_LOAD_SENSITIVITY_PER_KN': -0.049,
         'FRONT_TRACK_M': 1.67, 'REAR_TRACK_M': 1.50, 'ROLL_STIFFNESS_FRONT_SHARE': 0.67,
         'SKILL': 1.0,
+        # tyres.ini FLEX (RoundTireCurve only), degrees of slip angle per N on a tire
+        'FRONT_TIRE_FLEX': 0.000852, 'REAR_TIRE_FLEX': 0.000852,
     }
     p = np.zeros(PARAM_SIZE)
     for k, v in values.items():
@@ -848,10 +856,36 @@ def rear_sliding_grip(s):
 
 
 @njit(cache=True)
-def _lateral_force_within(slip_angle, peak_force, peak_slip_angle_rad, capacity):
+def _tire_curve(slip_mag, peak_slip_angle_rad, round_curve):
+    """How much of its peak force an axle gives at slip angle slip_mag (0 - 1): a straight line up
+    to peak_slip_angle_rad, or with round_curve (RoundTireCurve) the brush (Fiala) curve, which
+    starts three times as steep and reaches full sliding at peak_slip_angle_rad:
+    3x - 3x^2 + x^3, x = tan(slip) / tan(full sliding)."""
+    if slip_mag >= peak_slip_angle_rad:
+        return 1.0
+    if round_curve:
+        x = math.tan(slip_mag) / math.tan(peak_slip_angle_rad)
+        return x * (3.0 - 3.0 * x + x * x)
+    return slip_mag / peak_slip_angle_rad
+
+
+@njit(cache=True)
+def tire_curve_angles(p):
+    """(front, rear) slip angle where each axle's force reaches its peak: the tyres' friction limit
+    angle, plus with RoundTireCurve FLEX x the static load on one of its tires."""
+    front = p[P_FRONT_PEAK_SLIP_RAD]
+    rear = p[P_REAR_PEAK_SLIP_RAD]
+    if p[P_EXT_ROUND_TIRE_CURVE] > 0.5:
+        front += math.radians(p[P_FRONT_TIRE_FLEX] * 0.5 * p[P_FRONT_STATIC_LOAD_N])
+        rear += math.radians(p[P_REAR_TIRE_FLEX] * 0.5 * p[P_REAR_STATIC_LOAD_N])
+    return front, rear
+
+
+@njit(cache=True)
+def _lateral_force_within(slip_angle, peak_force, peak_slip_angle_rad, capacity, round_curve):
     """Sideways force of an axle that rises with slip angle as _lateral_tire_force does and stops at
     `capacity`: what the friction circle leaves after the force along the car. Opposes the slip."""
-    force_mag = min(peak_force * (abs(slip_angle) / peak_slip_angle_rad), capacity)
+    force_mag = min(peak_force * _tire_curve(abs(slip_angle), peak_slip_angle_rad, round_curve), capacity)
     if slip_angle > 0.0:
         return -force_mag
     if slip_angle < 0.0:
@@ -860,8 +894,10 @@ def _lateral_force_within(slip_angle, peak_force, peak_slip_angle_rad, capacity)
 
 
 @njit(cache=True)
-def _lateral_tire_force(slip_angle, peak_friction, static_load_n, peak_slip_angle_rad, sliding_grip):
-    """Sideways force of one axle: rises linearly to its peak at peak_slip_angle_rad, then falls
+def _lateral_tire_force(slip_angle, peak_friction, static_load_n, peak_slip_angle_rad, sliding_grip,
+                        round_curve):
+    """Sideways force of one axle: rises to its peak at peak_slip_angle_rad (linearly, or along the
+    brush curve with round_curve: _tire_curve), then falls
     linearly to sliding_grip x peak at twice that angle and stays there. sliding_grip = 1 is the
     flat-topped curve the model had at first (bit for bit: the force is peak_force itself).
 
@@ -873,7 +909,7 @@ def _lateral_tire_force(slip_angle, peak_friction, static_load_n, peak_slip_angl
     peak_force = peak_friction * static_load_n
     mag = abs(slip_angle)
     if mag < peak_slip_angle_rad:
-        force_mag = peak_force * (mag / peak_slip_angle_rad)
+        force_mag = peak_force * _tire_curve(mag, peak_slip_angle_rad, round_curve)
     elif sliding_grip >= 1.0:
         force_mag = peak_force
     else:
@@ -1164,6 +1200,8 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
     np_glitch = mid[M_NP_GLITCH] > 0.5
     dt_s = mid[M_DT]
     mu_f, mu_r = axle_friction(p, s)     # each axle's peak friction this tick (load sensitivity)
+    curve_f, curve_r = tire_curve_angles(p)
+    round_curve = p[P_EXT_ROUND_TIRE_CURVE] > 0.5
 
     # --- forward speed ---
     # The speed action is the target speed as a fraction of MaxSpeed (-1 => stop, +1 =>
@@ -1215,8 +1253,7 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
         t_vx = max(prev_own, p[P_MIN_SLIP_SPEED_MS])
         t_steer = s[S_LAST_STEER]
         t_front_slip = math.atan2(s[S_LATV] + p[P_DIST_CG_FRONT_M] * s[S_YAW], t_vx) - t_steer
-        t_fy_f = _lateral_tire_force(t_front_slip, mu_f, front_load,
-                                     p[P_FRONT_PEAK_SLIP_RAD], 1.0)
+        t_fy_f = _lateral_tire_force(t_front_slip, mu_f, front_load, curve_f, 1.0, round_curve)
         t_rear_peak = mu_r * rear_load
         front_along = -t_fy_f * math.sin(t_steer)
         slide_loss = s[S_LATV] * s[S_YAW]
@@ -1281,10 +1318,9 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
         t_steer = s[S_LAST_STEER]
         t_front_slip = math.atan2(s[S_LATV] + p[P_DIST_CG_FRONT_M] * s[S_YAW], t_vx) - t_steer
         t_rear_slip = math.atan2(s[S_LATV] - p[P_DIST_CG_REAR_M] * s[S_YAW], t_vx)
-        t_fy_f = _lateral_tire_force(t_front_slip, mu_f, p[P_FRONT_STATIC_LOAD_N],
-                                     p[P_FRONT_PEAK_SLIP_RAD], 1.0)
-        t_fy_r = _lateral_tire_force(t_rear_slip, mu_r, p[P_REAR_STATIC_LOAD_N],
-                                     p[P_REAR_PEAK_SLIP_RAD], rear_sliding_grip(s))
+        t_fy_f = _lateral_tire_force(t_front_slip, mu_f, p[P_FRONT_STATIC_LOAD_N], curve_f, 1.0, round_curve)
+        t_fy_r = _lateral_tire_force(t_rear_slip, mu_r, p[P_REAR_STATIC_LOAD_N], curve_r, rear_sliding_grip(s),
+                                     round_curve)
         t_rear_peak = mu_r * p[P_REAR_STATIC_LOAD_N]
         thrust_max = math.sqrt(max(0.0, t_rear_peak * t_rear_peak - t_fy_r * t_fy_r))
         front_along = -t_fy_f * math.sin(t_steer)
@@ -1342,16 +1378,14 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
         slip_speed = max(body_speed, p[P_MIN_SLIP_SPEED_MS])
         front_slip = math.atan2(run_latv + p[P_DIST_CG_FRONT_M] * run_yaw, slip_speed) - steer_cmd
         rear_slip = math.atan2(run_latv - p[P_DIST_CG_REAR_M] * run_yaw, slip_speed)
-        fy_f = _lateral_tire_force(front_slip, mu_f, front_load,
-                                   p[P_FRONT_PEAK_SLIP_RAD], 1.0)
+        fy_f = _lateral_tire_force(front_slip, mu_f, front_load, curve_f, 1.0, round_curve)
         if front_capacity >= 0.0:
-            fy_f = _lateral_force_within(front_slip, mu_f * front_load,
-                                         p[P_FRONT_PEAK_SLIP_RAD], front_capacity)
+            fy_f = _lateral_force_within(front_slip, mu_f * front_load, curve_f, front_capacity, round_curve)
         rear_fric_used = eff_rear_fric if p[P_ENABLE_FRICTION_ELLIPSE] > 0.5 else mu_r
         rear_peak_used = rear_fric_used * rear_load
-        fy_r = _lateral_tire_force(rear_slip, rear_fric_used, rear_load, p[P_REAR_PEAK_SLIP_RAD], slide_grip)
+        fy_r = _lateral_tire_force(rear_slip, rear_fric_used, rear_load, curve_r, slide_grip, round_curve)
         if rear_capacity >= 0.0:
-            fy_r = _lateral_force_within(rear_slip, rear_peak_force, p[P_REAR_PEAK_SLIP_RAD], rear_capacity)
+            fy_r = _lateral_force_within(rear_slip, rear_peak_force, curve_r, rear_capacity, round_curve)
             rear_peak_used = rear_capacity
 
         yaw_moment = p[P_DIST_CG_FRONT_M] * fy_f * cos_steer - p[P_DIST_CG_REAR_M] * fy_r

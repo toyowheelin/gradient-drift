@@ -89,4 +89,9 @@ AGPL-3.0 program carry the work, given the notices.
   D1 Grand Prix's scoring criteria.
 * Cai et al., "High-speed Autonomous Drifting with Deep Reinforcement Learning", 2020 (reward
   ideas); the analysis of Ken Gushi's drift in Stanford's MARTY (what a held drift looks like).
+* The brush tyre curve (`RoundTireCurve`) - E. Fiala, "Seitenkräfte am rollenden Luftreifen",
+  VDI-Zeitschrift 96, 1954; the form Stanford's drifting work uses (Hindiyeh and Gerdes, "A
+  Controller Framework for Autonomous Drifting: Design, Stability, and Experimental Validation",
+  ASME Journal of Dynamic Systems, Measurement, and Control, 2014). Its full-sliding angle is
+  the car's own tyres.ini `FRICTION_LIMIT_ANGLE` plus `FLEX` x the tire's load.
 

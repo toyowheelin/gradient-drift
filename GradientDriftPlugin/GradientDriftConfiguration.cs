@@ -238,6 +238,13 @@ public class GradientDriftConfiguration
     public float CgHeightMeters { get; set; } = 0.40f;
     public float FrontPeakSlipAngleRadians { get; set; } = 11.7f * MathF.PI / 180f;
     public float RearPeakSlipAngleRadians { get; set; } = 12.0f * MathF.PI / 180f;
+    // Each axle's sideways force follows the brush (Fiala) curve, steep at first and rounding over
+    // into full sliding, instead of a straight line to its peak; full sliding comes at the peak
+    // slip angle plus the tyre's FLEX (tyres.ini, degrees per N) x the static load on one tire.
+    // Set by the policy file.
+    public bool RoundTireCurve { get; set; } = false;
+    public float FrontTireFlex { get; set; } = 0.000852f;
+    public float RearTireFlex { get; set; } = 0.000852f;
     // The steering lock at the road wheels. A policy file that was trained with another lock
     // says so ("plugin_settings": MaxSteerAngleDeg) and that value is used instead; the same
     // goes for MaxSteerRateDegS, the two rear limits and the wrong-way recovery's four thresholds.
