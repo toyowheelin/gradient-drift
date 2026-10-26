@@ -276,6 +276,12 @@ public class GradientDriftConfiguration
     // can scrub speed and keep the rear loose. Set by the policy file.
     public bool FrontBrakeOnly { get; set; } = false;
 
+    // With EnableRearFrictionCircle: the rear tires' friction circle while the throttle spins
+    // them, as a share of their peak. It shrinks toward this with the share of full-throttle
+    // thrust they are driven with: a spinning tire grips less every way than at its peak.
+    // 1 = off. Set by the policy file.
+    public float RearSpinGripShare { get; set; } = 1f;
+
     // Floor on the speed in the slip-angle formula, which is singular at zero speed.
     public float MinSlipAngleSpeedMs { get; set; } = 3.0f;
 
