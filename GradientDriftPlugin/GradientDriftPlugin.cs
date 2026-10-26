@@ -310,6 +310,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 "DisableBrakes" => value == 0f || value == 1f,
                 "FrontBrakeOnly" => value == 0f || value == 1f,
                 "CarOutlineContact" => value == 0f || value == 1f,
+                "RoundTireCurve" => value == 0f || value == 1f,
                 _ => false,
             };
             if (!usable)
@@ -330,6 +331,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _configuration.DisableBrakes = false;
         _configuration.FrontBrakeOnly = false;
         _configuration.CarOutlineContact = false;
+        _configuration.RoundTireCurve = false;
 
         foreach ((string name, float value) in policy.PluginSettings)
         {
@@ -394,6 +396,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     break;
                 case "CarOutlineContact":
                     _configuration.CarOutlineContact = value == 1f;
+                    break;
+                case "RoundTireCurve":
+                    _configuration.RoundTireCurve = value == 1f;
                     break;
             }
             VerboseLog.Information("GradientDrift: {Name} = {Value}, from the policy file", name, value);
@@ -1008,6 +1013,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             float yawRate = state.YawRate;
             float lateralVelocity = state.LateralVelocity;
             float frontSlipAngle = 0f, rearSlipAngle = 0f, fyFront = 0f, fyRear = 0f;
+            bool roundCurve = _configuration.RoundTireCurve;
+            (float frontCurveAngle, float rearCurveAngle) = _car.TireCurveAngles(roundCurve);
 
             for (int subStep = 0; subStep < subStepCount; subStep++)
             {
@@ -1015,13 +1022,13 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 rearSlipAngle = MathF.Atan2(lateralVelocity - _car.DistanceCgToRearAxleM * yawRate, slipAngleSpeed);
 
                 fyFront = frontCapacityN >= 0f
-                    ? LateralForceWithin(frontSlipAngle, frontPeakForceN, _car.FrontPeakSlipAngleRadians, frontCapacityN)
+                    ? LateralForceWithin(frontSlipAngle, frontPeakForceN, frontCurveAngle, frontCapacityN, roundCurve)
                     : LateralTireForce(frontSlipAngle, _muFront,
-                        _car.FrontStaticLoadN, _car.FrontPeakSlipAngleRadians, 1f);
+                        _car.FrontStaticLoadN, frontCurveAngle, 1f, roundCurve);
                 fyRear = rearCapacityN >= 0f
-                    ? LateralForceWithin(rearSlipAngle, rearPeakForceN, _car.RearPeakSlipAngleRadians, rearCapacityN)
+                    ? LateralForceWithin(rearSlipAngle, rearPeakForceN, rearCurveAngle, rearCapacityN, roundCurve)
                     : LateralTireForce(rearSlipAngle, effectiveRearPeakFriction,
-                        _car.RearStaticLoadN, _car.RearPeakSlipAngleRadians, state.RearSlidingGrip);
+                        _car.RearStaticLoadN, rearCurveAngle, state.RearSlidingGrip, roundCurve);
 
                 float yawMomentNm = _car.DistanceCgToFrontAxleM * fyFront * cosSteer - _car.DistanceCgToRearAxleM * fyRear;
                 float yawAngularAccel = yawMomentNm / _car.YawInertiaKgM2;
@@ -1373,10 +1380,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float steer = state.Policy.LastSteerCommandRadians;
         float frontSlipAngle = MathF.Atan2(state.LateralVelocity + _car.DistanceCgToFrontAxleM * state.YawRate, slipAngleSpeed) - steer;
         float rearSlipAngle = MathF.Atan2(state.LateralVelocity - _car.DistanceCgToRearAxleM * state.YawRate, slipAngleSpeed);
+        bool roundCurve = _configuration.RoundTireCurve;
+        (float frontCurveAngle, float rearCurveAngle) = _car.TireCurveAngles(roundCurve);
         float fyFront = LateralTireForce(frontSlipAngle, _muFront,
-            _car.FrontStaticLoadN, _car.FrontPeakSlipAngleRadians, 1f);
+            _car.FrontStaticLoadN, frontCurveAngle, 1f, roundCurve);
         float fyRear = LateralTireForce(rearSlipAngle, _muRear,
-            _car.RearStaticLoadN, _car.RearPeakSlipAngleRadians, state.RearSlidingGrip);
+            _car.RearStaticLoadN, rearCurveAngle, state.RearSlidingGrip, roundCurve);
 
         float rearPeakForceN = _muRear * _car.RearStaticLoadN;
         float thrustMaxN = MathF.Sqrt(MathF.Max(0f, rearPeakForceN * rearPeakForceN - fyRear * fyRear));
@@ -1386,7 +1395,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
         float thrustUsedN = float.IsFinite(thrustNeededN) ? Math.Clamp(thrustNeededN, 0f, thrustMaxN) : 0f;
         float rearSidewaysSpeed = MathF.Abs(state.LateralVelocity - _car.DistanceCgToRearAxleM * state.YawRate);
-        rearSpin = MathF.Abs(rearSlipAngle) >= _car.RearPeakSlipAngleRadians && MathF.Abs(fyRear) > 1f
+        rearSpin = MathF.Abs(rearSlipAngle) >= rearCurveAngle && MathF.Abs(fyRear) > 1f
             ? rearSidewaysSpeed * thrustUsedN / MathF.Abs(fyRear)
             : 0f;
 
@@ -1422,7 +1431,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float frontSlipAngle = MathF.Atan2(state.LateralVelocity + _car.DistanceCgToFrontAxleM * state.YawRate, slipAngleSpeed) - steer;
         float rearSlipAngle = MathF.Atan2(state.LateralVelocity - _car.DistanceCgToRearAxleM * state.YawRate, slipAngleSpeed);
         float fyFront = LateralTireForce(frontSlipAngle, _muFront,
-            _car.FrontStaticLoadN, _car.FrontPeakSlipAngleRadians, 1f);
+            _car.FrontStaticLoadN, _car.TireCurveAngles(_configuration.RoundTireCurve).Front, 1f, _configuration.RoundTireCurve);
 
         float rearPeakForceN = _muRear * _car.RearStaticLoadN;
         float frontAlongN = -fyFront * MathF.Sin(steer);
@@ -1503,24 +1512,43 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
     // Sideways force of an axle that rises with slip angle as LateralTireForce does and stops
     // at capacityN, what the friction circle leaves it. Opposes the slip.
-    private static float LateralForceWithin(float slipAngle, float peakForceN, float peakSlipAngleRadians, float capacityN)
+    private static float LateralForceWithin(float slipAngle, float peakForceN, float peakSlipAngleRadians, float capacityN,
+        bool roundCurve)
     {
-        float forceMagnitude = MathF.Min(peakForceN * (MathF.Abs(slipAngle) / peakSlipAngleRadians), capacityN);
+        float forceMagnitude = MathF.Min(peakForceN * TireCurve(MathF.Abs(slipAngle), peakSlipAngleRadians, roundCurve), capacityN);
         return slipAngle > 0f ? -forceMagnitude : slipAngle < 0f ? forceMagnitude : 0f;
     }
 
-    // Lateral force of one axle: linear in slip angle up to the peak, then falling linearly to
-    // slidingGrip x the peak at twice the peak slip angle, and constant beyond. Opposes the slip.
-    // slidingGrip = 1 keeps the peak force however far the tire slides.
+    // How much of its peak force an axle gives at this slip angle (0 - 1; fast_sim._tire_curve):
+    // a straight line up to the peak, or with RoundTireCurve the brush (Fiala) curve, three times
+    // as steep at first and reaching full sliding at the peak: 3x - 3x^2 + x^3,
+    // x = tan(slip) / tan(peak).
+    private static float TireCurve(float slipMagnitude, float peakSlipAngleRadians, bool roundCurve)
+    {
+        if (slipMagnitude >= peakSlipAngleRadians)
+        {
+            return 1f;
+        }
+        if (roundCurve)
+        {
+            float x = MathF.Tan(slipMagnitude) / MathF.Tan(peakSlipAngleRadians);
+            return x * (3f - 3f * x + x * x);
+        }
+        return slipMagnitude / peakSlipAngleRadians;
+    }
+
+    // Lateral force of one axle: rising with slip angle up to the peak (TireCurve), then falling
+    // linearly to slidingGrip x the peak at twice the peak slip angle, and constant beyond.
+    // Opposes the slip. slidingGrip = 1 keeps the peak force however far the tire slides.
     private static float LateralTireForce(float slipAngle, float peakFriction, float staticLoadN, float peakSlipAngleRadians,
-        float slidingGrip)
+        float slidingGrip, bool roundCurve)
     {
         float peakForceN = peakFriction * staticLoadN;
         float slipMagnitude = MathF.Abs(slipAngle);
         float forceMagnitude;
         if (slipMagnitude < peakSlipAngleRadians)
         {
-            forceMagnitude = peakForceN * (slipMagnitude / peakSlipAngleRadians);
+            forceMagnitude = peakForceN * TireCurve(slipMagnitude, peakSlipAngleRadians, roundCurve);
         }
         else if (slidingGrip >= 1f)
         {
