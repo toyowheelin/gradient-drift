@@ -2409,6 +2409,7 @@ PLUGIN_SETTING_PARAMS = {
     'FrontBrakeOnly': ('EXT_FRONT_BRAKE_ONLY', float),              # 1 = no pedal brake; the brake action stays
     'CarOutlineContact': ('EXT_CAR_OUTLINE_CONTACT', float),        # 1 = walls touch the car's outline, not a circle
     'RoundTireCurve': ('EXT_ROUND_TIRE_CURVE', float),              # 1 = brush-curve tyres (fast_sim._tire_curve)
+    'RearSpinGripShare': ('REAR_SPIN_GRIP_SHARE', float),          # rear circle while spinning, share of peak; 1 = off
 }
 DEFAULT_MAX_STEER_DEG = 28.125      # the plugin's MaxSteerAngleRadians default
 

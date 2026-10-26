@@ -346,6 +346,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 "FrontBrakeOnly" => value == 0f || value == 1f,
                 "CarOutlineContact" => value == 0f || value == 1f,
                 "RoundTireCurve" => value == 0f || value == 1f,
+                "RearSpinGripShare" => value > 0f && value <= 1f,
                 _ => false,
             };
             if (!usable)
@@ -367,6 +368,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _configuration.FrontBrakeOnly = false;
         _configuration.CarOutlineContact = false;
         _configuration.RoundTireCurve = false;
+        _configuration.RearSpinGripShare = 1f;
 
         foreach ((string name, float value) in policy.PluginSettings)
         {
@@ -434,6 +436,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     break;
                 case "RoundTireCurve":
                     _configuration.RoundTireCurve = value == 1f;
+                    break;
+                case "RearSpinGripShare":
+                    _configuration.RearSpinGripShare = value;
                     break;
             }
             VerboseLog.Information("GradientDrift: {Name} = {Value}, from the policy file", name, value);
@@ -1497,6 +1502,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
         float rearAlongN;
         float frontBrakeN;
+        float rearCircleN = rearPeakForceN;     // the rear friction circle's radius (RearSpinGripShare)
         if (pedal >= 0f)
         {
             rearAlongN = pedal * rearPeakForceN * MathF.Sqrt(MathF.Max(0f, 1f - state.RearSlidingGrip * state.RearSlidingGrip));
@@ -1507,6 +1513,16 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             float toLimitN = mass * ((maxSpeed - previousOwnSpeed) / dt - slideLoss) - frontAlongN - leftFootBrakeN;
             rearAlongN = MathF.Max(0f, MathF.Min(rearAlongN, toLimitN));
             frontBrakeN = leftFootBrakeN;
+            // RearSpinGripShare: the circle shrinks with the share of full-throttle thrust used
+            // (not for thrust the engine or the speed limit holds back: those tires aren't spinning)
+            float spinShare = _configuration.RearSpinGripShare;
+            float fullAlongN = rearPeakForceN * MathF.Sqrt(MathF.Max(0f, 1f - state.RearSlidingGrip * state.RearSlidingGrip));
+            if (spinShare > 0f && spinShare < 1f && fullAlongN > 1e-6f)
+            {
+                float spun = 1f - (1f - spinShare) * MathF.Min(1f, rearAlongN / fullAlongN);
+                rearCircleN *= spun;
+                rearAlongN *= spun;
+            }
         }
         else
         {
@@ -1520,7 +1536,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             frontBrakeN = MathF.Max(frontBrakeN, -frontPeakForceN);
             frontCapacityN = MathF.Sqrt(MathF.Max(0f, frontPeakForceN * frontPeakForceN - frontBrakeN * frontBrakeN));
         }
-        rearCapacityN = MathF.Sqrt(MathF.Max(0f, rearPeakForceN * rearPeakForceN - rearAlongN * rearAlongN));
+        rearCapacityN = MathF.Sqrt(MathF.Max(0f, rearCircleN * rearCircleN - rearAlongN * rearAlongN));
 
         // A rear axle at the edge of its circle slips lengthwise by (thrust / sideways force)
         // times its sideways slip.
