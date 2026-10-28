@@ -69,9 +69,9 @@ public class GradientDriftConfiguration
     // ahead its acceleration becomes the pace asked (chase_response_s), and the top of that pace as
     // a percentage of the policy's top pace (chase_pace_max): a chaser needs some speed over the
     // player's to catch up.
-    public float ChaseTimeGapSeconds { get; set; } = 0.3f;
-    public float ChaseResponseSeconds { get; set; } = 1f;
-    public float ChasePaceMaxPercent { get; set; } = 100f;
+    public float ChaseTimeGapSeconds { get; set; } = 0.2f;
+    public float ChaseResponseSeconds { get; set; } = 0.6f;
+    public float ChasePaceMaxPercent { get; set; } = 110f;
 
     // Tandem trains: bots in order of their entry, this many to a train. The first of each train is
     // driven by the policy; the others replay what it sent a moment earlier (TandemTrains.cs), so
