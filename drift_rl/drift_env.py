@@ -135,17 +135,15 @@ CHASE_HISTORY = 400              # ticks of the lead's past searched for where i
 # speed is the one it will have over the next CHASE_PREVIEW_S, known when the lead is a bot that hands
 # over its plan (as the TRI / Stanford autonomous tandem cars shared planned paths, 2024) and taken as
 # its present speed otherwise (a player). IDM's acceleration
-#   a = IDM_ACCEL * (1 - (v / v0)^4 - (s* / s)^2),  s* = ask + v * IDM_TIME_GAP_S + v * dv / (2 sqrt(IDM_ACCEL * IDM_BRAKE))
+#   a = IDM_ACCEL * (1 - (v / v0)^4 - (s* / s)^2),  s* = ask + v * chase_time_gap_s + v * dv / (2 sqrt(IDM_ACCEL * IDM_BRAKE))
 # (s the gap, v this car's speed along the line, v0 its top pace's speed, dv the closing speed) is
-# turned into a speed IDM_RESPONSE_S ahead - about how long the policy takes to answer its pace - and
-# that into the pace, held inside the pace range, so a lead too slow to drift at the bottom of it is
+# turned into a speed chase_response_s ahead - about how long the policy takes to answer its pace - and
+# that into the pace, held inside the pace range (its top raised by chase_pace_max), so a lead too slow to drift at the bottom of it is
 # caught and passed. The plugin is to ask the same.
+# The time gaps, the response time and the top of the chase pace are EnvConfig settings
+# (chase_time_gap_s, ...; the plugin's ChaseTimeGapSeconds, ChaseResponseSeconds, ChasePaceMaxPercent).
 IDM_ACCEL = 4.0            # m/s^2
 IDM_BRAKE = 3.0            # m/s^2, a drift car scrubs speed with angle and the front brake
-IDM_TIME_GAP_S = 0.1       # CACC time gap with a known plan; a reactive follower needs about twice
-                           # (delay + lag) (Xiao, Darbha, Gao 2008), ~0.6 s here
-IDM_TIME_GAP_BLIND_S = 0.3
-IDM_RESPONSE_S = 1.0
 IDM_FREE_SPEED = 1.5        # v0 as a share of the top pace's speed: the pace range caps the speed, so IDM's
                            # free-road easing must not hold the car back while it catches up
 CHASE_PREVIEW_S = 1.0
@@ -570,6 +568,15 @@ class EnvConfig:
     chase_gap_high: float = 1.0
     # scenario starts for the chase episodes (CHASE_SCENARIOS); False = every lead pulls in plainly
     chase_scenarios: bool = False
+    # the gap law (IDM / CACC, see IDM_ACCEL): its time gap behind a lead that hands over its plan
+    # and behind one that does not (a player; a reactive follower needs about twice delay + lag,
+    # Xiao, Darbha, Gao 2008), how far ahead its acceleration is turned into a speed (about how
+    # long the policy takes to answer its pace), and the top of the pace it may ask while chasing,
+    # as a share of pace_high: a chaser needs some speed over the lead's to catch up
+    chase_time_gap_s: float = 0.1
+    chase_time_gap_blind_s: float = 0.3
+    chase_response_s: float = 1.0
+    chase_pace_max: float = 1.0
     # also work out the privileged critic's inputs each step (PRIV_NAMES): DriftVecEnv.priv
     privileged: bool = False
     # Plugin settings (the names in GradientDriftConfiguration.cs / extra_cfg.yml) this car is
@@ -1154,14 +1161,15 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     if chasing and pace > 0.0 and ref_kmh > 0.0:
         ref_ms = min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6) / 3.6
         v = max(0.0, progress / max(dt, 1e-3))
-        v0 = max(1.0, IDM_FREE_SPEED * env_cfg[14] * ref_ms)
-        time_gap = IDM_TIME_GAP_S if counters[i, C_CHASE_PLAN] > 0.0 else IDM_TIME_GAP_BLIND_S
+        top = env_cfg[14] * env_cfg[19]
+        v0 = max(1.0, IDM_FREE_SPEED * top * ref_ms)
+        time_gap = env_cfg[16] if counters[i, C_CHASE_PLAN] > 0.0 else env_cfg[17]
         aim = target if counters[i, C_CHASE_PLAN] > 0.0 else ask
         s_star = max(0.0, aim + v * time_gap + v * (v - lead_v_ahead) / (2.0 * math.sqrt(IDM_ACCEL * IDM_BRAKE)))
         a_idm = IDM_ACCEL * (1.0 - (v / v0) ** 4 - (s_star / max(gap, 0.1)) ** 2)
         a_idm += IDM_LEAD_ACCEL_GAIN * lead_a
         a_idm = max(-3.0 * IDM_BRAKE, a_idm)
-        pace = max(env_cfg[13], min(env_cfg[14], (v + a_idm * IDM_RESPONSE_S) / ref_ms))
+        pace = max(env_cfg[13], min(top, (v + a_idm * env_cfg[18]) / ref_ms))
         s[fs.S_PACE] = pace
     asked_kmh = pace * min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6)
     # while chasing, the asked speed is the IDM's suggestion to the frozen driver, not a target the
@@ -1697,7 +1705,8 @@ def env_cfg_vector(cfg):
                      1.0 if cfg.randomise_dt else 0.0, cfg.hitch_probability, cfg.long_after_short_probability,
                      cfg.long_after_long_probability, cfg.recovery_start_fraction, cfg.recovery_lateral_m,
                      cfg.recovery_heading_rad, cfg.rear_sliding_grip_low, cfg.rear_sliding_grip_high,
-                     cfg.pace_low, cfg.pace_high, cfg.pace_change_s])
+                     cfg.pace_low, cfg.pace_high, cfg.pace_change_s, cfg.chase_time_gap_s,
+                     cfg.chase_time_gap_blind_s, cfg.chase_response_s, cfg.chase_pace_max])
 
 
 def ghost_arrays(world):
@@ -2015,8 +2024,41 @@ def env_config_for(policy_meta=None, **overrides):
     pace_low, pace_high = pace_range(meta)
     cfg = EnvConfig(rear_sliding_grip_low=grip_low, rear_sliding_grip_high=grip_high,
                     pace_low=pace_low, pace_high=pace_high,
-                    plugin_settings=dict(meta.get('plugin_settings') or {}))
+                    plugin_settings=dict(meta.get('plugin_settings') or {}),
+                    **chase_controller_settings((meta.get('chase') or {}).get('controller')))
     return replace(cfg, **overrides) if overrides else cfg
+
+
+CHASE_CONTROLLER = ('chase_time_gap_s', 'chase_time_gap_blind_s', 'chase_response_s', 'chase_pace_max')
+
+
+def chase_controller_settings(saved):
+    """The gap law's EnvConfig settings a policy file was trained with (meta chase.controller);
+    the defaults for an older file."""
+    return {k: float(v) for k, v in (saved or {}).items() if k in CHASE_CONTROLLER}
+
+
+def add_chase_controller_args(ap):
+    """Command-line options for the gap law (EnvConfig chase_time_gap_s ...); unset = the policy's own."""
+    ap.add_argument('--chase-time-gap', type=float, nargs=2, default=None, metavar=('PLAN', 'BLIND'),
+                    help='the gap law\'s time gap (s) behind a lead that hands over its plan (a bot) and one '
+                         'that does not (a player)')
+    ap.add_argument('--chase-response', type=float, default=None, metavar='S',
+                    help='how far ahead (s) the gap law turns its acceleration into the pace it asks')
+    ap.add_argument('--chase-pace-max', type=float, default=None, metavar='SHARE',
+                    help='the top of the pace asked while chasing, as a share of the pace range\'s top')
+
+
+def chase_controller_overrides(args):
+    """The EnvConfig overrides add_chase_controller_args' options ask for."""
+    out = {}
+    if args.chase_time_gap is not None:
+        out['chase_time_gap_s'], out['chase_time_gap_blind_s'] = (float(g) for g in args.chase_time_gap)
+    if args.chase_response is not None:
+        out['chase_response_s'] = float(args.chase_response)
+    if args.chase_pace_max is not None:
+        out['chase_pace_max'] = float(args.chase_pace_max)
+    return out
 
 
 SLIDING_GRIP_OBS_SLOT = 35      # see build_obs

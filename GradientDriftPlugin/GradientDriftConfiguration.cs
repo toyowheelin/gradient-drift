@@ -65,6 +65,13 @@ public class GradientDriftConfiguration
     // Intelligent Driver Model, aiming ChaseGapMeters behind them. A policy that reads its pace only.
     public bool ChasePlayers { get; set; } = false;
     public float ChaseGapMeters { get; set; } = 2f;
+    // The model's time gap (drift_env chase_time_gap_blind_s: a player's plan is unknown), how far
+    // ahead its acceleration becomes the pace asked (chase_response_s), and the top of that pace as
+    // a percentage of the policy's top pace (chase_pace_max): a chaser needs some speed over the
+    // player's to catch up.
+    public float ChaseTimeGapSeconds { get; set; } = 0.3f;
+    public float ChaseResponseSeconds { get; set; } = 1f;
+    public float ChasePaceMaxPercent { get; set; } = 100f;
 
     // Tandem trains: bots in order of their entry, this many to a train. The first of each train is
     // driven by the policy; the others replay what it sent a moment earlier (TandemTrains.cs), so

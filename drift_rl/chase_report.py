@@ -41,6 +41,7 @@ def main():
     ap.add_argument('--gaps', type=float, nargs=2, default=(0.0, 1.0), metavar=('LOW', 'HIGH'))
     ap.add_argument('--scenarios', action='store_true',
                     help='start the chase episodes as training does with --chase-scenarios (drift_env CHASE_SCENARIOS)')
+    de.add_chase_controller_args(ap)
     args = ap.parse_args()
 
     w = fs.load_world(args.tracks, track=args.track)
@@ -53,7 +54,7 @@ def main():
     for path in args.policies:
         pol = Policy.load_json(path)
         cfg = replace(de.env_config_for(pol.meta), chase_gap_low=args.gaps[0], chase_gap_high=args.gaps[1],
-                      chase_scenarios=args.scenarios)
+                      chase_scenarios=args.scenarios, **de.chase_controller_overrides(args))
         solo = run(w, pol, replace(cfg, chase_share=0.0), args.episodes, 7)
         chase = run(w, pol, replace(cfg, chase_share=1.0), args.episodes, 7)
         had = chase['chase_fraction'] > 0

@@ -82,14 +82,13 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     // 25 ft, the owner's opt-in), until they are ChaseOptOutMeters ahead. Its pace comes from the
     // Intelligent Driver Model (Treiber, Hennecke, Helbing 2000), the standard car-following law of
     // traffic simulation, with the constants drift_env trains with (IDM_*): desired gap
-    // s* = ChaseGapMeters + v * IdmTimeGapSeconds + v * dv / (2 sqrt(IdmAccel * IdmBrake)), the
-    // acceleration it gives turned into a speed IdmResponseSeconds ahead, and that into the pace.
+    // s* = ChaseGapMeters + v * ChaseTimeGapSeconds + v * dv / (2 sqrt(IdmAccel * IdmBrake)), the
+    // acceleration it gives turned into a speed ChaseResponseSeconds ahead, and that into the pace,
+    // up to ChasePaceMaxPercent of the policy's top pace.
     private const float ChaseOptInMeters = 7.5f;
     private const float ChaseOptOutMeters = 40f;
     private const float IdmAccel = 4f;
     private const float IdmBrake = 3f;
-    private const float IdmTimeGapSeconds = 0.3f;     // a player's plan is unknown (IDM_TIME_GAP_BLIND_S)
-    private const float IdmResponseSeconds = 1f;
     private const float IdmFreeSpeed = 1.5f;
 
     // Telemetry SessionId of a row that carries only the human car (no AI car was out that tick).
@@ -2368,12 +2367,13 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             return false;
         }
         float v = MathF.Max(0f, state.LineSpeedMs);
-        float v0 = MathF.Max(1f, IdmFreeSpeed * high * state.PaceOneMs);
-        float desired = MathF.Max(0f, _configuration.ChaseGapMeters + v * IdmTimeGapSeconds
+        float top = MathF.Max(low, high * _configuration.ChasePaceMaxPercent / 100f);
+        float v0 = MathF.Max(1f, IdmFreeSpeed * top * state.PaceOneMs);
+        float desired = MathF.Max(0f, _configuration.ChaseGapMeters + v * _configuration.ChaseTimeGapSeconds
             + v * (v - leadSpeed) / (2f * MathF.Sqrt(IdmAccel * IdmBrake)));
         float ratio = desired / MathF.Max(gap, 0.1f);
         float accel = MathF.Max(-3f * IdmBrake, IdmAccel * (1f - MathF.Pow(v / v0, 4) - ratio * ratio));
-        state.Pace = Math.Clamp((v + accel * IdmResponseSeconds) / state.PaceOneMs, low, high);
+        state.Pace = Math.Clamp((v + accel * _configuration.ChaseResponseSeconds) / state.PaceOneMs, low, top);
         return true;
     }
 

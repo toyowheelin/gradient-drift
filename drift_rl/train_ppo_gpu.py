@@ -159,6 +159,7 @@ def main():
     ap.add_argument('--chase-scenarios', action='store_true',
                     help='with --chase: start some chase episodes in hard situations (drift_env CHASE_SCENARIOS: '
                          'catch-ups, alongside into a transition, a lead mistake), as GT Sophy trained')
+    de.add_chase_controller_args(ap)
     ap.add_argument('--privileged-critic', action='store_true',
                     help='with --chase: the value network also reads what the simulator knows and the policy does '
                          'not (drift_env PRIV_NAMES: the lead with no delay, the breathing gap, its true path ahead); '
@@ -269,6 +270,8 @@ def main():
         de.require_direct(init_meta)
         grip_low_start = de.sliding_grip_range(init_meta)[0]
         env_cfg.plugin_settings = dict(init_meta.get('plugin_settings') or {})
+        for k, v in de.chase_controller_settings((init_meta.get('chase') or {}).get('controller')).items():
+            setattr(env_cfg, k, v)
         if args.sliding_grip is None:
             env_cfg.rear_sliding_grip_low, env_cfg.rear_sliding_grip_high = de.sliding_grip_range(init_meta)
         if args.pace is None:
@@ -411,6 +414,8 @@ def main():
         env_cfg.chase_share = args.chase
         env_cfg.chase_gap_low, env_cfg.chase_gap_high = args.chase_gap
         env_cfg.chase_scenarios = args.chase_scenarios
+        for k, v in de.chase_controller_overrides(args).items():
+            setattr(env_cfg, k, v)
         env_cfg.privileged = args.privileged_critic
         for t, w in zip(tracks, worlds):
             w.ghosts = de.load_ghosts(args.tracks, t)
@@ -658,7 +663,8 @@ def main():
         meta['chase'] = {'share': args.chase, 'gap_range': [float(g) for g in args.chase_gap],
                          'gap': 'outline', 'breathe_m': de.CHASE_BREATHE_M, 'inside_m': de.CHASE_INSIDE_M,
                          'scenarios': bool(args.chase_scenarios), 'privileged_critic': bool(args.privileged_critic),
-                         'residual_steer_only': bool(args.residual_steer_only)}
+                         'residual_steer_only': bool(args.residual_steer_only),
+                         'controller': {k: getattr(env_cfg, k) for k in de.CHASE_CONTROLLER}}
     if args.skill:
         # the plugin reads this: the skills it may ask the policy for
         meta['skill_range'] = [float(args.skill[0]), float(args.skill[1])]

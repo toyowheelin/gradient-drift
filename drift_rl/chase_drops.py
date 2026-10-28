@@ -168,6 +168,7 @@ def main():
     ap.add_argument('--cars', type=int, default=256)
     ap.add_argument('--seconds', type=float, default=120.0)
     ap.add_argument('--gaps', type=float, nargs=2, default=(0.0, 1.0), metavar=('LOW', 'HIGH'))
+    de.add_chase_controller_args(ap)
     args = ap.parse_args()
 
     w = fs.load_world(args.tracks, track=args.track)
@@ -183,7 +184,8 @@ def main():
         for path in args.policies:
             pol = Policy.load_json(path)
             cfg = replace(de.env_config_for(pol.meta), chase_gap_low=args.gaps[0], chase_gap_high=args.gaps[1],
-                          chase_scenarios=False, chase_share=1.0 if mode == 'chase' else 0.0)
+                          chase_scenarios=False, chase_share=1.0 if mode == 'chase' else 0.0,
+                          **de.chase_controller_overrides(args))
             d = drops(record(w, pol, cfg, args.cars, args.seconds, 11), mode == 'chase')
             results[(mode, path)] = d
             line(path, d, mode == 'chase')
