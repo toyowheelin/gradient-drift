@@ -159,6 +159,7 @@ def main():
     ap.add_argument('--chase-scenarios', action='store_true',
                     help='with --chase: start some chase episodes in hard situations (drift_env CHASE_SCENARIOS: '
                          'catch-ups, alongside into a transition, a lead mistake), as GT Sophy trained')
+    import drift_env as de
     de.add_chase_controller_args(ap)
     ap.add_argument('--privileged-critic', action='store_true',
                     help='with --chase: the value network also reads what the simulator knows and the policy does '
@@ -418,7 +419,7 @@ def main():
             setattr(env_cfg, k, v)
         env_cfg.privileged = args.privileged_critic
         for t, w in zip(tracks, worlds):
-            w.ghosts = de.load_ghosts(args.tracks, t)
+            w.ghosts = de.load_ghosts(args.tracks, t, args.lead_speed)
             if w.ghosts is None:
                 sys.exit(f"--chase: no ghosts for {t}; make them with record_ghosts.py --track {t}")
         print(f"chase: {args.chase:.0%} of episodes behind a ghost leader ({', '.join(f'{t} {len(w.ghosts)}' for t, w in zip(tracks, worlds))}), "
@@ -909,7 +910,7 @@ def main():
 
             b_obs = obs_buf.reshape(-1, de.OBS_SIZE)
             b_lead = lead_buf.reshape(-1)
-            b_priv = priv_buf.reshape(-1, n_priv)
+            b_priv = priv_buf.reshape(b_lead.shape[0], n_priv)
             b_act = act_buf.reshape(-1, de.ACT_SIZE)
             b_logp, b_adv, b_ret = logp_buf.reshape(-1), adv.reshape(-1), ret.reshape(-1)
             n = b_obs.shape[0]

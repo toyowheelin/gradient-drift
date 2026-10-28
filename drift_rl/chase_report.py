@@ -46,7 +46,7 @@ def main():
 
     w = fs.load_world(args.tracks, track=args.track)
     w.pace_ref = de.course_pace_reference(args.tracks, args.track, w)
-    w.ghosts = de.load_ghosts(args.tracks, args.track)
+    w.ghosts = de.load_ghosts(args.tracks, args.track, args.lead_speed)
     if w.ghosts is None:
         raise SystemExit(f'no ghosts for {args.track}: record_ghosts.py --track {args.track}')
     print(f"{'policy':<28} {'return':>13} {'drift':>11} {'chase':>6} {'gap':>6} {'in band':>8} "

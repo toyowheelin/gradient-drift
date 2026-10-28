@@ -577,6 +577,9 @@ class EnvConfig:
     chase_time_gap_blind_s: float = 0.3
     chase_response_s: float = 1.0
     chase_pace_max: float = 1.0
+    # ... and the bottom, as a share of pace_low: a chaser closing on a slower lead must slow under
+    # the solo pace range (only a policy trained to will drift there)
+    chase_pace_min: float = 1.0
     # also work out the privileged critic's inputs each step (PRIV_NAMES): DriftVecEnv.priv
     privileged: bool = False
     # Plugin settings (the names in GradientDriftConfiguration.cs / extra_cfg.yml) this car is
@@ -1169,7 +1172,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         a_idm = IDM_ACCEL * (1.0 - (v / v0) ** 4 - (s_star / max(gap, 0.1)) ** 2)
         a_idm += IDM_LEAD_ACCEL_GAIN * lead_a
         a_idm = max(-3.0 * IDM_BRAKE, a_idm)
-        pace = max(env_cfg[13], min(top, (v + a_idm * env_cfg[18]) / ref_ms))
+        pace = max(env_cfg[13] * env_cfg[20], min(top, (v + a_idm * env_cfg[18]) / ref_ms))
         s[fs.S_PACE] = pace
     asked_kmh = pace * min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6)
     # while chasing, the asked speed is the IDM's suggestion to the frozen driver, not a target the
@@ -1706,7 +1709,7 @@ def env_cfg_vector(cfg):
                      cfg.long_after_long_probability, cfg.recovery_start_fraction, cfg.recovery_lateral_m,
                      cfg.recovery_heading_rad, cfg.rear_sliding_grip_low, cfg.rear_sliding_grip_high,
                      cfg.pace_low, cfg.pace_high, cfg.pace_change_s, cfg.chase_time_gap_s,
-                     cfg.chase_time_gap_blind_s, cfg.chase_response_s, cfg.chase_pace_max])
+                     cfg.chase_time_gap_blind_s, cfg.chase_response_s, cfg.chase_pace_max, cfg.chase_pace_min])
 
 
 def ghost_arrays(world):
@@ -1721,11 +1724,28 @@ def ghost_arrays(world):
     return g, np.full(len(g), g.shape[1], dtype=np.int64)
 
 
-def load_ghosts(tracks_dir, track):
-    """<track>_ghosts.npz from the track's folder (record_ghosts.py), or None."""
+def load_ghosts(tracks_dir, track, speeds=(1.0,)):
+    """<track>_ghosts.npz from the track's folder (record_ghosts.py), or None; with speeds, every
+    ghost once at each of those shares of its speed (scale_ghosts)."""
     import track_files as tf
     path = os.path.join(tf.folder(tracks_dir, track), f'{track}_ghosts.npz')
-    return np.load(path)['ghosts'] if os.path.exists(path) else None
+    if not os.path.exists(path):
+        return None
+    g = np.load(path)['ghosts']
+    return np.concatenate([scale_ghosts(g, r) for r in speeds]) if tuple(speeds) != (1.0,) else g
+
+
+def scale_ghosts(g, r):
+    """Ghosts driving the same path at r times their speed: their clock runs 1 / r as long, speeds and
+    yaw rates are r times as large. A tandem lead drives under the chaser's limit, so a chaser has
+    speed in hand to close up with; leads recorded at the car's own limit leave it none."""
+    g = np.array(g, dtype=np.float64)
+    if r == 1.0:
+        return g
+    g[:, :, GH_T] /= r
+    g[:, :, GH_SPEED] *= r
+    g[:, :, GH_YAW] *= r
+    return g
 
 
 def surface_under(world, x, y, z):
@@ -2029,7 +2049,8 @@ def env_config_for(policy_meta=None, **overrides):
     return replace(cfg, **overrides) if overrides else cfg
 
 
-CHASE_CONTROLLER = ('chase_time_gap_s', 'chase_time_gap_blind_s', 'chase_response_s', 'chase_pace_max')
+CHASE_CONTROLLER = ('chase_time_gap_s', 'chase_time_gap_blind_s', 'chase_response_s', 'chase_pace_max',
+                    'chase_pace_min')
 
 
 def chase_controller_settings(saved):
@@ -2047,6 +2068,10 @@ def add_chase_controller_args(ap):
                     help='how far ahead (s) the gap law turns its acceleration into the pace it asks')
     ap.add_argument('--chase-pace-max', type=float, default=None, metavar='SHARE',
                     help='the top of the pace asked while chasing, as a share of the pace range\'s top')
+    ap.add_argument('--chase-pace-min', type=float, default=None, metavar='SHARE',
+                    help='the bottom of the pace asked while chasing, as a share of the pace range\'s bottom')
+    ap.add_argument('--lead-speed', type=float, nargs='+', default=(1.0,), metavar='SHARE',
+                    help='the ghost leads, each once at every one of these shares of its speed (0.9 = 10%% slower)')
 
 
 def chase_controller_overrides(args):
@@ -2058,6 +2083,8 @@ def chase_controller_overrides(args):
         out['chase_response_s'] = float(args.chase_response)
     if args.chase_pace_max is not None:
         out['chase_pace_max'] = float(args.chase_pace_max)
+    if args.chase_pace_min is not None:
+        out['chase_pace_min'] = float(args.chase_pace_min)
     return out
 
 

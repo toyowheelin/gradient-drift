@@ -173,7 +173,7 @@ def main():
 
     w = fs.load_world(args.tracks, track=args.track)
     w.pace_ref = de.course_pace_reference(args.tracks, args.track, w)
-    w.ghosts = de.load_ghosts(args.tracks, args.track)
+    w.ghosts = de.load_ghosts(args.tracks, args.track, args.lead_speed)
     if w.ghosts is None:
         raise SystemExit(f'no ghosts for {args.track}: record_ghosts.py --track {args.track}')
     head = f"{'policy':<30} {'drops':>5} {'drops/min':>8} {'lift':>6} {'brake':>6} {'lead held':>6} {'P(drop|lift)':>9} {'P(drop|brake)':>9}"
