@@ -126,6 +126,10 @@ def main():
                     help='with --residual: the second network adds to the steering only; the pedal and brake stay '
                          'the frozen network\'s, following the pace the gap law (IDM / CACC) asks for - the split '
                          'of the TRI / Stanford tandem cars, whose controller held the gap while the path set the line')
+    ap.add_argument('--init-pedal', type=float, default=None, metavar='SHARE',
+                    help='from scratch: the pedal a fresh network starts asking for (0 - 1). With '
+                         'EnableRearFrictionCircle the pedal drives the car, and a network starting at 0 coasts '
+                         'and can learn to stall rather than drive')
     ap.add_argument('--init-log-std', type=float, default=None,
                     help='log of the starting exploration noise (default -1.2; -2.3 with --init-policy)')
     ap.add_argument('--reward-from', default=None, metavar='CONFIG',
@@ -470,6 +474,11 @@ def main():
         return nn.Sequential(*layers, lin).to(dev)
 
     pi = mlp(de.ACT_SIZE, 0.01)            # starts ~0 = the existing controller
+    if args.init_pedal is not None and not args.init_policy and not args.resume:
+        # a fresh network asks for the pedal at this share: at 0 a pedal-mode car (EnableRearFrictionCircle)
+        # coasts, and a fresh network learns to sit still (chase_scratch1 stalled for 100M ticks)
+        with torch.no_grad():
+            pi[-1].bias[1] = args.init_pedal
     # the value network: with --privileged-critic it also reads drift_env.PRIV_NAMES (already scaled to
     # about +-1), the policy never does
     n_priv = de.N_PRIV if args.privileged_critic else 0
