@@ -14,7 +14,8 @@ without the chase inputs drives blind behind the ghost: the baseline.
                  (the asked gap, opened through the lead's transitions: drift_env CHASE_BREATHE_M)
   slip / line    mean difference to the lead where it passed the same spot: deg, m (the line from
                  CHASE_INSIDE_M inside the lead's in the turns)
-  hits           share of chase episodes ended by touching the lead
+  hits           share of chase episodes in which the car touched the lead (each touch ends the
+                 episode unless the policy was trained with chase_contact_ends 0)
 """
 import argparse
 from dataclasses import replace
@@ -59,7 +60,7 @@ def main():
         c = {k: v[had] for k, v in chase.items()}
         weight = c['chase_fraction'] * c['length']
         mean = lambda k: float(np.sum(c[k] * weight) / max(np.sum(weight), 1e-9))
-        hits = float(np.mean(c['end_reason'] == 6)) if had.any() else 0.0
+        hits = float(np.mean(c['contacts'] > 0)) if had.any() else 0.0
         print(f"{path[-28:]:<28} {np.mean(solo['return']):6.1f}/{np.mean(c['return']):6.1f} "
               f"{np.mean(solo['slide_fraction']):5.0%}/{mean('chase_drift_fraction'):4.0%} "
               f"{np.mean(c['chase_fraction']):6.0%} {mean('chase_mean_gap_m'):6.1f} {mean('chase_in_band_fraction'):8.0%} "

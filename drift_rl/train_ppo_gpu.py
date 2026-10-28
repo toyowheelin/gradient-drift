@@ -812,7 +812,7 @@ def main():
             cmean = lambda k: float(np.sum(ev[k][had] * wt) / max(np.sum(wt), 1e-9))
             last_chase.update({'return': float(np.mean(ev['return'][had])) if had.any() else float('nan'),
                                'gap': cmean('chase_mean_gap_m'), 'in_band': cmean('chase_in_band_fraction'),
-                               'hits': float(np.mean(ev['end_reason'][had] == 6)) if had.any() else 0.0,
+                               'hits': float(np.mean(ev['contacts'][had] > 0)) if had.any() else 0.0,
                                'slip': cmean('chase_slip_diff_deg'), 'line': cmean('chase_line_diff_m')})
         if last_eval['return'] > best_eval:
             best_eval = last_eval['return']

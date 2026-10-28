@@ -127,6 +127,7 @@ CHASE_START_M = (2.0, 15.0)      # where the lead pulls in, ahead of the car's n
 CHASE_JOIN_S = (1.0, 4.0)        # when it does, into the episode: the car is already driving, as a
                                  # bot is when a player pulls in front of it
 CHASE_LOST_M = -5.0              # a lead this far behind has been passed: dropped for the episode
+CHASE_CONTACT_LOST_S = 1.0       # chase_contact_ends 0: a touch this long is a crash and loses the lead
 CHASE_HISTORY = 400              # ticks of the lead's past searched for where it passed a spot
 # While chasing, the pace asked (the pace input and the pay for driving it) comes from the
 # Intelligent Driver Model (Treiber, Hennecke, Helbing 2000; https://traffic-simulation.de/info/info_IDM.html),
@@ -268,7 +269,7 @@ SLIDE_MIN_DEG, HIGH_ANGLE_MIN_DEG, SLIDE_MAX_DEG = 20.0, 40.0, 80.0
 # speed its pace asked for (pace x the course's reference speed where the car was), averaged the
 # same way (m/s), seconds since its last transition, and which way the course was turning there
 # (fast_sim co[:, 9]; 2 = no transition yet)]
-N_COUNTERS = 35       # ... [12, 13] the steering and pedal noise of a lower skill (SKILL_*), [14 - 19] its last two asked actions,
+N_COUNTERS = 36       # ... [12, 13] the steering and pedal noise of a lower skill (SKILL_*), [14 - 19] its last two asked actions,
 # [20 - 22] the way the car last rotated at swing_rate_degs or more (+1 / -1, 0 = not yet), seconds since, and which
 # way the course was turning there, [23 - 28] the chase: the lead's ghost (1 + its index; 0 = no lead), the ghost's
 # clock, its sample at that time, the asked gap (chase_gap), how late the lead is seen, the gap last seen,
@@ -282,6 +283,8 @@ C_CHASE_OFF = 32
 C_CHASE_SIDE = 33
 # [34] how far inside the AI line the chase slot is now, m (chase_line_shift)
 C_CHASE_SHIFT = 34
+# [35] ticks in contact with the lead so far, this touch (chase_contact_ends 0)
+C_CONTACT = 35
 # a steering reversal for the statistics: the steering action turning back by more than this
 # (fraction of full lock) in one tick
 STEER_REVERSAL_MIN = 0.05
@@ -485,6 +488,12 @@ class RewardConfig:
     # reference is (the TRI / Stanford tandem car tracks a path set from the lead's). The plugin can
     # do the same. 0 = off.
     chase_line_shift: float = 0.0
+    # 1 = touching the lead ends the episode (as above); 0 = it does not, as in GT Sophy (Wurman et al.
+    # 2022), which charged contact but raced on: the costs are charged once as the touch starts, the
+    # chase pays nothing while the cars overlap, and a touch that lasts CHASE_CONTACT_LOST_S loses the
+    # lead (a crash). The ghost lead is not pushed, so the chaser learns what a touch costs and keeps
+    # the rest of the episode to learn what comes after it, rather than every touch cutting it short.
+    chase_contact_ends: float = 1.0
 
     def vector(self):
         return np.array(list(asdict(self).values()), dtype=np.float64)
@@ -498,7 +507,8 @@ class RewardConfig:
  R_WRONG_SIDE, R_SIDE_CHANGE, R_PACE_OVER, R_PACE_MIN_PAY, R_PACE_AVG, R_PACE_UNDER, R_WEAVE,
  R_WEAVE_GAP, R_SWING, R_SWING_RATE, R_SWING_WINDOW, R_CHASE_PROX, R_CHASE_FAR, R_CHASE_ANGLE,
  R_CHASE_SLIP_FREE, R_CHASE_SLIP_ZERO, R_CHASE_LINE, R_CHASE_LINE_FREE, R_CHASE_LINE_ZERO,
- R_CHASE_CONTACT, R_CHASE_REAR_END, R_CHASE_GAIN, R_CHASE_SWITCH_PAY, R_CHASE_SLOT, R_CHASE_LINE_SHIFT) = range(59)
+ R_CHASE_CONTACT, R_CHASE_REAR_END, R_CHASE_GAIN, R_CHASE_SWITCH_PAY, R_CHASE_SLOT, R_CHASE_LINE_SHIFT,
+ R_CHASE_CONTACT_ENDS) = range(60)
 
 
 @dataclass
@@ -1296,6 +1306,9 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
             else:
                 near_pay = max(0.0, 1.0 - max(0.0, gap - target - 0.5) / rw[R_CHASE_FAR])
             in_band = off <= 1.0
+        if contact:
+            near_pay = 0.0          # no chase pay while touching (chase_contact_ends 0 lets it go on)
+            in_band = False
         moved = max(paid, 0.0)
         q_c = q
         if rw[R_CHASE_SWITCH_PAY] > 0.0:
@@ -1313,7 +1326,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         if rw[R_CHASE_GAIN] > 0.0 and counters[i, C_CHASE_OFF] >= 0.0:
             r += rw[R_CHASE_GAIN] * (counters[i, C_CHASE_OFF] - off)
         counters[i, C_CHASE_OFF] = off
-        if contact:
+        if contact and counters[i, C_CONTACT] == 0.0:
             r -= rw[R_CHASE_CONTACT] + rw[R_CHASE_REAR_END] * max(0.0, closing) ** 2
     front_over = abs(d[fs.D_FrontSlipAngleDeg]) - rw[R_FRONT_SLIP_FREE]
     if front_over > 0.0:
@@ -1347,7 +1360,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         reason = 3.0
     elif counters[i, 2] >= rw[R_STALL_LIMIT]:
         reason = 4.0
-    elif contact:
+    elif contact and rw[R_CHASE_CONTACT_ENDS] > 0.5:
         reason = 6.0
     term = reason > 0.0
     if term:
@@ -1439,8 +1452,15 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
             e[E_CHASE_HERE_TICKS] += 1.0
             e[E_CHASE_SLIP_DIFF] += slip_diff
             e[E_CHASE_LINE_DIFF] += line_diff
-        if contact:
+        if contact and counters[i, C_CONTACT] == 0.0:
             e[E_CONTACTS] += 1.0
+    if contact:
+        counters[i, C_CONTACT] += 1.0
+        if counters[i, C_CONTACT] * dt >= CHASE_CONTACT_LOST_S:
+            counters[i, C_GHOST] = 0.0          # a crash: the lead is gone
+            counters[i, C_CONTACT] = 0.0
+    else:
+        counters[i, C_CONTACT] = 0.0
 
     # ---- start the next tick, build its observation ----
     ndt = _sample_dt(rnd[i, 0], rnd[i, 1], env_cfg, dt)
