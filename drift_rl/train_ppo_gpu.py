@@ -122,6 +122,10 @@ def main():
                     help='with --init-policy and --chase: keep the starting network frozen and train a second one '
                          '(two layers of UNITS) added to its action only while a lead is present (residual '
                          'policy learning), so solo driving stays exactly the starting policy\'s')
+    ap.add_argument('--residual-steer-only', action='store_true',
+                    help='with --residual: the second network adds to the steering only; the pedal and brake stay '
+                         'the frozen network\'s, following the pace the gap law (IDM / CACC) asks for - the split '
+                         'of the TRI / Stanford tandem cars, whose controller held the gap while the path set the line')
     ap.add_argument('--init-log-std', type=float, default=None,
                     help='log of the starting exploration noise (default -1.2; -2.3 with --init-policy)')
     ap.add_argument('--reward-from', default=None, metavar='CONFIG',
@@ -482,7 +486,11 @@ def main():
             log_std[2] = float(np.log(BRAKE_INIT_STD))      # a new brake output: see BRAKE_INIT_BIAS
     if args.residual and not (args.init_policy and args.chase > 0.0):
         sys.exit('--residual needs --init-policy (the frozen network) and --chase')
+    if args.residual_steer_only and not args.residual:
+        sys.exit('--residual-steer-only needs --residual')
     res = mlp(de.ACT_SIZE, 0.01, args.residual) if args.residual else None
+    # which of the residual's outputs count: all, or (--residual-steer-only) the steering alone
+    res_mask = torch.tensor([1.0] + [0.0 if args.residual_steer_only else 1.0] * (de.ACT_SIZE - 1), device=dev)
     gate_slot = de.CHASE_OBS_SLOT            # lead_present, raw 0 / 1
     # with a residual the exploration noise stays where it starts: solo ticks give the entropy bonus a
     # free hand to widen it (the frozen network cannot answer), and the chase add-on then trains
@@ -494,7 +502,7 @@ def main():
         """The action mean; lead: the raw lead_present input (the residual's gate)."""
         mu = pi(x)
         if res is not None:
-            mu = mu + (lead > 0.5).to(mu.dtype)[:, None] * res(x)
+            mu = mu + (lead > 0.5).to(mu.dtype)[:, None] * res(x) * res_mask.to(mu.dtype)
         return mu
 
     # running statistics, kept in float64 on the network's device
@@ -640,7 +648,8 @@ def main():
         # the policy reads the chase inputs: it can follow a car ahead
         meta['chase'] = {'share': args.chase, 'gap_range': [float(g) for g in args.chase_gap],
                          'gap': 'outline', 'breathe_m': de.CHASE_BREATHE_M, 'inside_m': de.CHASE_INSIDE_M,
-                         'scenarios': bool(args.chase_scenarios), 'privileged_critic': bool(args.privileged_critic)}
+                         'scenarios': bool(args.chase_scenarios), 'privileged_critic': bool(args.privileged_critic),
+                         'residual_steer_only': bool(args.residual_steer_only)}
     if args.skill:
         # the plugin reads this: the skills it may ask the policy for
         meta['skill_range'] = [float(args.skill[0]), float(args.skill[1])]
@@ -680,6 +689,10 @@ def main():
             r = MLP([de.OBS_SIZE, args.residual, args.residual, de.ACT_SIZE])
             r.W = [l.weight.detach().double().cpu().numpy().copy() for l in rl]
             r.b = [l.bias.detach().double().cpu().numpy().copy() for l in rl]
+            # the outputs that do not count are written as zeros, so the file runs anywhere unchanged
+            keep = res_mask.cpu().numpy().astype(np.float64)
+            r.W[-1] = r.W[-1] * keep[:, None]
+            r.b[-1] = r.b[-1] * keep
         return Policy(m, obs_mean.cpu().numpy().copy(), obs_var.sqrt().cpu().numpy() + 1e-8,
                       dict(meta, trained_ticks=steps_done), r, gate_slot, 0.5)
 
