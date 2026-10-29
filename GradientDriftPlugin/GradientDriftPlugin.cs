@@ -88,6 +88,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     // up to ChasePaceMaxPercent of the policy's top pace.
     private const float ChaseOptInMeters = 7.5f;
     private const float ChaseOptOutMeters = 40f;
+    // A tandem policy: how much older than its arrival a player's car status is, about half a ping
+    // (training saw the lead 0.04 - 0.2 s late, drift_env.CHASE_DELAY_S)
+    private const float ChaseLeadLatencyS = 0.05f;
     private const float IdmAccel = 4f;
     private const float IdmBrake = 3f;
     private const float IdmFreeSpeed = 1.5f;
@@ -149,6 +152,11 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private readonly List<(DriftCarState State, float Arc)> _spaced = new();
     private readonly List<float> _playerArcs = new();
     private readonly List<float> _playerSpeeds = new();     // along the line, m/s, as _playerArcs
+    private readonly List<byte> _playerIds = new();         // their session ids, as _playerArcs
+    // A tandem policy (ReadsChase): each moving player's recent states, by session id, what a bot
+    // chasing them sees (ChaseInputs); times in seconds from _chaseEpochMs.
+    private readonly Dictionary<byte, LeadTrack> _leadTracks = new();
+    private long _chaseEpochMs = -1;
     private int[] _gapOrder = new int[8];
     private readonly float[] _observation = new float[DriftPolicy.ObservationSize];
 
@@ -933,6 +941,24 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 aiState.MaxSpeed, state.Policy, heading, state.PreviousPins, dt, state.WrongWayRecovering,
                 _car.MaxSteerAngleRadians, state.RearSlidingGrip, _courseEdges, state.Pace, state.Policy.PaceOver,
                 _car, _configuration.EnableTireLoadSensitivity, _skill);
+            if (policy.InputCount > DriftPolicy.ObservationSizeV6)
+            {
+                // the car ahead: all 0 unless this bot is chasing a player (ChasePlayers)
+                Array.Clear(_observation, ChaseInputs.Slot, ChaseInputs.Count);
+                if (policy.ReadsChase && state.ChasingPlayer && _lapArc != null && segmentA >= 0 && segmentA < _lapArc.Length
+                    && _leadTracks.TryGetValue(state.ChaseLeadId, out LeadTrack? lead) && lead.Count > 0)
+                {
+                    float arc = _lapArc[segmentA] + segmentT * Vector3.Distance(_spline.Points[segmentA].Position, _spline.Points[segmentB].Position);
+                    float leadAgeS = (_sessionManager.ServerTimeMilliseconds - _chaseEpochMs) / 1000f - lead.Latest.TimeS;
+                    ChaseInputs.Fill(_observation, lead, position.X, position.Z, heading, arc, crossTrackError,
+                        firstTick ? 0f : (state.OwnSpeed ?? 0f), _lapLength, dt, Math.Clamp(leadAgeS + ChaseLeadLatencyS, 0.04f, 0.2f),
+                        ChaseInputs.AskInput(_configuration.ChaseGapMeters), ref state.ChaseLastGap);
+                }
+                else
+                {
+                    state.ChaseLastGap = float.NaN;
+                }
+            }
 
             DriftPolicyAction action = policy.Evaluate(_observation);
             _timing.Add(PluginTiming.Part.Network, networkStart);
@@ -2367,7 +2393,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float halfRange = 0.5f * (high - low);
         if (byPace && (_configuration.LeadPlayers || _configuration.ChasePlayers))
         {
-            FindChasingPlayers();
+            FindChasingPlayers(policy);
         }
         for (int i = 0; i < n; i++)
         {
@@ -2398,7 +2424,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     ? "GradientDrift: a bot is leading a player {Gap:F0} m behind it"
                     : "GradientDrift: a bot stopped leading a player ({Gap:F0} m)", playerGap);
             }
-            if (byPace && _configuration.ChasePlayers && ChasePlayer(state, _spaced[i].Arc, low, high))
+            if (byPace && _configuration.ChasePlayers && ChasePlayer(policy, state, _spaced[i].Arc, low, high))
             {
                 state.RearSlidingGrip = _rearSlidingGrip;
             }
@@ -2415,10 +2441,14 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     }
 
     // ChasePlayers: whether this bot chases a player ahead of it, and if so its pace from the IDM.
-    private bool ChasePlayer(DriftCarState state, float arc, float low, float high)
+    // For a tandem policy as drift_env._step_one asks it in training: the gap between the outlines,
+    // the lead's speed along the line, its acceleration fed forward (CACC) and the pace held between
+    // ChasePaceMin of the policy's slowest pace and ChasePaceMaxPercent of its fastest.
+    private bool ChasePlayer(DriftPolicy policy, DriftCarState state, float arc, float low, float high)
     {
         float gap = -1f;
         float leadSpeed = 0f;
+        byte leadId = 0;
         for (int j = 0; j < _playerArcs.Count; j++)
         {
             float d = WrapAlongLap(_playerArcs[j] - arc);
@@ -2426,9 +2456,15 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             {
                 gap = d - CarLengthMeters;
                 leadSpeed = _playerSpeeds[j];
+                leadId = _playerIds[j];
             }
         }
         bool chasing = gap > -CarLengthMeters && gap < (state.ChasingPlayer ? ChaseOptOutMeters : ChaseOptInMeters);
+        if (chasing != state.ChasingPlayer || leadId != state.ChaseLeadId)
+        {
+            state.ChaseLastGap = float.NaN;
+        }
+        state.ChaseLeadId = leadId;
         if (chasing != state.ChasingPlayer)
         {
             state.ChasingPlayer = chasing;
@@ -2440,23 +2476,35 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         {
             return false;
         }
+        float leadAccel = 0f;
+        if (policy.ReadsChase && state.Heading.HasValue && !float.IsNaN(state.Policy.PaceArcM)
+            && _leadTracks.TryGetValue(leadId, out LeadTrack? lead) && lead.Count > 0)
+        {
+            ref readonly LeadSample l = ref lead.Latest;
+            gap = ChaseInputs.OutlineGap(state.Position.X, state.Position.Z, state.Heading.Value, state.Policy.PaceArcM,
+                l.X, l.Z, l.Heading, l.Arc, _lapLength);
+            leadSpeed = ChaseInputs.LineSpeed(lead, _lapLength);
+            leadAccel = ChaseInputs.Accel(lead);
+            low = policy.PaceLow * policy.ChasePaceMin;
+        }
         float v = MathF.Max(0f, state.LineSpeedMs);
         float top = MathF.Max(low, high * _configuration.ChasePaceMaxPercent / 100f);
         float v0 = MathF.Max(1f, IdmFreeSpeed * top * state.PaceOneMs);
         float desired = MathF.Max(0f, _configuration.ChaseGapMeters + v * _configuration.ChaseTimeGapSeconds
             + v * (v - leadSpeed) / (2f * MathF.Sqrt(IdmAccel * IdmBrake)));
         float ratio = desired / MathF.Max(gap, 0.1f);
-        float accel = MathF.Max(-3f * IdmBrake, IdmAccel * (1f - MathF.Pow(v / v0, 4) - ratio * ratio));
+        float accel = MathF.Max(-3f * IdmBrake, IdmAccel * (1f - MathF.Pow(v / v0, 4) - ratio * ratio) + leadAccel);
         state.Pace = Math.Clamp((v + accel * _configuration.ChaseResponseSeconds) / state.PaceOneMs, low, top);
         return true;
     }
 
     // LeadPlayers and ChasePlayers, once a tick: where each moving player is along the line, and
     // their speed along it, if they drive its way.
-    private void FindChasingPlayers()
+    private void FindChasingPlayers(DriftPolicy policy)
     {
         _playerArcs.Clear();
         _playerSpeeds.Clear();
+        _playerIds.Clear();
         if (_lapArc == null)
         {
             return;
@@ -2483,8 +2531,93 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             {
                 _playerArcs.Add(_lapArc[point]);
                 _playerSpeeds.Add(along / MathF.Max(new Vector2(forward.X, forward.Z).Length(), 1e-3f));
+                _playerIds.Add(car.SessionId);
+                if (policy.ReadsChase && _configuration.ChasePlayers)
+                {
+                    RecordLeadTrack(car, point);
+                }
             }
         }
+    }
+
+    // A tandem policy: the player's car status as one LeadSample when it is new (its client's
+    // update), in drift_rl's terms (record_ghosts.py / telemetry_ghosts.py columns). The status
+    // carries no brake: the brake lights stand for it (public-server drivers' brake reads 0.86 -
+    // 0.96 when on). The road wheels' angle comes back through the steering visual's byte scale.
+    private void RecordLeadTrack(EntryCar car, int point)
+    {
+        long nowMs = _sessionManager.ServerTimeMilliseconds;
+        if (_chaseEpochMs < 0)
+        {
+            _chaseEpochMs = nowMs;
+        }
+        float timeS = (nowMs - _chaseEpochMs) / 1000f;
+        if (!_leadTracks.TryGetValue(car.SessionId, out LeadTrack? track))
+        {
+            track = new LeadTrack();
+            _leadTracks[car.SessionId] = track;
+        }
+        var status = car.Status;
+        if (track.Count > 0)
+        {
+            ref readonly LeadSample last = ref track.Latest;
+            if (timeS - last.TimeS > 1f)
+            {
+                track.Clear();         // a stale history: the player stopped, left or teleported
+            }
+            else if (last.X == status.Position.X && last.Z == status.Position.Z)
+            {
+                return;                // no new update from its client yet
+            }
+        }
+
+        var (a, b, t) = FindInterpolationSegment(status.Position, point);
+        Vector3 forward = Vector3.Lerp(_spline.Operations.GetForwardVector(a), _spline.Operations.GetForwardVector(b), t);
+        Vector3 lineDirection = forward.LengthSquared() > 0.0001f
+            ? Vector3.Normalize(new Vector3(forward.X, 0f, forward.Z))
+            : Vector3.UnitX;
+        Vector3 pathPosition = Vector3.Lerp(_spline.Points[a].Position, _spline.Points[b].Position, t);
+        float heading = status.Rotation.X + MathF.PI / 2f;
+        heading = MathF.Atan2(MathF.Sin(heading), MathF.Cos(heading));
+        Vector2 velocity = new Vector2(status.Velocity.X, status.Velocity.Z);
+        float speed = velocity.Length();
+        float slip = speed > 0.5f ? WrapPiF(heading - MathF.Atan2(velocity.Y, velocity.X)) : 0f;
+        float yaw = 0f;
+        if (track.Count > 0)
+        {
+            int back = track.Back(track.Count - 1, 0.1f);
+            ref readonly LeadSample before = ref track[back];
+            float span = timeS - before.TimeS;
+            if (span > 1e-3f)
+            {
+                yaw = WrapPiF(heading - before.Heading) / span;
+            }
+        }
+        float wheelUnits = _configuration.SteeringVisualSign * _configuration.SteeringVisualWheelByteUnitsPerDegree;
+        float steerDeg = MathF.Abs(wheelUnits) > 1e-3f ? (status.WheelAngle - 127f) / wheelUnits : 0f;
+        track.Add(new LeadSample
+        {
+            TimeS = timeS,
+            X = status.Position.X,
+            Z = status.Position.Z,
+            Heading = heading,
+            Slip = slip,
+            Yaw = yaw,
+            Speed = speed,
+            Arc = _lapArc![a] + t * Vector3.Distance(_spline.Points[a].Position, _spline.Points[b].Position),
+            Cte = CrossTrackErrorCalculator.Compute(status.Position, pathPosition, lineDirection),
+            Steer = steerDeg * MathF.PI / 180f,
+            Pedal = status.Gas / 255f,
+            Brake = (status.StatusFlag & CarStatusFlags.BrakeLightsOn) != 0 ? 1f : 0f,
+        });
+    }
+
+    private static float WrapPiF(float angle)
+    {
+        float shifted = (angle + MathF.PI) % (2f * MathF.PI);
+        if (shifted < 0f)
+            shifted += 2f * MathF.PI;
+        return shifted - MathF.PI;
     }
 
     // LeadPlayers: from the nearest player behind this bot (or its train's last car) to that tail,

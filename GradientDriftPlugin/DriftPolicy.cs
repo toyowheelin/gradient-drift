@@ -82,8 +82,11 @@ public sealed class DriftPolicy
     // ("pace_kmh_range") km/h / 50. The newest also read 54, how far over the speed asked of it the
     // car has been driving lately (PaceOver; needs the course's pace reference file).
     // The any-car policies read 55 - 65 as well, what tells this car from another (CarSpec.CarInputs),
-    // and the newest 66, how good a driver to be (the skill, 0 - 1).
-    public const int ObservationSize = 67;
+    // and the newest 66, how good a driver to be (the skill, 0 - 1). A tandem policy reads 67 - 93
+    // as well, the car ahead (ChaseInputs), and carries a residual network added to the actions only
+    // while one is there.
+    public const int ObservationSize = ChaseInputs.Slot + ChaseInputs.Count;
+    public const int ObservationSizeV6 = ChaseInputs.Slot;
     public const int ObservationSizeV5 = 66;
     public const int ObservationSizeV4 = 55;
     public const int ObservationSizeV1 = 46;
@@ -121,7 +124,7 @@ public sealed class DriftPolicy
     public IReadOnlyList<string> Tracks { get; private set; } = Array.Empty<string>();
     public bool TrainedOnGeneratedCourses { get; private set; }
 
-    // How many inputs this policy reads (ObservationSizeV1, V2, V3 or ObservationSize).
+    // How many inputs this policy reads (ObservationSizeV1 ... V6 or ObservationSize).
     public int InputCount { get; }
     public bool ReadsCourseRoom => InputCount > ObservationSizeV1;
     // A policy that reads the pace and was trained with one: the plugin spaces bots by pace
@@ -138,6 +141,11 @@ public sealed class DriftPolicy
     public bool ReadsSkill => InputCount > ObservationSizeV5;
     public float SkillLow { get; private set; } = 1f;
     public float SkillHigh { get; private set; } = 1f;
+    // A tandem policy: reads the car ahead and adds its residual network's actions while input
+    // _residualGate is above _residualGateAbove (lead_present). ChasePaceMin: the bottom of the
+    // chase pace in training, a share of PaceLow ("chase.controller.chase_pace_min").
+    public bool ReadsChase => InputCount > ObservationSizeV6 && _residualWeights != null;
+    public float ChasePaceMin { get; private set; } = 1f;
     // How long the pace error averages over, seconds ("pace_average_s"; the reward's).
     public float PaceAverageSeconds { get; private set; } = 1f;
     // How many outputs it has (ActionSizeV1 or ActionSize).
@@ -170,6 +178,11 @@ public sealed class DriftPolicy
     private readonly float[][] _weights;
     private readonly float[][] _biases;
     private readonly float[][] _activations;
+    private float[][]? _residualWeights;
+    private float[][]? _residualBiases;
+    private float[][]? _residualActivations;
+    private int _residualGate;
+    private float _residualGateAbove;
 
     // Per spline point, built once at load: direction of travel, the point id each look-ahead
     // distance further on, and the tightest radius within the look-ahead window. Same
@@ -272,12 +285,12 @@ public sealed class DriftPolicy
 
             int obsSize = root.GetProperty("obs_size").GetInt32();
             int actionSize = root.GetProperty("action_size").GetInt32();
-            if ((obsSize != ObservationSize && obsSize != ObservationSizeV5 && obsSize != ObservationSizeV4
+            if ((obsSize != ObservationSize && obsSize != ObservationSizeV6 && obsSize != ObservationSizeV5 && obsSize != ObservationSizeV4
                  && obsSize != ObservationSizeV3 && obsSize != ObservationSizeV2 && obsSize != ObservationSizeV1)
                 || (actionSize != ActionSize && actionSize != ActionSizeV1))
             {
-                Log.Warning("GradientDrift: policy file {Path} expects {ObsSize} observations / {ActionSize} actions, this build provides {BuildObs} (or {V5Obs}, {V4Obs}, {V3Obs}, {MidObs} or {OldObs}) / {BuildActions} (or {OldActions})",
-                    Path.GetFullPath(path), obsSize, actionSize, ObservationSize, ObservationSizeV5, ObservationSizeV4, ObservationSizeV3, ObservationSizeV2, ObservationSizeV1, ActionSize, ActionSizeV1);
+                Log.Warning("GradientDrift: policy file {Path} expects {ObsSize} observations / {ActionSize} actions, this build provides {BuildObs} (or {V6Obs}, {V5Obs}, {V4Obs}, {V3Obs}, {MidObs} or {OldObs}) / {BuildActions} (or {OldActions})",
+                    Path.GetFullPath(path), obsSize, actionSize, ObservationSize, ObservationSizeV6, ObservationSizeV5, ObservationSizeV4, ObservationSizeV3, ObservationSizeV2, ObservationSizeV1, ActionSize, ActionSizeV1);
                 return null;
             }
 
@@ -313,57 +326,12 @@ public sealed class DriftPolicy
                 }
             }
 
-            JsonElement layersElement = root.GetProperty("layers");
-            int layerCount = layersElement.GetArrayLength();
-            var weights = new float[layerCount][];
-            var biases = new float[layerCount][];
-            int inputs = obsSize;
-            int layerIndex = 0;
-            foreach (JsonElement layerElement in layersElement.EnumerateArray())
+            if (!TryReadLayers(path, root.GetProperty("layers"), obsSize, "", out float[][] weights, out float[][] biases))
             {
-                string activation = layerElement.GetProperty("activation").GetString() ?? "";
-                string expectedActivation = layerIndex < layerCount - 1 ? "tanh" : "linear";
-                if (activation != expectedActivation)
-                {
-                    Log.Warning("GradientDrift: policy file {Path} layer {Layer} has activation '{Activation}', expected '{Expected}'",
-                        Path.GetFullPath(path), layerIndex, activation, expectedActivation);
-                    return null;
-                }
-
-                float[] bias = ReadFloatArray(layerElement.GetProperty("b"));
-                int outputs = bias.Length;
-                JsonElement weightRows = layerElement.GetProperty("W");
-                if (outputs == 0 || weightRows.GetArrayLength() != outputs)
-                {
-                    Log.Warning("GradientDrift: policy file {Path} layer {Layer} has mismatched W/b sizes",
-                        Path.GetFullPath(path), layerIndex);
-                    return null;
-                }
-
-                var flat = new float[outputs * inputs];
-                int rowIndex = 0;
-                foreach (JsonElement rowElement in weightRows.EnumerateArray())
-                {
-                    if (rowElement.GetArrayLength() != inputs)
-                    {
-                        Log.Warning("GradientDrift: policy file {Path} layer {Layer} row {Row} has {Got} weights, expected {Expected}",
-                            Path.GetFullPath(path), layerIndex, rowIndex, rowElement.GetArrayLength(), inputs);
-                        return null;
-                    }
-                    int column = 0;
-                    foreach (JsonElement value in rowElement.EnumerateArray())
-                    {
-                        flat[rowIndex * inputs + column] = (float)value.GetDouble();
-                        column++;
-                    }
-                    rowIndex++;
-                }
-
-                weights[layerIndex] = flat;
-                biases[layerIndex] = bias;
-                inputs = outputs;
-                layerIndex++;
+                return null;
             }
+            int layerCount = weights.Length;
+            int inputs = layerCount > 0 ? biases[layerCount - 1].Length : 0;
 
             if (layerCount == 0 || inputs != actionSize)
             {
@@ -371,9 +339,53 @@ public sealed class DriftPolicy
                     Path.GetFullPath(path), actionSize);
                 return null;
             }
+            float[][]? residualWeights = null;
+            float[][]? residualBiases = null;
+            int residualGate = -1;
+            float residualGateAbove = 0.5f;
+            if (root.TryGetProperty("residual", out JsonElement residualElement))
+            {
+                residualGate = residualElement.GetProperty("gate_input").GetInt32();
+                residualGateAbove = (float)residualElement.GetProperty("gate_above").GetDouble();
+                if (residualGate != ChaseInputs.Slot || obsSize != ObservationSize)
+                {
+                    Log.Warning("GradientDrift: policy file {Path} has a residual network gated by input {Gate} of {ObsSize}; this build runs one gated by the car ahead (input {Slot} of {BuildObs})",
+                        Path.GetFullPath(path), residualGate, obsSize, ChaseInputs.Slot, ObservationSize);
+                    return null;
+                }
+                if (!TryReadLayers(path, residualElement.GetProperty("layers"), obsSize, "residual ", out residualWeights, out residualBiases))
+                {
+                    return null;
+                }
+                if (residualWeights.Length == 0 || residualBiases[^1].Length != actionSize)
+                {
+                    Log.Warning("GradientDrift: policy file {Path} residual network does not end in a {ActionSize}-unit layer",
+                        Path.GetFullPath(path), actionSize);
+                    return null;
+                }
+            }
 
             var policy = new DriftPolicy(Path.GetFullPath(path), track, trainedTicks, obsSize, actionSize, obsMean, obsStd, obsClip,
                 weights, biases, lookaheadMeters, minRadiusWindowMeters, points);
+            if (residualWeights != null && residualBiases != null)
+            {
+                policy._residualWeights = residualWeights;
+                policy._residualBiases = residualBiases;
+                policy._residualActivations = new float[residualBiases.Length + 1][];
+                policy._residualActivations[0] = policy._activations[0];
+                for (int layer = 0; layer < residualBiases.Length; layer++)
+                {
+                    policy._residualActivations[layer + 1] = new float[residualBiases[layer].Length];
+                }
+                policy._residualGate = residualGate;
+                policy._residualGateAbove = residualGateAbove;
+                if (root.TryGetProperty("chase", out JsonElement chaseElement) && chaseElement.ValueKind == JsonValueKind.Object
+                    && chaseElement.TryGetProperty("controller", out JsonElement controllerElement)
+                    && controllerElement.TryGetProperty("chase_pace_min", out JsonElement paceMinElement))
+                {
+                    policy.ChasePaceMin = Math.Clamp((float)paceMinElement.GetDouble(), 0.1f, 1f);
+                }
+            }
             bool fractionPaces = root.TryGetProperty("pace_fraction_range", out JsonElement paceRangeElement);
             if (fractionPaces || root.TryGetProperty("pace_kmh_range", out paceRangeElement))
             {
@@ -466,6 +478,63 @@ public sealed class DriftPolicy
             Log.Warning(ex, "GradientDrift: failed to read policy file {Path}", Path.GetFullPath(path));
             return null;
         }
+    }
+
+    // The tanh layers and the linear last one of a network on inputCount inputs; false, logged, on any problem.
+    private static bool TryReadLayers(string path, JsonElement layersElement, int inputCount, string what,
+        out float[][] weights, out float[][] biases)
+    {
+        int layerCount = layersElement.GetArrayLength();
+        weights = new float[layerCount][];
+        biases = new float[layerCount][];
+        int inputs = inputCount;
+        int layerIndex = 0;
+        foreach (JsonElement layerElement in layersElement.EnumerateArray())
+        {
+            string activation = layerElement.GetProperty("activation").GetString() ?? "";
+            string expectedActivation = layerIndex < layerCount - 1 ? "tanh" : "linear";
+            if (activation != expectedActivation)
+            {
+                Log.Warning("GradientDrift: policy file {Path} {What}layer {Layer} has activation '{Activation}', expected '{Expected}'",
+                    Path.GetFullPath(path), what, layerIndex, activation, expectedActivation);
+                return false;
+            }
+
+            float[] bias = ReadFloatArray(layerElement.GetProperty("b"));
+            int outputs = bias.Length;
+            JsonElement weightRows = layerElement.GetProperty("W");
+            if (outputs == 0 || weightRows.GetArrayLength() != outputs)
+            {
+                Log.Warning("GradientDrift: policy file {Path} {What}layer {Layer} has mismatched W/b sizes",
+                    Path.GetFullPath(path), what, layerIndex);
+                return false;
+            }
+
+            var flat = new float[outputs * inputs];
+            int rowIndex = 0;
+            foreach (JsonElement rowElement in weightRows.EnumerateArray())
+            {
+                if (rowElement.GetArrayLength() != inputs)
+                {
+                    Log.Warning("GradientDrift: policy file {Path} {What}layer {Layer} row {Row} has {Got} weights, expected {Expected}",
+                        Path.GetFullPath(path), what, layerIndex, rowIndex, rowElement.GetArrayLength(), inputs);
+                    return false;
+                }
+                int column = 0;
+                foreach (JsonElement value in rowElement.EnumerateArray())
+                {
+                    flat[rowIndex * inputs + column] = (float)value.GetDouble();
+                    column++;
+                }
+                rowIndex++;
+            }
+
+            weights[layerIndex] = flat;
+            biases[layerIndex] = bias;
+            inputs = outputs;
+            layerIndex++;
+        }
+        return true;
     }
 
     private static float[] ReadFloatArray(JsonElement element)
@@ -573,27 +642,15 @@ public sealed class DriftPolicy
             input[i] = Math.Clamp((obs[i] - _obsMean[i]) / _obsStd[i], -_obsClip, _obsClip);
         }
 
-        int lastLayer = _weights.Length - 1;
-        for (int layer = 0; layer <= lastLayer; layer++)
+        float[] output = NetworkMath.Forward(_weights, _biases, _activations);
+        if (_residualWeights != null && obs[_residualGate] > _residualGateAbove)
         {
-            float[] layerWeights = _weights[layer];
-            float[] layerBias = _biases[layer];
-            float[] layerInput = _activations[layer];
-            float[] layerOutput = _activations[layer + 1];
-            int inputCount = layerInput.Length;
-            for (int o = 0; o < layerOutput.Length; o++)
+            float[] residual = NetworkMath.Forward(_residualWeights, _residualBiases!, _residualActivations!);
+            for (int o = 0; o < output.Length; o++)
             {
-                float sum = layerBias[o];
-                int rowStart = o * inputCount;
-                for (int i = 0; i < inputCount; i++)
-                {
-                    sum += layerWeights[rowStart + i] * layerInput[i];
-                }
-                layerOutput[o] = layer < lastLayer ? MathF.Tanh(sum) : sum;
+                output[o] += residual[o];
             }
         }
-
-        float[] output = _activations[lastLayer + 1];
         float steer = output[0];
         float speed = output[1];
         float brake = OutputCount > ActionSizeV1 ? output[2] : 0f;
