@@ -2,7 +2,7 @@
 telemetry_ghosts.py - a human's laps as ghost leaders for tandem training, beside record_ghosts.py's.
 
     python telemetry_ghosts.py --track driftplayground_2021 <telemetria>.csv [--seconds-apart 25]
-    python telemetry_ghosts.py --track <track> ai_car_monitor_<date>_<time>.csv [--cars 1 4 16]
+    python telemetry_ghosts.py --track <track> ai_car_monitor_<date>_<time>.csv[:1,4,16] ...
 
 The in-game telemetry app's CSV (human_recording.py) of someone driving the course in Assetto Corsa
 becomes ghosts like record_ghosts.py's: the same columns, sampled every --tick seconds, cut into runs
@@ -28,7 +28,8 @@ middle minus rear axle middle), and the body slip is the course angle minus that
 is cut into stretches where it stays on the track: a sample with a value out of range, a move
 faster than --max-kmh between frames (a reset to the pits), the body turning over 0.6 rad in one
 frame (a network correction) or a gap of over a second ends one. Only stretches as long as a ghost
-give runs. A public server can run another version of the track: the median distance from the
+give runs. A recording name may end in :<CarIds> (ai_car_monitor_x.csv:4,8,15) to take only
+those cars from it. A public server can run another version of the track: the median distance from the
 AI line printed for each lead shows it (a few metres is driving; tens is another layout). Driver names are read nowhere: cars are told apart by the app's
 CarId and printed with their model.
 """
@@ -174,7 +175,6 @@ def main():
     ap.add_argument('--wheelbase', type=float, default=2.75)
     ap.add_argument('--front-share', type=float, default=0.54, help='static weight on the front axle')
     ap.add_argument('--steer-ratio', type=float, default=0.13, help='road wheel deg per steering wheel deg')
-    ap.add_argument('--cars', type=int, nargs='+', help='AI Car Monitor CSVs: only these CarIds')
     ap.add_argument('--max-kmh', type=float, default=180.0,
                     help='AI Car Monitor CSVs: a move faster than this between frames ends a stretch')
     args = ap.parse_args()
@@ -197,9 +197,13 @@ def main():
     new = []
     leads = []
     for path in args.recordings:
+        cars = None
+        head, _, tail = path.rpartition(':')
+        if head and tail.replace(',', '').isdigit():
+            path, cars = head, {int(n) for n in tail.split(',')}
         if is_crowd(path):
             leads += [(f'{os.path.basename(path)} car {car_id} ({model})', c) for car_id, model, c in
-                      crowd_paths(path, args.steer_ratio, args.max_kmh, args.cars)]
+                      crowd_paths(path, args.steer_ratio, args.max_kmh, cars)]
         else:
             leads.append((os.path.basename(path), car_path(path, args.wheelbase, args.front_share,
                                                            args.steer_ratio)))
