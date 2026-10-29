@@ -79,15 +79,13 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private const float LeadMinSpeedMs = 5f;
     private const float CarLengthMeters = 4.5f;
 
-    // ChasePlayers: a bot chases a player who pulls in within ChaseOptInMeters of its nose (about
-    // 25 ft, the owner's opt-in), until they are ChaseOptOutMeters ahead. Its pace comes from the
+    // ChasePlayers: a bot chases a player who pulls in within ChaseOptInMeters of its nose (default
+    // about 25 ft, the owner's opt-in), until they are ChaseOptOutMeters ahead. Its pace comes from the
     // Intelligent Driver Model (Treiber, Hennecke, Helbing 2000), the standard car-following law of
     // traffic simulation, with the constants drift_env trains with (IDM_*): desired gap
     // s* = ChaseGapMeters + v * ChaseTimeGapSeconds + v * dv / (2 sqrt(IdmAccel * IdmBrake)), the
     // acceleration it gives turned into a speed ChaseResponseSeconds ahead, and that into the pace,
     // up to ChasePaceMaxPercent of the policy's top pace.
-    private const float ChaseOptInMeters = 7.5f;
-    private const float ChaseOptOutMeters = 40f;
     // A tandem policy: how much older than its arrival a player's car status is, about half a ping
     // (training saw the lead 0.04 - 0.2 s late, drift_env.CHASE_DELAY_S)
     private const float ChaseLeadLatencyS = 0.05f;
@@ -2459,7 +2457,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 leadId = _playerIds[j];
             }
         }
-        bool chasing = gap > -CarLengthMeters && gap < (state.ChasingPlayer ? ChaseOptOutMeters : ChaseOptInMeters);
+        bool chasing = gap > -CarLengthMeters && gap < (state.ChasingPlayer
+            ? MathF.Max(_configuration.ChaseOptOutMeters, _configuration.ChaseOptInMeters) : _configuration.ChaseOptInMeters);
         if (chasing != state.ChasingPlayer || leadId != state.ChaseLeadId)
         {
             state.ChaseLastGap = float.NaN;

@@ -65,6 +65,10 @@ public class GradientDriftConfiguration
     // Intelligent Driver Model, aiming ChaseGapMeters behind them. A policy that reads its pace only.
     public bool ChasePlayers { get; set; } = false;
     public float ChaseGapMeters { get; set; } = 2f;
+    // How far ahead of a bot's nose a player is taken up (about 25 ft by default, the owner's opt-in),
+    // and how far ahead they get before it gives up, metres along the line.
+    public float ChaseOptInMeters { get; set; } = 7.5f;
+    public float ChaseOptOutMeters { get; set; } = 40f;
     // The model's time gap (drift_env chase_time_gap_blind_s: a player's plan is unknown), how far
     // ahead its acceleration becomes the pace asked (chase_response_s), and the top of that pace as
     // a percentage of the policy's top pace (chase_pace_max): a chaser needs some speed over the
