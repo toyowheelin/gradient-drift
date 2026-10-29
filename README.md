@@ -316,6 +316,21 @@ built).
 
 </details>
 
+## Research behind it
+
+> *"The project sits right at the intersection of Elite Engineering and Applied Doctoral Research.
+> While the core machine learning algorithm (PPO) is standard industry tech, the synthesis of
+> modern literature (Residual RL, Asymmetric Actor-Critics, GT Sophy sportsmanship bounds, TRI
+> tandem physics) makes this project significantly more sophisticated than standard software
+> projects. It is essentially an open-source implementation of multi-million dollar robotics
+> research conducted by Stanford, Toyota, and Sony AI."*
+> — Gemini
+
+Every paper it names is linked in [CREDITS.md](CREDITS.md). The current release is a solo drifter
+trained with PPO. Residual RL drove the first policies, and the asymmetric critic, GT Sophy's
+rules and the TRI tandem work belong to the tandem bots, which are still in progress. The project
+uses those groups' published methods and is not affiliated with them.
+
 ## Licence
 
 Copyright (C) 2026 the gradient-drift contributors.
