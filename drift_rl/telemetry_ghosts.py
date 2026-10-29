@@ -2,6 +2,7 @@
 telemetry_ghosts.py - a human's laps as ghost leaders for tandem training, beside record_ghosts.py's.
 
     python telemetry_ghosts.py --track driftplayground_2021 <telemetria>.csv [--seconds-apart 25]
+    python telemetry_ghosts.py --track <track> ai_car_monitor_<date>_<time>.csv [--cars 1 4 16]
 
 The in-game telemetry app's CSV (human_recording.py) of someone driving the course in Assetto Corsa
 becomes ghosts like record_ghosts.py's: the same columns, sampled every --tick seconds, cut into runs
@@ -19,6 +20,17 @@ slip angle from the rear tires' slip angle and the yaw balance tan(rear slip) = 
 b the CG to rear axle distance (--wheelbase, --front-share; the defaults are the E36 Touring's);
 heading = course angle - body slip; yaw rate its derivative. Steering: the road wheel turns
 --steer-ratio x the steering wheel's degrees (0.13 for the E36, fitted to the front tires' slip).
+
+An AI Car Monitor CSV (the in-game app that logs every car this client sees, one row per car per
+frame) gives a lead per car, other drivers on a public server included. A remote car's tire
+values are not sent, so its heading comes from its four tire contact points instead (front axle
+middle minus rear axle middle), and the body slip is the course angle minus that heading. Each car
+is cut into stretches where it stays on the track: a sample with a value out of range, a move
+faster than --max-kmh between frames (a reset to the pits), the body turning over 0.6 rad in one
+frame (a network correction) or a gap of over a second ends one. Only stretches as long as a ghost
+give runs. A public server can run another version of the track: the median distance from the
+AI line printed for each lead shows it (a few metres is driving; tens is another layout). Driver names are read nowhere: cars are told apart by the app's
+CarId and printed with their model.
 """
 import argparse
 import os
@@ -33,6 +45,7 @@ import fast_sim as fs
 import track_files as tf
 
 RAW_S = 0.006       # the app's sample spacing, s (its clock is in whole milliseconds)
+CROWD_S = 0.02      # AI Car Monitor rows (one per frame, ~27 a second) resampled to this spacing
 
 
 def car_path(path, wheelbase, front_share, steer_ratio):
@@ -71,6 +84,68 @@ def car_path(path, wheelbase, front_share, steer_ratio):
                 steer=np.radians(steer_ratio * col['Steer']), pedal=col['Throttle'], brake=col['Brake'])
 
 
+def is_crowd(path):
+    """True for an AI Car Monitor CSV (every car, a CarId column), False for the telemetria app's."""
+    return 'CarId' in pd.read_csv(path, nrows=0).columns
+
+
+def crowd_paths(path, steer_ratio, max_kmh, cars=None):
+    """car_path's dict for each stretch of each car in an AI Car Monitor CSV, with its CarId and
+    model: [(car_id, model, path dict)]."""
+    cols = ['ClientTimeMs', 'CarId', 'CarModel', 'X', 'Z', 'SpeedKMH', 'Gas', 'Brake', 'Steer'] + \
+        [f'Wheel{w}_{a}' for w in ('FL', 'FR', 'RL', 'RR') for a in 'XZ']
+    d = pd.read_csv(path, usecols=cols)
+    out = []
+    for car_id, c in d.groupby('CarId'):
+        if cars and car_id not in cars:
+            continue
+        c = c.sort_values('ClientTimeMs').drop_duplicates('ClientTimeMs').reset_index(drop=True)
+        t = (c.ClientTimeMs.values - c.ClientTimeMs.values[0]) / 1000.0
+        fx = 0.5 * (c.WheelFL_X + c.WheelFR_X - c.WheelRL_X - c.WheelRR_X).values
+        fz = 0.5 * (c.WheelFL_Z + c.WheelFR_Z - c.WheelRL_Z - c.WheelRR_Z).values
+        wheelbase = np.hypot(fx, fz)
+        good = (np.abs(c.X.values) < 5000) & (np.abs(c.Z.values) < 5000) & (c.SpeedKMH.values < 300) \
+            & (wheelbase > 1.5) & (wheelbase < 4.0)
+        steer = np.nan_to_num(c.Steer.values)                 # some cars never send it
+        step = np.hypot(np.diff(c.X.values), np.diff(c.Z.values))
+        turn = np.abs(np.angle(np.exp(1j * np.diff(np.arctan2(fz, fx)))))
+        # a body turning over 0.6 rad in a frame (~17 rad/s) is a network correction, not driving
+        fast = step / np.maximum(np.diff(t), 1e-3) * 3.6 > max_kmh
+        breaks = np.r_[True, fast | (turn > 0.6) | (np.diff(t) > 1.0)] | ~good
+        # stretches: good samples between breaks (a bad sample starts one, and is left out)
+        stretch = np.cumsum(breaks)
+        for n in np.unique(stretch[good]):
+            k = np.flatnonzero((stretch == n) & good)
+            if t[k[-1]] - t[k[0]] < 2.0:
+                continue
+            out.append((int(car_id), c.CarModel.iloc[k[0]],
+                        stretch_path(t[k], c.X.values[k], c.Z.values[k], np.arctan2(fz[k], fx[k]),
+                                     steer[k], c.Gas.values[k], c.Brake.values[k], steer_ratio)))
+    return out
+
+
+def stretch_path(t, x_raw, z_raw, heading_raw, steer, gas, brake, steer_ratio):
+    """car_path's dict from one car's positions and body heading on an uneven clock."""
+    grid = np.arange(t[0], t[-1], CROWD_S)
+    win = 15                                               # 0.3 s
+    if len(grid) <= win:
+        win = len(grid) - 1 - (len(grid) % 2 == 0)
+    x_g, z_g, h_g = (np.interp(grid, t, a) for a in (x_raw, z_raw, np.unwrap(heading_raw)))
+    x = savgol_filter(x_g, win, 3)
+    z = savgol_filter(z_g, win, 3)
+    vx_w = savgol_filter(x_g, win, 3, deriv=1, delta=CROWD_S)
+    vz_w = savgol_filter(z_g, win, 3, deriv=1, delta=CROWD_S)
+    v = np.hypot(vx_w, vz_w)
+    course = np.unwrap(np.arctan2(vz_w, vx_w))
+    heading = savgol_filter(h_g, win, 3)
+    yaw = savgol_filter(h_g, win, 3, deriv=1, delta=CROWD_S)
+    # course is meaningless when barely moving: keep the body's own heading there
+    beta = np.where(v > 1.0, np.arctan2(np.sin(course - heading), np.cos(course - heading)), 0.0)
+    return dict(t=grid - grid[0], x=x, z=z, heading=heading, slip=-beta, yaw=yaw, speed=v,
+                steer=np.radians(steer_ratio * np.interp(grid, t, steer)),
+                pedal=np.clip(np.interp(grid, t, gas), 0, 1), brake=np.clip(np.interp(grid, t, brake), 0, 1))
+
+
 def spline_place(world, x, z, y):
     """Place along the AI line (m, 0 - lap) and signed offset from it (m), as fast_sim measures them."""
     arc = np.zeros(len(x))
@@ -99,6 +174,9 @@ def main():
     ap.add_argument('--wheelbase', type=float, default=2.75)
     ap.add_argument('--front-share', type=float, default=0.54, help='static weight on the front axle')
     ap.add_argument('--steer-ratio', type=float, default=0.13, help='road wheel deg per steering wheel deg')
+    ap.add_argument('--cars', type=int, nargs='+', help='AI Car Monitor CSVs: only these CarIds')
+    ap.add_argument('--max-kmh', type=float, default=180.0,
+                    help='AI Car Monitor CSVs: a move faster than this between frames ends a stretch')
     args = ap.parse_args()
 
     w = fs.load_world(args.tracks, track=args.track)
@@ -117,8 +195,15 @@ def main():
     length = old.shape[1]
     y = float(np.median(w.sp_pos[:, 1]))
     new = []
+    leads = []
     for path in args.recordings:
-        c = car_path(path, args.wheelbase, args.front_share, args.steer_ratio)
+        if is_crowd(path):
+            leads += [(f'{os.path.basename(path)} car {car_id} ({model})', c) for car_id, model, c in
+                      crowd_paths(path, args.steer_ratio, args.max_kmh, args.cars)]
+        else:
+            leads.append((os.path.basename(path), car_path(path, args.wheelbase, args.front_share,
+                                                           args.steer_ratio)))
+    for name, c in leads:
         t = np.arange(0.0, c['t'][-1], args.tick)
         g = np.zeros((len(t), de.GH_COLS))
         g[:, de.GH_T] = t
@@ -144,8 +229,9 @@ def main():
             new.append(run)
             kept += 1
         slide = np.mean(np.abs(g[:, de.GH_SLIP]) > np.radians(20.0))
-        print(f'{os.path.basename(path)}: {c["t"][-1]:.0f} s, {np.mean(g[:, de.GH_SPEED]) * 3.6:.1f} km/h, '
-              f'sliding {100 * slide:.0f}%, {kept} runs of {length * args.tick:.0f} s')
+        print(f'{name}: {c["t"][-1]:.0f} s, {np.mean(g[:, de.GH_SPEED]) * 3.6:.1f} km/h, '
+              f'sliding {100 * slide:.0f}%, {np.median(np.abs(g[:, de.GH_CTE])):.1f} m from the AI line, '
+              f'{kept} runs of {length * args.tick:.0f} s')
     if not new:
         raise SystemExit('no runs long enough: the recordings are shorter than the ghosts')
     np.savez_compressed(out, ghosts=np.concatenate([old, np.stack(new)]))
