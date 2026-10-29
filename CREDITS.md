@@ -83,10 +83,58 @@ AGPL-3.0 program carry the work, given the notices.
 
 ## Ideas and methods
 
-* PPO - Schulman et al., "Proximal Policy Optimization Algorithms", 2017. The trainer is our
-  own implementation.
+* PPO - Schulman et al., "Proximal Policy Optimization Algorithms", 2017
+  ([arXiv 1707.06347](https://arxiv.org/abs/1707.06347)). The trainer is our own implementation.
+* GAE - Schulman, Moritz, Levine, Jordan, Abbeel, "High-Dimensional Continuous Control Using
+  Generalized Advantage Estimation", ICLR 2016 ([arXiv 1506.02438](https://arxiv.org/abs/1506.02438)).
+  The trainer's advantages (`--lam`).
 * The drift line and what a run is judged on - Formula Drift's 2026 judging regulations and
   D1 Grand Prix's scoring criteria.
 * Cai et al., "High-speed Autonomous Drifting with Deep Reinforcement Learning", 2020 (reward
   ideas); the analysis of Ken Gushi's drift in Stanford's MARTY (what a held drift looks like).
 
+### Tandem (chasing another car; the `tandem` branch)
+
+* The autonomous tandem drift of Toyota Research Institute and Stanford Engineering, 2024
+  ([Stanford News](https://news.stanford.edu/stories/2024/07/ai-directed-driverless-drift-stanford-engineering-and-toyota-research-institute-achieve),
+  [TRI](https://medium.com/toyotaresearch/stanford-engineering-and-toyota-research-institute-achieve-worlds-first-autonomous-tandem-drift-131fcb9a76a9)).
+  No paper or code of theirs is public; the ideas taken from the announcements are the gap that
+  drops back through the lead's transitions and closes up mid-drift (breathing), the lead
+  handing over its planned path, and the split where a gap law drives the pedals and the network
+  steers.
+* GT Sophy - Wurman et al., "Outracing champion Gran Turismo drivers with deep reinforcement
+  learning", Nature 602, 2022 ([doi:10.1038/s41586-021-04357-7](https://doi.org/10.1038/s41586-021-04357-7)),
+  and Sony AI's ["Don't Cross That Line! How Our AI Agent Learned Sportsmanship"](https://ai.sony/blog/dont-cross-that-line-how-our-ai-agent-learned-sportsmanship).
+  Scenario starts, the passing reward (paid per metre gained), racing on after contact, a mix of
+  opponents (human laps as leads) and the opponent's controls as inputs.
+* Djeumou, Thompson, Suminaka, Subosits, "Reference-Free Formula Drift with Reinforcement Learning:
+  From Driving Data to Tire Energy-Inspired, Real-World Policies", Toyota Research Institute 2024
+  ([arXiv 2410.20990](https://arxiv.org/abs/2410.20990)). The bumper-point reward behind the chase
+  slot, and leaving slip out of the drift reward. (Its tyre-energy reward was also tried for solo
+  driving and not kept.)
+* Domberg, Castelar Wembers, Patel, Schildbach, "Deep Drifting: Autonomous Drifting of Arbitrary
+  Trajectories using Deep Reinforcement Learning", ICRA 2022. Why slip-band rewards hurt at
+  transitions (`chase_transition_pay`).
+* Intelligent Driver Model - Treiber, Hennecke, Helbing, "Congested traffic states in empirical
+  observations and microscopic simulations", Physical Review E 62, 2000
+  ([traffic-simulation.de](https://traffic-simulation.de/info/info_IDM.html)). The chase pace, in
+  the trainer and the plugin.
+* Cooperative adaptive cruise control - Ploeg et al., "Design and experimental evaluation of
+  cooperative adaptive cruise control", ITSC 2011; Milanés and Shladover, "Modeling cooperative
+  and autonomous adaptive cruise control dynamic responses using experimental data",
+  Transportation Research Part C 48, 2014. The lead's acceleration fed forward into the IDM pace.
+* Residual policy learning - Silver, Allen, Tenenbaum, Kaelbling, "Residual Policy Learning", 2018
+  ([arXiv 1812.06298](https://arxiv.org/abs/1812.06298)); Johannink et al., "Residual
+  Reinforcement Learning for Robot Control", ICRA 2019. The add-on chase network (`--residual`).
+* Asymmetric actor-critic - Pinto et al., "Asymmetric Actor Critic for Image-Based Robot
+  Learning", RSS 2018. The privileged critic (`--privileged-critic`).
+
+### Read and tried, not in the code
+
+* Zhou, Lu, Yang, Li, Mo, "Learning to Drift with Individual Wheel Drive: Maneuvering Autonomous
+  Vehicle at the Handling Limits", Tsinghua University 2025
+  ([arXiv 2507.23339](https://arxiv.org/abs/2507.23339)). Its start-state randomisation was tried
+  as mid-drift starts for solo driving and not kept.
+* Djeumou, Goh, Topcu, Balachandran, "Autonomous Drifting with 3 Minutes of Data via Learned Tire
+  Models", ICRA 2023 ([arXiv 2306.06330](https://arxiv.org/abs/2306.06330)). Where a simulator's
+  errors show up (the ends of transitions), used when checking ours against Assetto Corsa.
