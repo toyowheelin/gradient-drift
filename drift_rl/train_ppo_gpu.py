@@ -122,6 +122,10 @@ def main():
                     help='with --init-policy and --chase: keep the starting network frozen and train a second one '
                          '(two layers of UNITS) added to its action only while a lead is present (residual '
                          'policy learning), so solo driving stays exactly the starting policy\'s')
+    ap.add_argument('--init-residual', default=None, metavar='POLICY',
+                    help='with --residual: start the chase add-on from this policy\'s residual network (same width), e.g. '
+                         'a chase run made on another driving network. Default: --init-policy\'s own residual if it has one, '
+                         'else a fresh one')
     ap.add_argument('--residual-steer-only', action='store_true',
                     help='with --residual: the second network adds to the steering only; the pedal and brake stay '
                          'the frozen network\'s, following the pace the gap law (IDM / CACC) asks for - the split '
@@ -645,6 +649,22 @@ def main():
                 obs_var[slot] *= k * k
             print(f"steering lock {old_lock:g} -> {new_lock:g} deg: starting network re-geared (x{k:.4f})")
         print(f"driving network initialised from {args.init_policy} (value network starts fresh)")
+        if res is not None:
+            # the chase add-on: carried on rather than started afresh, so a run continues what earlier
+            # chase runs learned (before this, every --residual run began with a new add-on)
+            src = Policy.load_json(args.init_residual) if args.init_residual else p0
+            if src.residual is not None:
+                widths = [w.shape[0] for w in src.residual.W]
+                if src.residual.W[0].shape[1] != de.OBS_SIZE or widths != [args.residual, args.residual, de.ACT_SIZE]:
+                    sys.exit(f"{args.init_residual or args.init_policy}: its residual is {src.residual.W[0].shape[1]} inputs x "
+                             f"{widths}; this run needs {de.OBS_SIZE} x {[args.residual, args.residual, de.ACT_SIZE]}")
+                with torch.no_grad():
+                    for lin, w, b in zip([l for l in res if isinstance(l, nn.Linear)], src.residual.W, src.residual.b):
+                        lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
+                        lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+                print(f"chase add-on initialised from {args.init_residual or args.init_policy}")
+            elif args.init_residual:
+                sys.exit(f"--init-residual: {args.init_residual} has no residual network")
 
     meta = {
         'track': tracks[0],
