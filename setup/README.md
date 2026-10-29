@@ -2,8 +2,9 @@
 
 Walks a server operator through getting drift bots onto an AssettoServer server. It finds the
 server and the game install, checks the track and the car, works out every change the server
-needs, and makes them with backups. It's a Windows window (Qt) over a shared core, with the
-command line as the fallback on Windows and the only form on Linux.
+needs, and makes them with backups. It's a Windows window (Qt) and the same walk-through as
+questions in a terminal (Windows and Linux alike), over a shared core, plus one-line commands for
+scripts.
 
 **Contents:** [What it does](#what-it-does) · [Download and run](#download-and-run) ·
 [Using it](#using-it) · [A server on a hosting plan](#a-server-on-a-hosting-plan-or-any-machine-without-the-game) ·
@@ -41,35 +42,43 @@ It does not train a policy for a track. The trainer can polish the shipped polic
 
 ## Download and run
 
-Download two things from the [releases](https://github.com/toyowheelin/gradient-drift/releases): the setup zip for
-your system (from the newest `setup-v…` release) and the plugin (from the newest `plugin-v…` release,
-`GradientDriftPlugin-<version>-for-AssettoServer-0.0.54.zip`). Unzip the setup zip anywhere, then
-unzip the plugin download into the same folder, so it looks like this:
+Download `gradient-drift-<version>.zip` from the [latest release](https://github.com/toyowheelin/gradient-drift/releases/latest)
+and unzip it anywhere. It has a folder per system, each a complete setup program with the plugin
+already inside:
 
 ```
-gradient-drift-setup/
-├── gradient-drift-setup.exe      (gradient-drift-setup on Linux)
-├── GradientDriftPlugin/          <- from the plugin download: the files setup installs
-│   ├── GradientDriftPlugin.dll
-│   ├── GradientDriftPlugin.deps.json
-│   └── GradientDriftPlugin.policy.json
-└── ...
+gradient-drift-<version>/
+├── README.txt
+├── windows/
+│   ├── gradient-drift-setup.exe
+│   ├── GradientDriftPlugin/      <- the plugin: the files setup installs
+│   │   ├── GradientDriftPlugin.dll
+│   │   ├── GradientDriftPlugin.deps.json
+│   │   └── GradientDriftPlugin.policy.json
+│   └── ...
+└── linux/
+    ├── gradient-drift-setup
+    ├── GradientDriftPlugin/      (the same plugin)
+    └── ...
 ```
 
-Setup finds the plugin there and installs it on the server (or updates an older one). Windows'
-**Extract All** puts the download in a folder of its own (`GradientDriftPlugin-v0.1.0-for-...`);
-that's fine inside setup's folder too, and with several, setup takes the newest. It carries its
-own Python and Qt; nothing to install. The plugin can live anywhere else too: pick its
+Use the folder for the machine you run setup on; the other can be deleted. Setup finds the plugin
+beside it and installs it on the server (or updates an older one). It carries its own Python and
+Qt; nothing to install. Track data setup made before (its `tracks` folder) is kept per folder:
+copy `tracks` over from an older setup folder to skip making it again. The plugin can live anywhere else too: pick its
 `GradientDriftPlugin` folder under **Plugin build** on the last page, or give `--plugin`.
+
+The zip is about 290 MB, about half for each system (most of it is the track tools).
 
 ### Windows
 
-`gradient-drift-setup-windows.zip`, about 140 MB (most of it is the track tools).
+The `windows` folder.
 
 - **The window:** double-click `gradient-drift-setup.exe`.
-- **The command line:** run the same program from a Command Prompt or PowerShell
-  (`gradient-drift-setup.exe check ...`, as [below](#using-it)). With no arguments it opens the
-  window there too.
+- **In a terminal:** run the same program from a Command Prompt or PowerShell. With no arguments
+  it opens the window there too; `gradient-drift-setup.exe walk` is the walk-through as questions
+  in the terminal, the same as on Linux, and `gradient-drift-setup.exe check ...` the one-line
+  commands ([below](#using-it)).
 
 > [!WARNING]
 > The program isn't code-signed yet, so the first time Windows shows "Windows protected your PC".
@@ -78,10 +87,12 @@ own Python and Qt; nothing to install. The plugin can live anywhere else too: pi
 
 ### Linux
 
-`gradient-drift-setup-linux.zip`, about 145 MB, command line only:
+The `linux` folder, in a terminal (unzip with `unzip`, which keeps the program executable). Run it
+with no arguments for the walk-through, or give it a command:
 
 ```
-./gradient-drift-setup/gradient-drift-setup check ...
+./gradient-drift-<version>/linux/gradient-drift-setup              # the walk-through
+./gradient-drift-<version>/linux/gradient-drift-setup check ...    # or a one-line command
 ```
 
 It's built on Debian 11, so it runs on that and anything newer (glibc 2.31+). Not yet tried on a
@@ -100,12 +111,70 @@ scipy, pandas, numba and the others), each one's licence, and its full text.
 In the window, the pages walk you through it: the game install, the server, the track check, the
 bots and their cars, and the change list. The bots' page has a row per bot slot (the server's
 existing AI entries first, then the new ones) with its car and skin, and "Every bot in" to put them
-all in one car. Under "Track files" on the last page, pick the folder setup_track.py writes into,
-with a folder per track (`tracks\` beside the packaged program, or `drift_rl\tracks`); setup
-turns down a track's own folder in the game or server content.
+all in one car.
 
-On the command line (the packaged program is `gradient-drift-setup.exe`; from source it is
-`py -m gradientdrift_setup`):
+**Track files** on the last page is usually left empty. The plugin needs some data about the track
+(its walls, road and course, made from the game's track files), and setup makes it for you from
+your game install the first time, into a `tracks\` folder beside the program; the change list
+shows it as "make <track>'s data from the game install" (a few minutes). Fill it in only if you
+already have track data made by the trainer (`drift_rl/setup_track.py`): pick the folder with a
+folder per track in it (`drift_rl\tracks`). Don't pick the track's own folder in the game or
+server's `content\tracks`; setup turns that down.
+
+### In a terminal
+
+The walk-through asks the window's five steps as questions, the same on Windows and Linux. Pick
+from a list with the arrow keys and Enter; type a folder with Tab completing it, as in a shell.
+Each step has the window's help text under it, and nothing changes until the last step, which
+lists the changes and asks what next: make them, show each one before and after, export for a
+hosted server, undo the last run, pick the plugin or track files folder, go back to the bots or
+the server, or quit. While setup works each line shows the time so far, so a few minutes of
+making track data does not look like a hang. Ctrl+C quits at any point.
+
+```
+$ ./gradient-drift-setup
+Gradient Drift Setup
+     Five steps, as in the window. Nothing is changed until the last one. Ctrl+C quits at any time.
+
+1/5  Where is Assetto Corsa installed?
+     Setup reads the track and the cars from the game. It changes nothing in it.
+      The Assetto Corsa folder (the one with content):
+   >  1. /home/me/.steam/steam/steamapps/common/assettocorsa
+      2. Another folder: type it
+
+2/5  Which server gets the drift bot?
+      The server:
+   >  1. Sunday Drift - driftplayground_2021   /srv/assetto/server
+      2. Another folder: type it
+     ✔ AssettoServer 0.0.54
+     4 car slots, 0 AI; AI is off; plugins: none
+
+3/5  Checking the track
+     ✔ Model files: driftplayground_2021.kn5
+     ✔ AI line: 548 points
+
+4/5  Pick the bots' cars
+     How many bots (1 to 12) [1]: 3
+     ...
+5/5  Here's what setup would change
+     ✔ 26 change(s), all of which setup can make.
+       - cfg/entry_list.ini: add a bot as CAR_2: gravygarage_street_miata, skin red, AI=fixed
+       ...
+      What next?
+   >  1. Make these changes
+      2. Show each change, before and after
+      ...
+```
+
+At the end it prints the same run as one command, to skip the questions next time. Without a
+terminal (input piped in) the lists are numbered and read as plain lines.
+
+### Commands
+
+The same steps as one line each, for scripts (the packaged program is `gradient-drift-setup.exe`
+on Windows, `./gradient-drift-setup` on Linux; from source it is `py -m gradientdrift_setup`).
+Without `--game` setup uses the Assetto Corsa install it finds, and says which. `check` exits 1
+when a server has something setup cannot fix; `apply` and `undo` ask first unless given `--yes`:
 
 ```
 gradient-drift-setup.exe check "D:\servers\my server" --game "C:\Program Files (x86)\Steam\steamapps\common\assettocorsa"
@@ -119,6 +188,7 @@ Several server folders can be given at once (not with `export`).
 | option | what it sets |
 |---|---|
 | `--bots N` | bots in all, existing ones included (setup never takes a bot away) |
+| `--name NAME` | the bots' name in game, each shown with its slot number (default: the name the server already gives them, else DriftBot) |
 | `--car MODEL`, `--skin NAME` | every bot's car and skin, the existing AI entries put in it too. Without `--car` an existing bot keeps its car and a new one takes an existing bot's, else the car the shipped policy was trained in, else the server's first car |
 | `--car A,B,...`, `--skin X,Y,...` | a car (and skin) per bot slot, the existing AI entries first in the entry list's order; an empty one keeps that bot's car; bots past the list take its last car |
 | `--train-size N` | run the bots as tandem trains of N: the first car of each drives, the others follow it door to door (1 = every bot on its own) |
@@ -175,7 +245,14 @@ changed, and no bot is taken away.
   idle, and a drift player is often well off it, or parked watching, so setup sets
   `MaxPlayerCount` (the player slots), `MaxPlayerDistanceToAiSplineMeters` at least 100 and
   `PlayerAfkTimeoutSeconds` at least 600. With several bots it also sets `PlayerRadiusMeters` to at
-  least 5/8 of a lap (AssettoServer takes away AI cars further than that from every player);
+  least 5/8 of a lap (AssettoServer takes away AI cars further than that from every player).
+  On a small track it lowers `SpawnSafetyDistanceToPlayerMeters` to a quarter of the track's span
+  and `MaxAiSafetyDistanceMeters` to half the even gap between bots, or no point of the AI line
+  is far enough from a player and other bots for a bot to spawn. It sets
+  `MinCollisionStopTimeSeconds` and `MaxCollisionStopTimeSeconds` to 0: AssettoServer otherwise
+  freezes an AI car for 1-3 s when a player touches it. It sets `NamePrefix` to the bot name:
+  AssettoServer shows each AI car as `<NamePrefix> <slot number>` (`Traffic 16`), whatever its
+  `DRIVERNAME` in the entry list;
 - the plugin's own section with `EnableLearnedPolicy: true`, and `TrainSize` and `BotPacePercent`
   when given.
 
@@ -214,16 +291,18 @@ changed.
 ## Running from source
 
 ```
-py -m pip install ruamel.yaml PySide6-Essentials
+py -m pip install -r setup/requirements.txt
 cd setup
 py -m gradientdrift_setup                    # the walk-through, in a window
+py -m gradientdrift_setup walk               # the walk-through in the terminal
 py -m gradientdrift_setup check ...          # or any command above
 ```
 
 ## Building the package
 
 The zips come from the "build setup" workflow (`.github/workflows/build-setup.yml`): run it from
-the Actions tab, or push a `setup-v*` tag to get a draft release with both attached. To build one
+the Actions tab. A `v*` tag (`.github/workflows/release.yml`) builds them with the plugin and
+makes one draft release with one zip: both programs, each with the plugin in it. To build one
 yourself, from the repo root:
 
 ```
@@ -245,10 +324,12 @@ Set `GRADIENTDRIFT_GUI=0` for the command-line-only build. The result goes in
 | `gradientdrift_setup/edits.py` | Line-preserving edits to `.ini` and `extra_cfg.yml`. |
 | `gradientdrift_setup/apply.py` | Makes a plan's changes with backups; undo. |
 | `gradientdrift_setup/export.py` | For a hosted server: makes the changes into a copy of its downloaded `cfg/`, and writes the files to upload and `HOW_TO_INSTALL.txt`. |
-| `gradientdrift_setup/cli.py` | The command line; with no arguments it opens the window, or falls back to the command line where it cannot (no Qt, or Linux without a desktop). |
+| `gradientdrift_setup/cli.py` | The command line; with no arguments it opens the window, or the walk-through in the terminal where it cannot (no Qt, or Linux without a desktop). |
+| `gradientdrift_setup/walk.py` | The walk-through in a terminal: the window's five pages as questions, then the run as one command line. |
+| `gradientdrift_setup/terminal.py` | Asking in a terminal: pick lists with the arrow keys and folders with Tab completion (prompt_toolkit), numbered lists and plain typing without a terminal; the time so far on each line while setup works. |
 | `gradientdrift_setup/gui.py` | The window (Qt, PySide6): game install, server, track check, the bots' cars slot by slot, the change list. |
 | `gradientdrift_setup/console.py` | Windows: tells a double-click from a terminal start, and hides the console for the window. |
-| `gradientdrift_setup/trackdata.py` | `gradient-drift-setup selftest` (not in the help): the packaged program's own track tools make a generated course's data. The build workflow runs it on Windows and Linux. |
+| `gradientdrift_setup/trackdata.py` | `gradient-drift-setup selftest` (not in the help): the packaged program has its terminal prompts, and its own track tools make a generated course's data. The build workflow runs it on Windows and Linux. |
 | `gradientdrift_setup/find.py` | Finds the game (Steam libraries, the usual folders), the server folders in or beside it, and the track files folder. |
 | `gradientdrift_setup/acini.py` | Assetto Corsa .ini reading the way the game does. |
 | `gradientdrift_setup/carfile.py` | For a policy that drives any car: each bot car's numbers, from the game's car files with the trainer's own tools (`drift_rl/cars`), written to `plugins/GradientDriftPlugin/cars/<model>.json`, with the car's pace scale on the server's track (`PACE_SCALE`: its speed there against the reference car, from `drift_rl/pace_model.py`; 1 when the track's data is missing). |
