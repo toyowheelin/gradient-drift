@@ -16,6 +16,11 @@ without the chase inputs drives blind behind the ghost: the baseline.
                  CHASE_INSIDE_M inside the lead's in the turns)
   hits           share of chase episodes in which the car touched the lead (each touch ends the
                  episode unless the policy was trained with chase_contact_ends 0)
+  km/h           closing speed when a touch starts, mean over touches (the lead is a replayed ghost,
+                 so there is no force to read; this is what an impact scales with)
+  taps           share of touches closing under 3.6 km/h (drift_env.TAP_CLOSING_MS)
+  touch s        seconds in contact per touch
+  crash          share of touches held CHASE_CONTACT_LOST_S (1 s): the lead is lost
 """
 import argparse
 from dataclasses import replace
@@ -50,7 +55,7 @@ def main():
     if w.ghosts is None:
         raise SystemExit(f'no ghosts for {args.track}: record_ghosts.py --track {args.track}')
     print(f"{'policy':<28} {'return':>13} {'drift':>11} {'chase':>6} {'gap':>6} {'in band':>8} "
-          f"{'slip':>6} {'line':>6} {'hits':>6}")
+          f"{'slip':>6} {'line':>6} {'hits':>6} {'km/h':>5} {'taps':>5} {'touch s':>7} {'crash':>5}")
     for path in args.policies:
         pol = Policy.load_json(path)
         cfg = replace(de.env_config_for(pol.meta), chase_gap_low=args.gaps[0], chase_gap_high=args.gaps[1],
@@ -62,10 +67,16 @@ def main():
         weight = c['chase_fraction'] * c['length']
         mean = lambda k: float(np.sum(c[k] * weight) / max(np.sum(weight), 1e-9))
         hits = float(np.mean(c['contacts'] > 0)) if had.any() else 0.0
+        touches = max(float(np.sum(c['contacts'])), 1.0)
+        closing_kmh = 3.6 * float(np.sum(c['contact_closing_ms'] * c['contacts'])) / touches
+        taps = float(np.sum(c['contact_taps'])) / touches
+        touch_s = float(np.sum(c['contact_s'])) / touches
+        crash = float(np.sum(c['contact_crashes'])) / touches
         print(f"{path[-28:]:<28} {np.mean(solo['return']):6.1f}/{np.mean(c['return']):6.1f} "
               f"{np.mean(solo['slide_fraction']):5.0%}/{mean('chase_drift_fraction'):4.0%} "
               f"{np.mean(c['chase_fraction']):6.0%} {mean('chase_mean_gap_m'):6.1f} {mean('chase_in_band_fraction'):8.0%} "
-              f"{mean('chase_slip_diff_deg'):6.1f} {mean('chase_line_diff_m'):6.2f} {hits:6.1%}")
+              f"{mean('chase_slip_diff_deg'):6.1f} {mean('chase_line_diff_m'):6.2f} {hits:6.1%} "
+              f"{closing_kmh:5.1f} {taps:5.0%} {touch_s:7.2f} {crash:5.0%}")
 
 
 if __name__ == '__main__':

@@ -250,8 +250,13 @@ ACT_SIZE = 3
  E_HIGH_ANGLE_TICKS, E_ZONE_TICKS, E_ZONE_FILLED_TICKS, E_STEER_REVERSALS, E_FRONT_SLIDING_TICKS,
  E_HELD_TICKS, E_WRONG_SIDE_TICKS, E_PACE_TARGET, E_PACE_ERROR, E_BRAKE_TICKS, E_BRAKE_SUM,
  E_PACE_ABS_ERROR, E_WEAVES, E_SWINGS, E_CHASE_TICKS, E_CHASE_BAND_TICKS, E_CHASE_GAP, E_CHASE_HERE_TICKS,
- E_CHASE_SLIP_DIFF, E_CHASE_LINE_DIFF, E_CONTACTS, E_CHASE_DRIFT_TICKS) = range(46)
-EP_SIZE = 46
+ E_CHASE_SLIP_DIFF, E_CHASE_LINE_DIFF, E_CONTACTS, E_CHASE_DRIFT_TICKS,
+ E_CONTACT_CLOSING, E_CONTACT_TAPS, E_CONTACT_TICKS, E_CONTACT_CRASHES) = range(50)
+EP_SIZE = 50
+# how hard a touch was, for the statistics: the closing speed along the line when it starts (the
+# lead is a replayed ghost, so nothing pushes back and there is no force to read; closing speed is
+# what an impact would scale with). Under TAP_CLOSING_MS (3.6 km/h) it counts as a tap.
+TAP_CLOSING_MS = 1.0
 # a tick counts as braking with the brake action (brake_fraction) from this much of it
 BRAKE_STAT_MIN = 0.05
 # Slip-angle bands of the statistics, degrees. "drift" (20-50) is the band every table up to
@@ -1465,9 +1470,15 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
             e[E_CHASE_LINE_DIFF] += line_diff
         if contact and counters[i, C_CONTACT] == 0.0:
             e[E_CONTACTS] += 1.0
+            e[E_CONTACT_CLOSING] += max(0.0, closing)
+            if closing < TAP_CLOSING_MS:
+                e[E_CONTACT_TAPS] += 1.0
+        if contact:
+            e[E_CONTACT_TICKS] += 1.0
     if contact:
         counters[i, C_CONTACT] += 1.0
         if counters[i, C_CONTACT] * dt >= CHASE_CONTACT_LOST_S:
+            e[E_CONTACT_CRASHES] += 1.0
             counters[i, C_GHOST] = 0.0          # a crash: the lead is gone
             counters[i, C_CONTACT] = 0.0
     else:
@@ -1663,6 +1674,12 @@ def finalize_episode_stats(raw):
         'chase_slip_diff_deg': raw[:, E_CHASE_SLIP_DIFF] / np.maximum(raw[:, E_CHASE_HERE_TICKS], 1.0),
         'chase_line_diff_m': raw[:, E_CHASE_LINE_DIFF] / np.maximum(raw[:, E_CHASE_HERE_TICKS], 1.0),
         'contacts': raw[:, E_CONTACTS],
+        # per touch: closing speed when it started (m/s), share under TAP_CLOSING_MS, seconds in
+        # contact, share that lasted CHASE_CONTACT_LOST_S (a crash: the lead is lost)
+        'contact_closing_ms': raw[:, E_CONTACT_CLOSING] / np.maximum(raw[:, E_CONTACTS], 1.0),
+        'contact_taps': raw[:, E_CONTACT_TAPS],
+        'contact_s': raw[:, E_CONTACT_TICKS] * raw[:, E_TIME_S] / np.maximum(raw[:, E_LENGTH], 1.0),
+        'contact_crashes': raw[:, E_CONTACT_CRASHES],
         'chase_drift_fraction': raw[:, E_CHASE_DRIFT_TICKS] / np.maximum(raw[:, E_CHASE_TICKS], 1.0),
     }
 
