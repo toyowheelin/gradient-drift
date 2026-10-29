@@ -251,12 +251,24 @@ ACT_SIZE = 3
  E_HELD_TICKS, E_WRONG_SIDE_TICKS, E_PACE_TARGET, E_PACE_ERROR, E_BRAKE_TICKS, E_BRAKE_SUM,
  E_PACE_ABS_ERROR, E_WEAVES, E_SWINGS, E_CHASE_TICKS, E_CHASE_BAND_TICKS, E_CHASE_GAP, E_CHASE_HERE_TICKS,
  E_CHASE_SLIP_DIFF, E_CHASE_LINE_DIFF, E_CONTACTS, E_CHASE_DRIFT_TICKS,
- E_CONTACT_CLOSING, E_CONTACT_TAPS, E_CONTACT_TICKS, E_CONTACT_CRASHES) = range(50)
-EP_SIZE = 50
+ E_CONTACT_CLOSING, E_CONTACT_TAPS, E_CONTACT_TICKS, E_CONTACT_CRASHES,
+ E_CONTACT_REAR_END, E_CONTACT_DOOR, E_CONTACT_NOSE_SIDE, E_TOUCH_THEN_CRASH) = range(54)
+EP_SIZE = 54
 # how hard a touch was, for the statistics: the closing speed along the line when it starts (the
 # lead is a replayed ghost, so nothing pushes back and there is no force to read; closing speed is
 # what an impact would scale with). Under TAP_CLOSING_MS (3.6 km/h) it counts as a tap.
 TAP_CLOSING_MS = 1.0
+# where a touch lands, for the statistics: a point on a car's body within this of its nose or tail
+# counts as the nose or tail, anywhere else as its side. rear-end = this car's nose on the lead's
+# tail, door = side on side (close tandem), nose-side = this car's nose into the lead's side.
+TOUCH_END_ZONE_M = 0.5
+# a touch "then a crash": within this many seconds of its start the chaser spins out (the wrong-way
+# recovery takes over) or its episode ends (off the course, off the line, stalled)
+TOUCH_CRASH_WINDOW_S = 3.0
+# EnvConfig.chase_touch_push: a touch pushes the chaser back. The lead is a replayed ghost and
+# cannot move, so the push is the chaser's half of an equal-mass collision at the contact point,
+# with this restitution (0 = the cars stay together, 1 = they bounce apart), no friction.
+TOUCH_RESTITUTION = 0.2
 # a tick counts as braking with the brake action (brake_fraction) from this much of it
 BRAKE_STAT_MIN = 0.05
 # Slip-angle bands of the statistics, degrees. "drift" (20-50) is the band every table up to
@@ -272,7 +284,7 @@ SLIDE_MIN_DEG, HIGH_ANGLE_MIN_DEG, SLIDE_MAX_DEG = 20.0, 40.0, 80.0
 # speed its pace asked for (pace x the course's reference speed where the car was), averaged the
 # same way (m/s), seconds since its last transition, and which way the course was turning there
 # (fast_sim co[:, 9]; 2 = no transition yet)]
-N_COUNTERS = 36       # ... [12, 13] the steering and pedal noise of a lower skill (SKILL_*), [14 - 19] its last two asked actions,
+N_COUNTERS = 37       # ... [12, 13] the steering and pedal noise of a lower skill (SKILL_*), [14 - 19] its last two asked actions,
 # [20 - 22] the way the car last rotated at swing_rate_degs or more (+1 / -1, 0 = not yet), seconds since, and which
 # way the course was turning there, [23 - 28] the chase: the lead's ghost (1 + its index; 0 = no lead), the ghost's
 # clock, its sample at that time, the asked gap (chase_gap), how late the lead is seen, the gap last seen,
@@ -288,6 +300,8 @@ C_CHASE_SIDE = 33
 C_CHASE_SHIFT = 34
 # [35] ticks in contact with the lead so far, this touch (chase_contact_ends 0)
 C_CONTACT = 35
+# [36] 1 + the episode time (s) the last touch started, until it is counted as a crash or ages out
+C_TOUCH_T = 36
 # a steering reversal for the statistics: the steering action turning back by more than this
 # (fraction of full lock) in one tick
 STEER_REVERSAL_MIN = 0.05
@@ -585,6 +599,9 @@ class EnvConfig:
     # ... and the bottom, as a share of pace_low: a chaser closing on a slower lead must slow under
     # the solo pace range (only a policy trained to will drift there)
     chase_pace_min: float = 1.0
+    # a touch pushes the chaser off the lead (TOUCH_RESTITUTION); off = cars pass through each other
+    # (the training default: only the touch is seen). chase_report.py --touch-push
+    chase_touch_push: bool = False
     # also work out the privileged critic's inputs each step (PRIV_NAMES): DriftVecEnv.priv
     privileged: bool = False
     # Plugin settings (the names in GradientDriftConfiguration.cs / extra_cfg.yml) this car is
@@ -865,6 +882,56 @@ def _cars_overlap(x1, z1, h1, x2, z2, h2):
 
 
 @njit(cache=True)
+def _body_zone(x, z, h, px, pz):
+    """Where point px, pz meets the body (CAR_FRONT_M, CAR_REAR_M, CAR_HALF_WIDTH_M) at x, z,
+    heading h: the body's point nearest it is its nose (1), its tail (-1) or its side (0)."""
+    c, sn = math.cos(h), math.sin(h)
+    f = (px - x) * c + (pz - z) * sn
+    f = max(-CAR_REAR_M, min(CAR_FRONT_M, f))
+    if f >= CAR_FRONT_M - TOUCH_END_ZONE_M:
+        return 1
+    if f <= -CAR_REAR_M + TOUCH_END_ZONE_M:
+        return -1
+    return 0
+
+
+@njit(cache=True)
+def _touch_push(s, p, lx, lz, lh, lead_vx, lead_vz):
+    """EnvConfig.chase_touch_push: the chaser's half of an equal-mass collision with the lead at
+    the point of its body nearest the lead's centre (TOUCH_RESTITUTION, no friction). Changes its
+    forward and sideways speed and its yaw rate; only while the two close on each other."""
+    h = s[fs.S_HEADING]
+    c, sn = math.cos(h), math.sin(h)
+    nx, nz = s[fs.S_X] - lx, s[fs.S_Z] - lz           # from the lead to this car
+    dist = math.sqrt(nx * nx + nz * nz)
+    if dist < 1e-6:
+        return
+    nx /= dist
+    nz /= dist
+    # contact point: this body's point nearest the lead's centre, relative to its centre
+    f = (lx - s[fs.S_X]) * c + (lz - s[fs.S_Z]) * sn
+    l = -(lx - s[fs.S_X]) * sn + (lz - s[fs.S_Z]) * c
+    f = max(-CAR_REAR_M, min(CAR_FRONT_M, f))
+    l = max(-CAR_HALF_WIDTH_M, min(CAR_HALF_WIDTH_M, l))
+    rx, rz = f * c - l * sn, f * sn + l * c
+    fwd, lat, w = s[fs.S_OWN_SPEED], s[fs.S_LATV], s[fs.S_YAW]
+    vx = fwd * c - lat * sn - w * rz
+    vz = fwd * sn + lat * c + w * rx
+    vn = (vx - lead_vx) * nx + (vz - lead_vz) * nz
+    if vn >= 0.0:
+        return                                        # already moving apart
+    mass = (p[fs.P_FRONT_STATIC_LOAD_N] + p[fs.P_REAR_STATIC_LOAD_N]) / 9.80665
+    inertia = p[fs.P_YAW_INERTIA_KGM2]
+    rn = rx * nz - rz * nx
+    # the lead (same mass) takes half: 1/m_eff = 2/m, plus this car's turning about the point
+    j = -(1.0 + TOUCH_RESTITUTION) * vn / (2.0 / mass + rn * rn / inertia)
+    dvx, dvz = j * nx / mass, j * nz / mass
+    s[fs.S_OWN_SPEED] = max(0.0, fwd + dvx * c + dvz * sn)
+    s[fs.S_LATV] = lat - dvx * sn + dvz * c
+    s[fs.S_YAW] = w + rn * j / inertia
+
+
+@njit(cache=True)
 def _corner(x, z, h, k, ox, oz):
     """Corner k (0 - 3) of a car body at x, z, heading h, as two numbers through ox, oz (arrays of 1)."""
     f = CAR_FRONT_M if k < 2 else -CAR_REAR_M
@@ -1106,6 +1173,11 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     gap = 0.0
     lead_q = 0.0
     lead_v = 0.0
+    lead_vx = 0.0
+    lead_vz = 0.0
+    lx = 0.0
+    lz = 0.0
+    lh = 0.0
     lead_v_ahead = 0.0
     breathe = 0.0
     inside = 0.0
@@ -1137,6 +1209,11 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
                 if k > k0:
                     lead_v = _wrap_arc(gh[g, k, GH_ARC] - gh[g, k0, GH_ARC], lap) / max(gh[g, k, GH_T] - gh[g, k0, GH_T], 1e-3)
                 lead_v *= rate
+                kn = min(k + 1, gh_len[g] - 1)
+                if kn > k:
+                    span = max(gh[g, kn, GH_T] - gh[g, k, GH_T], 1e-3)
+                    lead_vx = rate * (gh[g, kn, GH_X] - gh[g, k, GH_X]) / span
+                    lead_vz = rate * (gh[g, kn, GH_Z] - gh[g, k, GH_Z]) / span
                 lead_a = _lead_accel(gh, g, k, rate)
                 lead_v_ahead = lead_v
                 breathe = _breathe(gh, g, gh_len[g], k, t_g)
@@ -1473,8 +1550,26 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
             e[E_CONTACT_CLOSING] += max(0.0, closing)
             if closing < TAP_CLOSING_MS:
                 e[E_CONTACT_TAPS] += 1.0
+            mine = _body_zone(s[S_X], s[S_Z], s[S_HEADING], lx, lz)
+            theirs = _body_zone(lx, lz, lh, s[S_X], s[S_Z])
+            if mine == 1 and theirs == -1:
+                e[E_CONTACT_REAR_END] += 1.0
+            elif mine == 0 and theirs == 0:
+                e[E_CONTACT_DOOR] += 1.0
+            elif mine == 1 and theirs == 0:
+                e[E_CONTACT_NOSE_SIDE] += 1.0
+            counters[i, C_TOUCH_T] = 1.0 + e[E_TIME_S]
         if contact:
             e[E_CONTACT_TICKS] += 1.0
+            if env_cfg[21] > 0.5:
+                _touch_push(s, p, lx, lz, lh, lead_vx, lead_vz)
+    if counters[i, C_TOUCH_T] > 0.0:
+        since = e[E_TIME_S] - (counters[i, C_TOUCH_T] - 1.0)
+        if (s[fs.S_SPIN_RECOVERING] > 0.5 or (reason > 0.0 and reason != 6.0)) and since <= TOUCH_CRASH_WINDOW_S:
+            e[E_TOUCH_THEN_CRASH] += 1.0
+            counters[i, C_TOUCH_T] = 0.0
+        elif since > TOUCH_CRASH_WINDOW_S:
+            counters[i, C_TOUCH_T] = 0.0
     if contact:
         counters[i, C_CONTACT] += 1.0
         if counters[i, C_CONTACT] * dt >= CHASE_CONTACT_LOST_S:
@@ -1680,6 +1775,12 @@ def finalize_episode_stats(raw):
         'contact_taps': raw[:, E_CONTACT_TAPS],
         'contact_s': raw[:, E_CONTACT_TICKS] * raw[:, E_TIME_S] / np.maximum(raw[:, E_LENGTH], 1.0),
         'contact_crashes': raw[:, E_CONTACT_CRASHES],
+        # where touches landed (TOUCH_END_ZONE_M), and touches followed within TOUCH_CRASH_WINDOW_S
+        # by a spin-out or the episode ending
+        'contact_rear_end': raw[:, E_CONTACT_REAR_END],
+        'contact_door': raw[:, E_CONTACT_DOOR],
+        'contact_nose_side': raw[:, E_CONTACT_NOSE_SIDE],
+        'touch_then_crash': raw[:, E_TOUCH_THEN_CRASH],
         'chase_drift_fraction': raw[:, E_CHASE_DRIFT_TICKS] / np.maximum(raw[:, E_CHASE_TICKS], 1.0),
     }
 
@@ -1726,7 +1827,8 @@ def env_cfg_vector(cfg):
                      cfg.long_after_long_probability, cfg.recovery_start_fraction, cfg.recovery_lateral_m,
                      cfg.recovery_heading_rad, cfg.rear_sliding_grip_low, cfg.rear_sliding_grip_high,
                      cfg.pace_low, cfg.pace_high, cfg.pace_change_s, cfg.chase_time_gap_s,
-                     cfg.chase_time_gap_blind_s, cfg.chase_response_s, cfg.chase_pace_max, cfg.chase_pace_min])
+                     cfg.chase_time_gap_blind_s, cfg.chase_response_s, cfg.chase_pace_max, cfg.chase_pace_min,
+                     1.0 if cfg.chase_touch_push else 0.0])
 
 
 def ghost_arrays(world):

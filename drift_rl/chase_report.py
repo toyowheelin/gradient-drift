@@ -14,13 +14,21 @@ without the chase inputs drives blind behind the ghost: the baseline.
                  (the asked gap, opened through the lead's transitions: drift_env CHASE_BREATHE_M)
   slip / line    mean difference to the lead where it passed the same spot: deg, m (the line from
                  CHASE_INSIDE_M inside the lead's in the turns)
-  hits           share of chase episodes in which the car touched the lead (each touch ends the
-                 episode unless the policy was trained with chase_contact_ends 0)
-  km/h           closing speed when a touch starts, mean over touches (the lead is a replayed ghost,
-                 so there is no force to read; this is what an impact scales with)
+  hits           share of chase episodes in which the car touched the lead. The first touch ends
+                 the episode unless --touches-continue (then a touch held CHASE_CONTACT_LOST_S, 1 s,
+                 loses the lead and the car drives on alone)
+  km/h           closing speed when a touch starts, mean over touches (what an impact scales with)
   taps           share of touches closing under 3.6 km/h (drift_env.TAP_CLOSING_MS)
-  touch s        seconds in contact per touch
-  crash          share of touches held CHASE_CONTACT_LOST_S (1 s): the lead is lost
+  rear/door/nose where touches landed: this car's nose on the lead's tail, side on side, this car's
+                 nose into the lead's side (drift_env.TOUCH_END_ZONE_M); the rest are other
+  held           share of touches held 1 s (the lead is lost)
+  crash          share of touches followed within 3 s by a spin-out or the episode ending
+                 (drift_env.TOUCH_CRASH_WINDOW_S)
+
+The lead is a replayed ghost: nothing pushes back, so by default a touch changes neither car and
+"crash" only shows what the chaser did next. --touch-push gives the chaser its half of an
+equal-mass collision at the contact point (drift_env._touch_push), which is what can turn a tap
+into a spin. Use both options together to ask whether the touches would cause crashes.
 """
 import argparse
 from dataclasses import replace
@@ -33,8 +41,8 @@ import track_files as tf
 from policy import Policy
 
 
-def run(world, pol, cfg, episodes, seed):
-    return de.evaluate(world, pol, n_episodes=episodes, seed=seed, env_config=cfg)
+def run(world, pol, cfg, episodes, seed, rcfg=None):
+    return de.evaluate(world, pol, n_episodes=episodes, seed=seed, env_config=cfg, reward_config=rcfg)
 
 
 def main():
@@ -46,8 +54,13 @@ def main():
     ap.add_argument('--gaps', type=float, nargs=2, default=(0.0, 1.0), metavar=('LOW', 'HIGH'))
     ap.add_argument('--scenarios', action='store_true',
                     help='start the chase episodes as training does with --chase-scenarios (drift_env CHASE_SCENARIOS)')
+    ap.add_argument('--touches-continue', action='store_true',
+                    help='a touch does not end the chase episode (RewardConfig chase_contact_ends 0)')
+    ap.add_argument('--touch-push', action='store_true',
+                    help='a touch pushes the chaser off the lead (EnvConfig chase_touch_push)')
     de.add_chase_controller_args(ap)
     args = ap.parse_args()
+    rcfg = de.RewardConfig(chase_contact_ends=0.0) if args.touches_continue else None
 
     w = fs.load_world(args.tracks, track=args.track)
     w.pace_ref = de.course_pace_reference(args.tracks, args.track, w)
@@ -55,13 +68,15 @@ def main():
     if w.ghosts is None:
         raise SystemExit(f'no ghosts for {args.track}: record_ghosts.py --track {args.track}')
     print(f"{'policy':<28} {'return':>13} {'drift':>11} {'chase':>6} {'gap':>6} {'in band':>8} "
-          f"{'slip':>6} {'line':>6} {'hits':>6} {'km/h':>5} {'taps':>5} {'touch s':>7} {'crash':>5}")
+          f"{'slip':>6} {'line':>6} {'hits':>6} {'km/h':>5} {'taps':>5} {'rear':>5} {'door':>5} {'nose':>5} "
+          f"{'held':>5} {'crash':>5}")
     for path in args.policies:
         pol = Policy.load_json(path)
         cfg = replace(de.env_config_for(pol.meta), chase_gap_low=args.gaps[0], chase_gap_high=args.gaps[1],
-                      chase_scenarios=args.scenarios, **de.chase_controller_overrides(args))
+                      chase_scenarios=args.scenarios, chase_touch_push=args.touch_push,
+                      **de.chase_controller_overrides(args))
         solo = run(w, pol, replace(cfg, chase_share=0.0), args.episodes, 7)
-        chase = run(w, pol, replace(cfg, chase_share=1.0), args.episodes, 7)
+        chase = run(w, pol, replace(cfg, chase_share=1.0), args.episodes, 7, rcfg)
         had = chase['chase_fraction'] > 0
         c = {k: v[had] for k, v in chase.items()}
         weight = c['chase_fraction'] * c['length']
@@ -69,14 +84,14 @@ def main():
         hits = float(np.mean(c['contacts'] > 0)) if had.any() else 0.0
         touches = max(float(np.sum(c['contacts'])), 1.0)
         closing_kmh = 3.6 * float(np.sum(c['contact_closing_ms'] * c['contacts'])) / touches
-        taps = float(np.sum(c['contact_taps'])) / touches
-        touch_s = float(np.sum(c['contact_s'])) / touches
-        crash = float(np.sum(c['contact_crashes'])) / touches
+        share = lambda k: float(np.sum(c[k])) / touches
         print(f"{path[-28:]:<28} {np.mean(solo['return']):6.1f}/{np.mean(c['return']):6.1f} "
               f"{np.mean(solo['slide_fraction']):5.0%}/{mean('chase_drift_fraction'):4.0%} "
               f"{np.mean(c['chase_fraction']):6.0%} {mean('chase_mean_gap_m'):6.1f} {mean('chase_in_band_fraction'):8.0%} "
               f"{mean('chase_slip_diff_deg'):6.1f} {mean('chase_line_diff_m'):6.2f} {hits:6.1%} "
-              f"{closing_kmh:5.1f} {taps:5.0%} {touch_s:7.2f} {crash:5.0%}")
+              f"{closing_kmh:5.1f} {share('contact_taps'):5.0%} {share('contact_rear_end'):5.0%} "
+              f"{share('contact_door'):5.0%} {share('contact_nose_side'):5.0%} {share('contact_crashes'):5.0%} "
+              f"{share('touch_then_crash'):5.0%}")
 
 
 if __name__ == '__main__':
