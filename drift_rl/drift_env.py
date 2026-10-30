@@ -511,6 +511,14 @@ class RewardConfig:
     # lead (a crash). The ghost lead is not pushed, so the chaser learns what a touch costs and keeps
     # the rest of the episode to learn what comes after it, rather than every touch cutting it short.
     chase_contact_ends: float = 1.0
+    # THE CAR'S OWN PATH, NOT THE LINE'S: progress is measured along the AI line, a racing line,
+    # and the pace asked comes from that line's radius. A drift runs wider (the owner's Drift
+    # Playground corners: a ~25 m arc at 51.6 km/h and 0.84 g; trialT's ~20 m at 47.9 km/h and 0.92 g,
+    # grip-limited), so a wider arc was paid as slower and charged as under pace. With this on (1),
+    # a metre of the line counts as the (1 - k x cte) metres the car covers alongside it (k the line's
+    # signed curvature, fast_sim co[:, 10]; held to 0.7 - 1.4), for progress and the pace, and the
+    # speed asked rises with the root of it, as a corner's speed does with its radius. 0 = off.
+    path_progress: float = 0.0
 
     def vector(self):
         return np.array(list(asdict(self).values()), dtype=np.float64)
@@ -525,7 +533,7 @@ class RewardConfig:
  R_WEAVE_GAP, R_SWING, R_SWING_RATE, R_SWING_WINDOW, R_CHASE_PROX, R_CHASE_FAR, R_CHASE_ANGLE,
  R_CHASE_SLIP_FREE, R_CHASE_SLIP_ZERO, R_CHASE_LINE, R_CHASE_LINE_FREE, R_CHASE_LINE_ZERO,
  R_CHASE_CONTACT, R_CHASE_REAR_END, R_CHASE_GAIN, R_CHASE_SWITCH_PAY, R_CHASE_SLOT, R_CHASE_LINE_SHIFT,
- R_CHASE_CONTACT_ENDS) = range(60)
+ R_CHASE_CONTACT_ENDS, R_PATH_PROGRESS) = range(61)
 
 
 @dataclass
@@ -1257,6 +1265,10 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         pace = max(env_cfg[13] * env_cfg[20], min(top, (v + a_idm * env_cfg[18]) / ref_ms))
         s[fs.S_PACE] = pace
     asked_kmh = pace * min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6)
+    if rw[R_PATH_PROGRESS] > 0.0 and co.shape[0] == sp_pos.shape[0]:
+        path = max(0.7, min(1.4, 1.0 - co[ref_point, 10] * d[D_CrossTrackErrorM]))
+        progress *= path
+        asked_kmh = min(asked_kmh * math.sqrt(path), s[fs.S_MAX_SPEED] * 3.6)
     # while chasing, the asked speed is the IDM's suggestion to the frozen driver, not a target the
     # pay holds the car to: closing in past it is what the chase pay is for (chase_debug2 held ~9 m,
     # the IDM's own gap, because the pace pay charged every metre closer)

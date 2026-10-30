@@ -300,7 +300,8 @@ class World:
         # 0 none; build_zones.py), a 9th the same for the stretch of a long corner the tail has to
         # stay out the whole way (build_zones.held_side_per_point), a 10th which way the line turns
         # over the next TURN_WINDOW_M (+1 / -1 as the slip angle's sign in a drift through it; 0 =
-        # less than TURN_MIN_DEG: straight; drift_env's weave penalty).
+        # less than TURN_MIN_DEG: straight; drift_env's weave penalty), an 11th the line's signed
+        # curvature (signed_curvature: + = turning toward + cross-track; drift_env path_progress).
         self.course_rows = 0 if course_edges is None else len(course_edges)
         if course_edges is not None and len(course_edges) == n:
             on_straight = np.zeros(n)
@@ -322,9 +323,10 @@ class World:
             edges = np.asarray(course_edges, dtype=np.float64)[:, :6]
             from build_zones import held_side_per_point
             held_side = held_side_per_point(edges[:, 2:4], edges[:, 4:6])
-            self.co = np.ascontiguousarray(np.c_[edges, on_straight, zone_side, held_side, self.turn_side()])
+            self.co = np.ascontiguousarray(np.c_[edges, on_straight, zone_side, held_side, self.turn_side(),
+                                                    self.signed_curvature()])
         else:
-            self.co = np.zeros((1, 10))
+            self.co = np.zeros((1, 11))
         if course_markers is not None and len(course_markers) > 0:
             self.mk = np.ascontiguousarray(course_markers, dtype=np.float64)
         else:
@@ -378,6 +380,26 @@ class World:
             turned = math.degrees(math.atan2(math.sin(heading[cur] - heading[i]), math.cos(heading[cur] - heading[i])))
             out[i] = 0.0 if abs(turned) < min_deg else math.copysign(1.0, turned)
         return out
+
+    def signed_curvature(self, window_m=15.0):
+        """Per spline point: the line's heading change per metre over window_m centred on it (round
+        the loop), + where it turns toward + cross-track (the side M_CTE counts as +). A path
+        n metres to that side of the line is (1 - k n) metres long per metre of the line."""
+        xz = self.sp_pos[:, [0, 2]]
+        step = np.roll(xz, -1, axis=0) - xz
+        heading = np.arctan2(step[:, 1], step[:, 0])
+        turn = np.diff(np.r_[heading, heading[0]])
+        turn = (turn + math.pi) % (2.0 * math.pi) - math.pi
+        lengths = np.asarray(self.sp_length, dtype=np.float64)
+        arc = np.r_[0.0, np.cumsum(lengths[:-1])]
+        lap = float(lengths.sum())
+        cum = np.r_[0.0, np.cumsum(turn)]
+        knots = np.r_[arc, lap]
+
+        def heading_at(a):
+            laps = np.floor(a / lap)
+            return np.interp(a - laps * lap, knots, cum) + laps * cum[-1]
+        return (heading_at(arc + 0.5 * window_m) - heading_at(arc - 0.5 * window_m)) / window_m
 
     def sensor_triangles(self):
         """(vertices, surface codes) of the sensors' triangles."""
