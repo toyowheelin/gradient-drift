@@ -7,10 +7,17 @@
 </p>
 
 <p align="center">
-  <img alt="Licence: AGPL-3.0" src="https://img.shields.io/badge/licence-AGPL--3.0-blue">
-  <img alt="AssettoServer v0.0.54" src="https://img.shields.io/badge/AssettoServer-v0.0.54-orange">
-  <img alt="Server: Windows tested" src="https://img.shields.io/badge/server-Windows%20tested-lightgrey">
-  <img alt="Trainer: Python 3.12+" src="https://img.shields.io/badge/trainer-Python%203.12%2B-green">
+  <a href="https://github.com/toyowheelin/gradient-drift/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/toyowheelin/gradient-drift?style=plastic&logo=github&label=release"></a>
+  <a href="https://github.com/toyowheelin/gradient-drift/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/toyowheelin/gradient-drift/total?style=plastic&logo=github&color=brightgreen"></a>
+  <a href="https://github.com/toyowheelin/gradient-drift/actions/workflows/build-plugin.yml"><img alt="Plugin build" src="https://img.shields.io/github/actions/workflow/status/toyowheelin/gradient-drift/build-plugin.yml?branch=main&style=plastic&logo=githubactions&logoColor=white&label=plugin%20build"></a>
+  <a href="LICENSE"><img alt="Licence: AGPL-3.0" src="https://img.shields.io/badge/licence-AGPL--3.0-blue?style=plastic&logo=gnu&logoColor=white"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/compujuckel/AssettoServer"><img alt="AssettoServer v0.0.54" src="https://img.shields.io/badge/AssettoServer-v0.0.54-EA141E?style=plastic&logo=data%3Aimage%2Fpng%3Bbase64%2CiVBORw0KGgoAAAANSUhEUgAAAEQAAAAqCAYAAAAK7f2YAAAACXBIWXMAAC4jAAAuIwF4pT92AAAGWWlUWHRYTUw6Y29tLmFkb2JlLnhtcAAAAAAAPD94cGFja2V0IGJlZ2luPSLvu78iIGlkPSJXNU0wTXBDZWhpSHpyZVN6TlRjemtjOWQiPz4gPHg6eG1wbWV0YSB4bWxuczp4PSJhZG9iZTpuczptZXRhLyIgeDp4bXB0az0iQWRvYmUgWE1QIENvcmUgNi4wLWMwMDIgNzkuMTY0MzUyLCAyMDIwLzAxLzMwLTE1OjUwOjM4ICAgICAgICAiPiA8cmRmOlJERiB4bWxuczpyZGY9Imh0dHA6Ly93d3cudzMub3JnLzE5OTkvMDIvMjItcmRmLXN5bnRheC1ucyMiPiA8cmRmOkRlc2NyaXB0aW9uIHJkZjphYm91dD0iIiB4bWxuczp4bXA9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC8iIHhtbG5zOmRjPSJodHRwOi8vcHVybC5vcmcvZGMvZWxlbWVudHMvMS4xLyIgeG1sbnM6cGhvdG9zaG9wPSJodHRwOi8vbnMuYWRvYmUuY29tL3Bob3Rvc2hvcC8xLjAvIiB4bWxuczp4bXBNTT0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL21tLyIgeG1sbnM6c3RFdnQ9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZUV2ZW50IyIgeG1wOkNyZWF0b3JUb29sPSJBZG9iZSBQaG90b3Nob3AgMjEuMSAoV2luZG93cykiIHhtcDpDcmVhdGVEYXRlPSIyMDIyLTA5LTI3VDE1OjE4OjQ1KzAyOjAwIiB4bXA6TW9kaWZ5RGF0ZT0iMjAyMi0xMi0xNlQxODoxMTozNyswMTowMCIgeG1wOk1ldGFkYXRhRGF0ZT0iMjAyMi0xMi0xNlQxODoxMTozNyswMTowMCIgZGM6Zm9ybWF0PSJpbWFnZS9wbmciIHBob3Rvc2hvcDpDb2xvck1vZGU9IjMiIHBob3Rvc2hvcDpJQ0NQcm9maWxlPSJzUkdCIElFQzYxOTY2LTIuMSIgeG1wTU06SW5zdGFuY2VJRD0ieG1wLmlpZDpiNjU4ZmU5Mi0wMGQ4LWY0NGQtYmE3ZC1jM2RmMWExMDc4OTIiIHhtcE1NOkRvY3VtZW50SUQ9ImFkb2JlOmRvY2lkOnBob3Rvc2hvcDo1MjZiMGNiZC1lNTY2LTM5NDMtOGJhNS1hZTI5NGVlODJiYjYiIHhtcE1NOk9yaWdpbmFsRG9jdW1lbnRJRD0ieG1wLmRpZDplMmViNWVlNC05YjUzLTkyNDctYTQ3OS0zNzE0YmNlYjRkM2YiPiA8eG1wTU06SGlzdG9yeT4gPHJkZjpTZXE%2BIDxyZGY6bGkgc3RFdnQ6YWN0aW9uPSJjcmVhdGVkIiBzdEV2dDppbnN0YW5jZUlEPSJ4bXAuaWlkOmUyZWI1ZWU0LTliNTMtOTI0Ny1hNDc5LTM3MTRiY2ViNGQzZiIgc3RFdnQ6d2hlbj0iMjAyMi0wOS0yN1QxNToxODo0NSswMjowMCIgc3RFdnQ6c29mdHdhcmVBZ2VudD0iQWRvYmUgUGhvdG9zaG9wIDIxLjEgKFdpbmRvd3MpIi8%2BIDxyZGY6bGkgc3RFdnQ6YWN0aW9uPSJjb252ZXJ0ZWQiIHN0RXZ0OnBhcmFtZXRlcnM9ImZyb20gYXBwbGljYXRpb24vdm5kLmFkb2JlLnBob3Rvc2hvcCB0byBpbWFnZS9wbmciLz4gPHJkZjpsaSBzdEV2dDphY3Rpb249InNhdmVkIiBzdEV2dDppbnN0YW5jZUlEPSJ4bXAuaWlkOmI2NThmZTkyLTAwZDgtZjQ0ZC1iYTdkLWMzZGYxYTEwNzg5MiIgc3RFdnQ6d2hlbj0iMjAyMi0xMi0xNlQxODoxMTozNyswMTowMCIgc3RFdnQ6c29mdHdhcmVBZ2VudD0iQWRvYmUgUGhvdG9zaG9wIDIxLjEgKFdpbmRvd3MpIiBzdEV2dDpjaGFuZ2VkPSIvIi8%2BIDwvcmRmOlNlcT4gPC94bXBNTTpIaXN0b3J5PiA8L3JkZjpEZXNjcmlwdGlvbj4gPC9yZGY6UkRGPiA8L3g6eG1wbWV0YT4gPD94cGFja2V0IGVuZD0iciI%2FPmn8iCQAAAGjSURBVGje5dnREcIgDABQR%2BiH387gCI7SERyhG3QERnCEjtAR%2FPenIyC946OHQElIMG24y%2FlR9MqzhEAvF4Htc73dXSwuHtDvWmuNxTcjGcNCQc6OAQLRgFEMogWjCEQTxi6INowsiEaMJIhWjCiIZowfEDegUTNGDGTSjEEFIh5j%2FezXwW6iL6lDECDiMWYXXaYfJYjBJOPWT0YXXDcupk0sRCAGuzK1zBljcP3JlEPQGGwgiQR6r61DCkCqMFhAEoNdgj4DwypTjUEOkvnnw%2BnS%2BQRLBUKCQQqSwTCJ%2FiHKO4JUAkKGQQYCxcj8zgsIQopBAkKB4Z%2BWEThlyDGqQSAYvu%2Fg47WpPWZEDmHBqAJBYED3MSkQNgw0SCOMGEjPiYECaYjBeYRIA9IYI3eE2PvpkwtekD9gWMyrzCaFWSXGnFhSWUDYz1wJMDrA3gVd1B0GA7iZOz8GAuTcGECQ82MAQHRgFIIcCmONAYtRAHI4jHDFAGHsgBwSw5ZAIUDkYfibZcVIgMjE8DfLihEBkYuBBAFhBCCyMRAgYIwNiHwM175VQuLr4gB4bgAAAABJRU5ErkJggg%3D%3D"></a>
+  <a href="https://dotnet.microsoft.com/download/dotnet/8.0"><img alt="Plugin: .NET 8" src="https://img.shields.io/badge/plugin-.NET%208-512BD4?style=plastic&logo=dotnet&logoColor=white"></a>
+  <a href="https://www.python.org/downloads/"><img alt="Trainer: Python 3.12+" src="https://img.shields.io/badge/trainer-Python%203.12%2B-3776AB?style=plastic&logo=python&logoColor=white"></a>
+  <a href="https://pytorch.org/get-started/locally/"><img alt="PyTorch" src="https://img.shields.io/badge/PyTorch-PPO-EE4C2C?style=plastic&logo=pytorch&logoColor=white"></a>
 </p>
 
 <p align="center">
@@ -55,13 +62,12 @@ the one behind.
 **You need** AssettoServer v0.0.54, and the game installed on the machine you run setup on (setup
 reads the track and the cars from it).
 
-1. **Download the plugin and the setup program** from the
-   [releases](https://github.com/toyowheelin/gradient-drift/releases). They are separate releases:
-   `plugin-v…` has the plugin (`GradientDriftPlugin-<version>-for-AssettoServer-0.0.54.zip`),
-   `setup-v…` has the setup program for Windows or Linux. Unzip the setup program anywhere, then unzip the plugin download into the
-   same folder, so its `GradientDriftPlugin` folder sits beside `gradient-drift-setup.exe`; setup
-   finds it there. Each plugin download is built for one AssettoServer version, named in its file
-   name and README; on another version the plugin says so in the server log at start. To build the
+1. **Download the release**: one zip, `gradient-drift-<version>.zip`, from the
+   [latest release](https://github.com/toyowheelin/gradient-drift/releases/latest). Unzip it
+   anywhere. It has the setup program for Windows (`windows/`) and for Linux (`linux/`), each with
+   the plugin already in its `GradientDriftPlugin` folder, where setup finds it. Each release is
+   built for one AssettoServer version, named in its title and README; on another version the
+   plugin says so in the server log at start. To build the
    plugin yourself instead, see [Building the plugin](#building-the-plugin).
 2. **Run the setup program** ([`setup/`](setup/README.md)). Point it at the game install and the
    server folder, then choose the bot car, how many bots, trains and pace. It shows every change

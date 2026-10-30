@@ -23,12 +23,13 @@ COMPILED = ['fast_sim', 'drift_env', 'sim_target']
 a = Analysis(
     [os.path.join(SPECPATH, 'launcher.py')],
     pathex=[SPECPATH, os.path.join(ROOT, 'drift_rl'), os.path.join(ROOT, 'tools')],
-    hiddenimports=TRACK_TOOLS + ['gradientdrift_setup.trackdata', 'gradientdrift_setup.carfile', 'gradientdrift_setup.export'] + (['gradientdrift_setup.gui'] if GUI else []),
+    hiddenimports=TRACK_TOOLS + ['gradientdrift_setup.trackdata', 'gradientdrift_setup.carfile', 'gradientdrift_setup.export', 'gradientdrift_setup.walk'] + (['gradientdrift_setup.gui'] if GUI else []),
     excludes=([] if GUI else ['PySide6', 'shiboken6', 'gradientdrift_setup.gui'])
     # left out: what the track tools never use but the libraries pull in when it is installed
     + ['tkinter', 'torch', 'matplotlib', 'IPython', 'PIL', 'cryptography', 'lxml', 'sqlalchemy',
        'pyarrow', 'openpyxl', 'jinja2', 'pytest',
-       # and the terminal line editors, which would bring GNU readline (GPL) along on Linux
+       # and the terminal line editors, which would bring GNU readline (GPL) along on Linux (the
+       # walk-through's prompts are prompt_toolkit's, BSD, which needs neither)
        'readline', 'curses'],
     module_collection_mode={m: 'pyz+py' for m in COMPILED},
     noarchive=False,
@@ -61,7 +62,7 @@ def _put(src, *dest):
 
 
 DISTRIBUTIONS = ['numpy', 'scipy', 'pandas', 'numba', 'llvmlite', 'python-dateutil', 'pytz', 'tzdata', 'six',
-                 'ruamel.yaml', 'ruamel.yaml.clib', 'pyinstaller'] + (['PySide6_Essentials', 'shiboken6'] if GUI else [])
+                 'ruamel.yaml', 'ruamel.yaml.clib', 'prompt_toolkit', 'wcwidth', 'pyinstaller'] + (['PySide6_Essentials', 'shiboken6'] if GUI else [])
 for _name in DISTRIBUTIONS:
     try:
         _d = _md.distribution(_name)

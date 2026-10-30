@@ -1,6 +1,6 @@
 # Compiles the plugin against the AssettoServer version it is built for, on every push that touches
 # it, so a C# mistake shows up here before anyone builds it by hand, and packages it as the download
-# (a workflow artifact; a tag like plugin-v0.1.0 also makes a draft release with it attached). The
+# (a workflow artifact; release.yml calls it on a v* tag and attaches it to the draft release). The
 # download's name and README say which AssettoServer version it is for. The plugin's .csproj
 # references AssettoServer by relative path, so the plugin is placed inside an AssettoServer checkout
 # as AssettoServer/GradientDriftPlugin/, as on a developer's machine.
@@ -10,13 +10,18 @@ on:
   push:
     branches: [main]
     paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', '.github/workflows/build-plugin.yml']
-    tags: ['plugin-v*']
   pull_request:
     paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', '.github/workflows/build-plugin.yml']
   workflow_dispatch:
+  workflow_call:       # from release.yml on a v* tag
+    outputs:
+      package:
+        value: ${{ jobs.build.outputs.package }}
+      assettoserver:
+        value: ${{ jobs.build.outputs.assettoserver }}
 
 permissions:
-  contents: read   # it only reads the code; the release job alone writes
+  contents: read   # it only reads the code; release.yml makes the release
 
 env:
   ASSETTOSERVER_REF: v0.0.54   # setup/gradientdrift_setup/identify.py TESTED_VERSION
@@ -67,7 +72,7 @@ jobs:
           sha = hashlib.sha256(policy).hexdigest()
           listed = sha in plan
           print(f'policy {sha}: {"in" if listed else "NOT in"} setup SHIPPED_POLICIES')
-          if os.environ['GITHUB_REF'].startswith('refs/tags/plugin-v'):
+          if os.environ['GITHUB_REF'].startswith('refs/tags/v'):
               assert listed, 'add this policy to SHIPPED_POLICIES in setup/gradientdrift_setup/plan.py'
           elif not listed:
               print('::warning::the policy is not in setup SHIPPED_POLICIES yet (needed before a release)')
@@ -90,8 +95,8 @@ jobs:
         id: package
         run: |
           out=AssettoServer/GradientDriftPlugin/bin/Debug/net8.0
-          version=${GITHUB_REF_NAME#plugin-}
-          [[ "$GITHUB_REF" == refs/tags/* ]] || version=$(git -C gradient-drift rev-parse --short HEAD)
+          version=$GITHUB_REF_NAME
+          [[ "$GITHUB_REF" == refs/tags/v* ]] || version=$(git -C gradient-drift rev-parse --short HEAD)
           name=GradientDriftPlugin-$version-for-AssettoServer-$ASSETTOSERVER_VERSION
           mkdir -p pkg/GradientDriftPlugin
           cp $out/GradientDriftPlugin.dll $out/GradientDriftPlugin.deps.json $out/GradientDriftPlugin.policy.json pkg/GradientDriftPlugin/
@@ -106,9 +111,8 @@ jobs:
           says so in the server log at start, and the bots may misbehave: use the release made for your
           version, or build the plugin from the source against it.
 
-          To install: unzip this into the gradient-drift-setup folder (from the setup-v... release,
-          same page), so GradientDriftPlugin sits beside the program, and run setup on the server
-          folder. It installs the plugin and makes the track data, car files and settings.
+          To install: put this GradientDriftPlugin folder beside the setup program (the release has
+          it there already), and run setup on the server folder. It installs the plugin and makes the track data, car files and settings.
 
           Source, licence (AGPL-3.0, in LICENSE) and documentation:
           $GITHUB_SERVER_URL/$GITHUB_REPOSITORY (built from commit $GITHUB_SHA)
@@ -123,25 +127,3 @@ jobs:
           path: pkg/
           retention-days: 3
 
-  release:
-    if: startsWith(github.ref, 'refs/tags/')
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write   # the draft release
-    steps:
-      - uses: actions/download-artifact@v5
-        with:
-          name: ${{ needs.build.outputs.package }}
-          path: pkg
-      - run: (cd pkg && zip -qr "../$PACKAGE.zip" .)
-        env:
-          PACKAGE: ${{ needs.build.outputs.package }}
-      - run: >
-          gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME (AssettoServer $ASSETTOSERVER)"
-          --notes "Built and tested for AssettoServer $ASSETTOSERVER. One download for Windows and Linux servers (a .NET plugin; tested on Windows only, Linux untested). On another version the plugin warns in the server log at start. Install it with the setup program (the newest setup-v release): unzip this into setup's folder and run setup."
-          --repo "$GITHUB_REPOSITORY" "$PACKAGE.zip"
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PACKAGE: ${{ needs.build.outputs.package }}
-          ASSETTOSERVER: ${{ needs.build.outputs.assettoserver }}

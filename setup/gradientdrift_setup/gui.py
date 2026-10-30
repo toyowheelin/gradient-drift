@@ -1,13 +1,16 @@
 """The Qt face of setup: the walk-through, one page per step. Everything it shows comes from the
 core (find, server, game, plan); this file only lays it out."""
+import contextlib
 import os
 import sys
+import threading
+import time
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QFont
-from PySide6.QtWidgets import (QApplication, QComboBox, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
-                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-                               QSpinBox, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QFont, QPalette
+from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QFormLayout, QHBoxLayout, QHeaderView,
+                               QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QProgressBar, QPushButton, QScrollArea,
+                               QSizePolicy, QSpinBox, QTableWidget, QTableWidgetItem, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
                                QWizard, QWizardPage)
 
 from .apply import apply_plan, last_run, undo
@@ -15,7 +18,7 @@ from .find import (default_plugin_source, default_track_data, find_games, find_s
                    is_server, track_data_root)
 from .game import car_facts, track_facts
 from .identify import identify
-from .plan import bot_slots, plan_bot
+from .plan import bot_name_now, bot_slots, plan_bot
 from .server import read_server
 
 OK, WARN, BAD = '✔', '⚠', '✖'
@@ -27,10 +30,111 @@ def heading(text):
     return label
 
 
+def hint(text):
+    """A line of help under a field or at the foot of a page, in the window's quieter text colour."""
+    label = QLabel(text)
+    label.setWordWrap(True)
+    label.setTextFormat(Qt.RichText)
+    label.setForegroundRole(QPalette.PlaceholderText)
+    return label
+
+
+class _Relay(QObject):
+    """Carries the worker's lines (and its end) to the window's thread."""
+    line = Signal(str, bool)        # the line, and whether it names a step
+    finished = Signal()
+
+
+class _Stream:
+    """stdout for the worker: each finished line goes to the progress window (the track tools print
+    their numbered steps)."""
+    def __init__(self, relay):
+        self.relay, self.buf = relay, ''
+
+    def write(self, text):
+        self.buf += text
+        while '\n' in self.buf:
+            line, self.buf = self.buf.split('\n', 1)
+            if line.strip():        # an unindented line is a step ("3. AI line"), an indented one its detail
+                self.relay.line.emit(line.strip(), not line[:1].isspace())
+        return len(text)
+
+    def flush(self):
+        pass
+
+
+class _BusyDialog(QDialog):
+    """The progress window: Esc and the close button do nothing while setup works."""
+    def reject(self):
+        pass
+
+
+def run_busy(parent, title, work):
+    """Runs work(log) off the window's thread behind a progress window: a moving bar, the step it is
+    on, the latest line and the time so far, so a few minutes of making track data does not look like
+    a hang. Returns (result, error, the lines logged); work's own prints count as lines."""
+    dlg = _BusyDialog(parent)
+    dlg.setWindowTitle(title)
+    dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowCloseButtonHint & ~Qt.WindowContextHelpButtonHint)
+    dlg.setModal(True)
+    dlg.setMinimumWidth(520)
+    lay = QVBoxLayout(dlg)
+    step = QLabel('Starting')
+    step.setWordWrap(True)
+    font = step.font()
+    font.setBold(True)
+    step.setFont(font)
+    bar = QProgressBar()
+    bar.setRange(0, 0)              # no end known: the bar keeps moving while setup works
+    detail = hint('')
+    detail.setTextFormat(Qt.PlainText)
+    clock = hint('')
+    lay.addWidget(QLabel("Setup is working. Making a track's data takes a few minutes."))
+    lay.addWidget(step)
+    lay.addWidget(bar)
+    lay.addWidget(detail)
+    lay.addWidget(clock)
+    lines, out = [], {}
+    relay = _Relay()
+
+    def show(text, is_step):
+        if is_step:
+            step.setText(text)
+        detail.setText(text[:160])
+
+    relay.line.connect(show)
+    relay.finished.connect(dlg.accept)
+    t0 = time.time()
+    ticker = QTimer(dlg)
+    ticker.timeout.connect(lambda: clock.setText(f'{int(time.time() - t0)} s so far. Please leave this window open.'))
+    ticker.start(1000)
+
+    def log(line):
+        lines.append(line)
+        relay.line.emit(line.strip(), True)     # setup's own lines name what it is doing
+
+    def worker():
+        try:
+            with contextlib.redirect_stdout(_Stream(relay)):
+                out['result'] = work(log)
+        except Exception as e:      # shown by the caller
+            out['error'] = e
+        finally:
+            relay.finished.emit()
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    dlg.exec()
+    thread.join()
+    ticker.stop()
+    return out.get('result'), out.get('error'), lines
+
+
 class PathPicker(QWidget):
     """A list of what was found, and a Browse button for anything else."""
 
-    def __init__(self, found, check, browse_title, label=None, parent=None, normalize=None, refusal=None):
+    def __init__(self, found, check, browse_title, label=None, parent=None, normalize=None, refusal=None,
+                 none_found='Nothing found automatically - use Browse.'):
         super().__init__(parent)
         self.check, self.browse_title, self.label = check, browse_title, label or (lambda p: p)
         self.normalize = normalize or (lambda p: p)
@@ -46,7 +150,8 @@ class PathPicker(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.addWidget(self.list)
         row = QHBoxLayout()
-        self.message = QLabel('' if found else 'Nothing found automatically - use Browse.')
+        self.message = QLabel('' if found else none_found)
+        self.message.setWordWrap(True)
         row.addWidget(self.message, 1)
         row.addWidget(browse)
         lay.addLayout(row)
@@ -99,6 +204,10 @@ class GamePage(QWizardPage):
         self.picker.list.currentItemChanged.connect(lambda *_: self.completeChanged.emit())
         lay = QVBoxLayout(self)
         lay.addWidget(self.picker)
+        lay.addWidget(hint('This is the game you play, not the server. With Steam it is usually '
+                           '<code>steamapps\\common\\assettocorsa</code> in your Steam library. Setup builds the '
+                           "plugin's track data and each bot car's numbers from what is in its <code>content</code> "
+                           'folder, so the server\'s track and cars must be installed here too.'))
 
     def isComplete(self):
         return bool(self.picker.value())
@@ -124,6 +233,9 @@ class ServerPage(QWizardPage):
         lay = QVBoxLayout(self)
         lay.addWidget(self.picker, 1)
         lay.addWidget(self.info)
+        lay.addWidget(hint('Setup lists the AssettoServer folders it finds in or beside the game; Browse for one '
+                           'elsewhere. Start the server once before setup if you have not yet, so AssettoServer '
+                           'writes <code>cfg\\extra_cfg.yml</code>. Nothing is changed until the last page.'))
 
     def initializePage(self):
         if not self.picker.list.count():
@@ -168,6 +280,7 @@ class TrackPage(QWizardPage):
         super().__init__()
         self.state = state
         self.setTitle('Checking the track')
+        self.setSubTitle("Is the server's track in the game install, with what the bots need? Nothing to choose here.")
         self.text = QLabel()
         self.text.setWordWrap(True)
         self.text.setTextFormat(Qt.RichText)
@@ -189,7 +302,9 @@ class TrackPage(QWizardPage):
             else:
                 rows.append(f'{BAD} AI line: {t.ai_note}. AssettoServer needs one for any AI car; '
                             'recording one by driving a lap is coming in a later version.')
-        rows.append('<br><i>The course map (edges, zones, direction of travel) will be shown here.</i>')
+        rows.append("<br>The plugin also needs data about this track (its walls, road and course). If the server "
+                    "does not have it yet, setup makes it from the game install when you make the changes on the "
+                    "last page; that takes a few minutes.")
         self.text.setText('<br>'.join(rows))
 
 
@@ -207,7 +322,7 @@ class CarPage(QWizardPage):
         self.all_car.setToolTip('Puts every bot in this car (and its skin); change single slots in the list below.')
         self.all_car.activated.connect(self.set_all)
         self.name = QLineEdit('DriftBot')
-        self.name.setToolTip('The name of each bot setup adds (numbered when it adds more than one).')
+        self.name.setToolTip('The bots\' name in game: AssettoServer shows each as this name and its slot number.')
         self.count = QSpinBox()
         self.count.setRange(1, 12)
         self.count.setToolTip('Bots in all, existing ones included (setup does not take bots away). '
@@ -241,12 +356,16 @@ class CarPage(QWizardPage):
         form.addRow('Bots to a train', self.train)
         form.addRow('Pace', self.pace)
         form.addRow(self.note)
+        form.addRow(hint('Pick how many bots you want and their car; the rest can stay as it is. '
+                         'Each bot takes a car slot on the server, so players keep the other slots. '
+                         'Hover over a field for more about it.'))
 
     def initializePage(self):
         s = self.state['server']
         config = s.plugin_config or {}
         self.train.setValue(int(config.get('TrainSize', 0) or 0))
         self.pace.setValue(int(float(config.get('BotPacePercent', 0) or 0)))
+        self.name.setText(bot_name_now(s))         # a name chosen before is kept, not set back to DriftBot
         self.all_car.clear()
         self.all_car.addItems([self.SAME] + s.cars)
         self.slots.setRowCount(0)
@@ -346,16 +465,19 @@ class ChangesPage(QWizardPage):
         self.issues.setTextFormat(Qt.RichText)
         self.plugin = PathPicker([p for p in [default_plugin_source()] if p],
                                  lambda p: os.path.exists(os.path.join(p, 'GradientDriftPlugin.dll')),
-                                 "The plugin's build folder (with GradientDriftPlugin.dll)")
+                                 "The plugin's build folder (with GradientDriftPlugin.dll)",
+                                 none_found="Not found: unzip the plugin download into setup's folder, or Browse.")
         self.track_data = PathPicker([p for p in [default_track_data()] if p],
                                      lambda p: os.path.isdir(p) and not in_game_content(p),
-                                     "The track files folder (setup_track.py's output, a folder per track, e.g. drift_rl\\tracks)",
+                                     "A folder of track data you already have (a folder per track, e.g. drift_rl\\tracks)",
                                      normalize=lambda p: track_data_root(p) or p,
-                                     refusal=lambda p: "That is a track's folder in the game or server content. Pick "
-                                     "the track files folder setup_track.py makes, with a folder per track "
-                                     "(drift_rl\\tracks).")
+                                     refusal=lambda p: "That is a track's folder in the game or server content. "
+                                     "Leave Track files empty and setup makes the data from it.",
+                                     none_found="Usually left empty: setup makes the track's data from the game. Browse only to use track "
+                                     "data you already have.")
         for picker in (self.plugin, self.track_data):
             picker.list.setMaximumHeight(48)
+            picker.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
             picker.list.currentItemChanged.connect(lambda *_: self.initializePage())
         files = QFormLayout()
         files.addRow('Plugin build', self.plugin)
@@ -376,27 +498,36 @@ class ChangesPage(QWizardPage):
         lay = QVBoxLayout(self)
         lay.addWidget(self.summary)
         lay.addWidget(self.tree, 1)
-        lay.addWidget(self.issues)
+        issues = QScrollArea()          # a long list of problems scrolls instead of squeezing the fields below
+        issues.setWidget(self.issues)
+        issues.setWidgetResizable(True)
+        issues.setFrameShape(QScrollArea.NoFrame)
+        lay.addWidget(issues, 1)
         lay.addLayout(files)
+        lay.addWidget(hint('<b>To finish:</b> stop the server, click <b>Make these changes</b>, then start the '
+                           'server again. Its log should say <code>GradientDrift: policy loaded from</code>; the '
+                           'bots join when a player is on. A server on a hosting plan: '
+                           '<b>Export for a hosted server</b> instead.'))
         lay.addLayout(buttons)
 
     def apply(self):
         plan = self.state['plan']
-        answer = QMessageBox.question(self, 'Make the changes?',
-                                      f'Setup will make {len(plan.changes)} change(s) to\n{plan.server.folder}\n\n'
-                                      'The originals are kept, and Undo puts them back. Stop the server first if it '
-                                      'is running; start it again afterwards.')
-        if answer != QMessageBox.Yes:
+        slow = any(c.op[:1] == ('track_data',) for c in plan.changes)
+        box = QMessageBox(QMessageBox.Question, 'Make the changes?',
+                          f'Make {len(plan.changes)} change(s) to {plan.server.folder} now?', parent=self)
+        box.setInformativeText('Stop the server first if it is running, and start it again afterwards. Setup keeps '
+                               'the originals, and Undo puts them back.'
+                               + (" Making the track's data takes a few minutes." if slow else ''))
+        go = box.addButton('Make the changes', QMessageBox.AcceptRole)
+        box.addButton('Cancel', QMessageBox.RejectRole)
+        box.setDefaultButton(go)
+        box.exec()
+        if box.clickedButton() is not go:
             return
-        done = []
-        QApplication.setOverrideCursor(Qt.WaitCursor)     # making a track's data takes a few minutes
-        try:
-            backup = apply_plan(plan, log=done.append)
-        except Exception as e:
-            QMessageBox.critical(self, 'Nothing was changed', f'{type(e).__name__}: {e}')
+        _, error, done = run_busy(self, 'Making the changes', lambda log: apply_plan(plan, log=log))
+        if error:
+            QMessageBox.critical(self, 'Nothing was changed', f'{type(error).__name__}: {error}')
             return
-        finally:
-            QApplication.restoreOverrideCursor()
         QMessageBox.information(self, 'Done', '\n'.join(done) + f'\n\nRestart the server for the changes to take effect.')
         self.state['server'] = read_server(plan.server.folder)
         self.initializePage()
@@ -407,19 +538,15 @@ class ChangesPage(QWizardPage):
         out = QFileDialog.getExistingDirectory(self, 'An empty folder for the files to upload')
         if not out:
             return
-        done = []
-        QApplication.setOverrideCursor(Qt.WaitCursor)     # making a track's data takes a few minutes
-        try:
-            plan, files = export_server(st['server'].folder, os.path.normpath(out), st['game'], log=done.append,
-                                        slots=st.get('slots'), bots=st['bots'], bot_name=st['bot_name'],
-                                        plugin_source=self.plugin.value() or None,
-                                        track_data=self.track_data.value() or None,
-                                        train_size=st.get('train_size'), pace_percent=st.get('pace_percent'))
-        except Exception as e:
-            QMessageBox.critical(self, 'Nothing was exported', f'{type(e).__name__}: {e}')
+        plugin, track_data = self.plugin.value() or None, self.track_data.value() or None
+        result, error, _ = run_busy(self, 'Exporting', lambda log: export_server(
+            st['server'].folder, os.path.normpath(out), st['game'], log=log, slots=st.get('slots'), bots=st['bots'],
+            bot_name=st['bot_name'], plugin_source=plugin, track_data=track_data,
+            train_size=st.get('train_size'), pace_percent=st.get('pace_percent')))
+        if error:
+            QMessageBox.critical(self, 'Nothing was exported', f'{type(error).__name__}: {error}')
             return
-        finally:
-            QApplication.restoreOverrideCursor()
+        plan, files = result
         if files is None:
             QMessageBox.warning(self, 'Nothing was exported', '\n'.join(plan.blockers) or 'The server needs no changes.')
             return
@@ -433,7 +560,11 @@ class ChangesPage(QWizardPage):
 
     def undo(self):
         server = self.state['server'].folder
-        if QMessageBox.question(self, 'Undo?', 'Put back the files the last run of setup changed?') != QMessageBox.Yes:
+        box = QMessageBox(QMessageBox.Question, 'Undo?', 'Put back the files the last run of setup changed?', parent=self)
+        go = box.addButton('Put them back', QMessageBox.AcceptRole)
+        box.addButton('Cancel', QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not go:
             return
         done = []
         undo(server, log=done.append)

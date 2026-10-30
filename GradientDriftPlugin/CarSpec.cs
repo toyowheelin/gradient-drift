@@ -10,6 +10,7 @@ public sealed class CarSpec
 {
     public const int EngineCurvePoints = 33;
     public const float EngineCurveStepMs = 2.5f;
+    public const float DefaultTireFlex = 0.000852f;
 
     public string Name = "";
     public float YawInertiaKgM2;
@@ -21,6 +22,9 @@ public sealed class CarSpec
     public float LateralDynamicsRearPeakFriction;
     public float FrontPeakSlipAngleRadians;
     public float RearPeakSlipAngleRadians;
+    // tyres.ini FLEX, degrees of slip angle per N on a tire (RoundTireCurve only)
+    public float FrontTireFlex = DefaultTireFlex;
+    public float RearTireFlex = DefaultTireFlex;
     public float MaxSteerAngleRadians;
     public float CgHeightMeters;
     public float FrontTireLoadSensitivityPerKn;
@@ -55,6 +59,8 @@ public sealed class CarSpec
         LateralDynamicsRearPeakFriction = c.LateralDynamicsRearPeakFriction,
         FrontPeakSlipAngleRadians = c.FrontPeakSlipAngleRadians,
         RearPeakSlipAngleRadians = c.RearPeakSlipAngleRadians,
+        FrontTireFlex = c.FrontTireFlex,
+        RearTireFlex = c.RearTireFlex,
         MaxSteerAngleRadians = c.MaxSteerAngleRadians,
         CgHeightMeters = c.CgHeightMeters,
         FrontTireLoadSensitivityPerKn = c.FrontTireLoadSensitivityPerKn,
@@ -112,6 +118,8 @@ public sealed class CarSpec
                 LateralDynamicsRearPeakFriction = v["LAT_REAR_PEAK_FRICTION"],
                 FrontPeakSlipAngleRadians = v["FRONT_PEAK_SLIP_RAD"],
                 RearPeakSlipAngleRadians = v["REAR_PEAK_SLIP_RAD"],
+                FrontTireFlex = Get("FRONT_TIRE_FLEX", DefaultTireFlex),
+                RearTireFlex = Get("REAR_TIRE_FLEX", DefaultTireFlex),
                 MaxSteerAngleRadians = MathF.Max(v["MAX_STEER_RAD"], minSteerLockRadians),
                 CgHeightMeters = Get("CG_HEIGHT_M", 0.40f),
                 FrontTireLoadSensitivityPerKn = Get("FRONT_LOAD_SENSITIVITY_PER_KN", 0f),
@@ -160,6 +168,13 @@ public sealed class CarSpec
         float w = x - k;
         return EngineForceN[k] * (1f - w) + EngineForceN[k + 1] * w;
     }
+
+    // The slip angle at which each axle's force reaches its peak (fast_sim.tire_curve_angles): the
+    // tyres' friction limit angle, plus with RoundTireCurve FLEX x the static load on one tire.
+    public (float Front, float Rear) TireCurveAngles(bool roundTireCurve) => roundTireCurve
+        ? (FrontPeakSlipAngleRadians + FrontTireFlex * 0.5f * FrontStaticLoadN * MathF.PI / 180f,
+           RearPeakSlipAngleRadians + RearTireFlex * 0.5f * RearStaticLoadN * MathF.PI / 180f)
+        : (FrontPeakSlipAngleRadians, RearPeakSlipAngleRadians);
 
     // Each axle's peak friction this tick (fast_sim.axle_friction). Off: the peaks as configured.
     public (float Front, float Rear) AxleFriction(float ownSpeed, float yawRate, bool loadSensitivity)

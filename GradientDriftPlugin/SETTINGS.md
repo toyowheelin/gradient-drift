@@ -53,8 +53,10 @@ The settings come in two kinds:
 | `TandemMinGapMeters` | `4.8` | Never closer than this to the car in front, nose to nose. A car is about 4.4 m long. |
 | `TandemLateralOffsetMeters` | `0.6` | How far a follower may sit to one side of the lead's line. Each wanders between about a fifth of this and all of it, on a side of its own. |
 | `LeadPlayers` | `false` | A bot (or train) with a player chasing close behind waits for them: full pace with the player right on its tail, slowing to `BotPaceMinPercent` as they drop back to 40 m. Further back, the bots space themselves as usual. Only for a policy that reads its pace (every current one). |
-| `ChasePlayers` | `false` | A bot chases a player who pulls in within about 7.5 m (25 ft) in front of its nose, until the player gets 40 m ahead. Its pace comes from the Intelligent Driver Model, the standard car-following model of traffic simulation, aiming `ChaseGapMeters` behind the player and easing off early when it closes fast. Only for a policy that reads its pace (every current one). Test setting on the tandem branch. |
+| `ChasePlayers` | `false` | A bot chases a player who pulls in within `ChaseOptInMeters` (7.5 m, about 25 ft) in front of its nose, until the player gets `ChaseOptOutMeters` (40 m) ahead. Its pace comes from the Intelligent Driver Model, the standard car-following model of traffic simulation, aiming `ChaseGapMeters` behind the player and easing off early when it closes fast. Only for a policy that reads its pace (every current one). With a tandem policy (one trained to chase, with the car-ahead inputs and a residual network) the bot also sees the player, as in training: where they are, their gap between the car outlines, line, slip, steering, throttle and brake lights, and its pace takes in the player's acceleration and may drop to the chase floor the policy was trained with. Test setting on the tandem branch. |
 | `ChaseGapMeters` | `2` | With `ChasePlayers`: the gap the chasing bot aims for behind the player, bumper to bumper, before the speed-dependent margin the model adds. |
+| `ChaseOptInMeters` | `7.5` | With `ChasePlayers`: how far ahead of a bot's nose, along the line, a player has to be for the bot to start chasing them. Bigger has bots join a tandem from further back. |
+| `ChaseOptOutMeters` | `40` | With `ChasePlayers`: how far ahead the player has to get before the bot stops chasing. |
 | `ChaseTimeGapSeconds` | `0.2` | With `ChasePlayers`: the speed-dependent margin, in seconds of the bot's speed added to `ChaseGapMeters`. Lower sits closer at speed but leaves less room when the player slows. |
 | `ChaseResponseSeconds` | `0.6` | With `ChasePlayers`: how quickly the bot's pace answers the gap, in seconds. Lower closes up and backs off faster. |
 | `ChasePaceMaxPercent` | `110` | With `ChasePlayers`: the most pace the chasing bot may ask, as a percentage of the policy's top pace. Over 100 gives it some speed in hand to catch a player who drives at the bots' top pace. |
@@ -88,6 +90,8 @@ stopped for 30 seconds, and a line when it moves again. Nothing while the bots d
 | `LogLearnedPolicyObservations` | `true` | Adds the network's inputs to every telemetry row (about 330 bytes a row). The check tools need them. |
 | `LogHumanCarForCalibration` | `false` | Adds the first connected player's car to the telemetry: position, steering, RPM, gear, throttle, wheel speeds. No name, IP or Steam ID. Used to compare the bots with a human driver. |
 | `VerboseLogging` | `false` | The plugin's routine lines as well: what it loaded, each setting the policy file brings, each bot car's numbers, spawns and placements, and the timing line every 60 s. Off, the log has warnings only. |
+| `ShowEntryListNames` | `true` | Show each bot in game under its entry list `DRIVERNAME` instead of AssettoServer's `<NamePrefix> <slot>` (`Traffic 16`). A bot with no `DRIVERNAME` keeps AssettoServer's name. |
+| `BotNation` | `""` | Country code shown with the bots' names (e.g. `ITA`); empty = none. |
 | `LogTimingIntervalSeconds` | `0` | Every this many seconds, a log line with how long the plugin took per server tick (network, sensors, telemetry, followers), the worst tick, and the share of one CPU core. 0 = off (every 60 s with `VerboseLogging`). |
 
 ## Developer settings
@@ -171,10 +175,14 @@ The policy reads these sensors' outputs directly, so their geometry has to match
 | `CarOutlineContact` | `false` | Policy file. Walls touch the car's own outline (a rectangle turned with its heading: each axle's distance from the centre plus `CarOutlineOverhangMeters`, half the wider track plus `CarOutlineSideMarginMeters`) instead of the contact distance's circle, so a sliding car's tail can't pass through a wall |
 | `CarOutlineOverhangMeters` | `0.8` | |
 | `CarOutlineSideMarginMeters` | `0.1` | |
-| `GroundRayHeightOffsetM` | `0.40` | Ride height above the ground found below the car |
+| `RoundTireCurve` | `false` | Policy file. Each axle's sideways force follows the brush (Fiala) curve: three times as steep as the straight line at small slip angles, rounding over into full sliding at the tyres' `FRICTION_LIMIT_ANGLE` plus `FLEX` x the static load on one tire (car file `FRONT_TIRE_FLEX` / `REAR_TIRE_FLEX`, else `FrontTireFlex` / `RearTireFlex`). Matches Assetto Corsa's front tyre, which gives 75 - 90% of its peak by 4 - 8 deg |
+| `FrontTireFlex`, `RearTireFlex` | `0.000852` | tyres.ini `FLEX`, degrees of slip angle per N, for cars without a car file |
+| `GroundRayHeightOffsetM` | `0.40` | Ride height above the ground found below the car. The bot drives and senses at this height; clients are sent each car at its own CG height (`CG_HEIGHT_M` in its car file) instead |
 | `GroundRayStartAboveMeters` | `1.5` | |
 | `GroundRayMaxDistanceMeters` | `6.0` | |
 | `GroundRayHeightSmoothingFactor` | `1.0` | |
+| `RideHeightSpanMeters` | `3.0` | The car rides on the straight line best fitting the ground this far ahead of and behind it along its path (27 points: 9 along each of its centre line and both sides): bumps shorter than about twice this smooth out, hills are followed exactly. `0` = the ground straight below only |
+| `GroundRayMissHoldSeconds` | `0.5` | Where the ground ray finds nothing (a crack in the track's ground mesh), the last height is held this long before the fallback below |
 | `RoadMeshHeightOffsetM` | `0.44` | Fallback height when the ground ray finds nothing |
 | `CrossTrackBlendStartM` | `5.0` | |
 | `CrossTrackBlendEndM` | `12.0` | |

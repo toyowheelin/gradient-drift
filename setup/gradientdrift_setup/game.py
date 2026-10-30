@@ -21,6 +21,7 @@ class TrackFacts:
     ai_points: int = 0                                # 0 = missing, empty or unreadable
     ai_note: str = ''
     lap_m: float = 0.0                                # the AI line's length
+    span_m: float = 0.0                               # the diagonal of the box round the AI line, seen from above
     recorded: str = ''                                # a recorded lap (fast_lane.ai.candidate), if any
 
 
@@ -41,29 +42,32 @@ def track_facts(game, track, layout):
     ai = game_path(folder, layout, 'ai', 'fast_lane.ai') if layout else game_path(folder, 'ai', 'fast_lane.ai')
     if os.path.exists(ai):
         t.ai_line = ai
-        t.ai_points, t.ai_note, t.lap_m = ai_line_points(ai)
+        t.ai_points, t.ai_note, t.lap_m, t.span_m = ai_line_points(ai)
     else:
         candidates = os.listdir(os.path.dirname(ai)) if os.path.isdir(os.path.dirname(ai)) else []
         if 'fast_lane.ai.candidate' in [c.lower() for c in candidates]:
             t.recorded = game_path(os.path.dirname(ai), 'fast_lane.ai.candidate')
-            t.lap_m = ai_line_points(t.recorded)[2]
+            t.lap_m, t.span_m = ai_line_points(t.recorded)[2:]
         t.ai_note = 'no ai/fast_lane.ai' + (f" (the folder has {', '.join(candidates)})" if candidates else '')
     return t
 
 
 def ai_line_points(path):
-    """(number of points, note, length in metres). AssettoServer needs a readable line with points in it."""
+    """(number of points, note, length in metres, span in metres). AssettoServer needs a readable line
+    with points in it. The span is the diagonal of the box round the line, seen from above."""
     from ai_spline import load_fast_lane
     try:
         points = load_fast_lane(path)
     except Exception as e:                      # a truncated or foreign file
         size = os.path.getsize(path)
-        return 0, (f'empty ({size} bytes)' if size < 1024 else f'unreadable ({e.__class__.__name__})'), 0.0
+        return 0, (f'empty ({size} bytes)' if size < 1024 else f'unreadable ({e.__class__.__name__})'), 0.0, 0.0
     if len(points) < 2:
-        return len(points), f'empty ({os.path.getsize(path)} bytes)', 0.0
+        return len(points), f'empty ({os.path.getsize(path)} bytes)', 0.0, 0.0
     pos = [p.position for p in points]
     lap = sum(math.dist(pos[i], pos[(i + 1) % len(pos)]) for i in range(len(pos)))
-    return len(points), '', lap
+    xs, zs = [q[0] for q in pos], [q[2] for q in pos]
+    span = math.hypot(max(xs) - min(xs), max(zs) - min(zs))
+    return len(points), '', lap, span
 
 
 @dataclass

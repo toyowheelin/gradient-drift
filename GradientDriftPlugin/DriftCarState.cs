@@ -50,6 +50,9 @@ internal sealed class DriftCarState
     public float? SmoothedPitch;
     public float? SmoothedRoll;
 
+    // Consecutive ticks the ground ray has found nothing (see GroundRayMissHoldSeconds).
+    public int GroundMissTicks;
+
     // Front-wheel angle last sent to clients, degrees (see EnableSteeringVisual).
     public float? VisualSteerDeg;
 
@@ -74,6 +77,10 @@ internal sealed class DriftCarState
     public bool LeadingPlayer;
     // ChasePlayers: this car is chasing a player ahead; its pace comes from the IDM.
     public bool ChasingPlayer;
+    // ... the player's session id, and the gap between the outlines last tick (a tandem policy's
+    // closing speed input; NaN = none yet).
+    public byte ChaseLeadId;
+    public float ChaseLastGap = float.NaN;
     // Its speed along the line last tick, and the speed a pace of 1 asks there (the course's
     // reference, held to the car's limit), m/s: the IDM works in speeds.
     public float LineSpeedMs;

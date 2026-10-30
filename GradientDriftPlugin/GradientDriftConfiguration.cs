@@ -65,6 +65,10 @@ public class GradientDriftConfiguration
     // Intelligent Driver Model, aiming ChaseGapMeters behind them. A policy that reads its pace only.
     public bool ChasePlayers { get; set; } = false;
     public float ChaseGapMeters { get; set; } = 2f;
+    // How far ahead of a bot's nose a player is taken up (about 25 ft by default, the owner's opt-in),
+    // and how far ahead they get before it gives up, metres along the line.
+    public float ChaseOptInMeters { get; set; } = 7.5f;
+    public float ChaseOptOutMeters { get; set; } = 40f;
     // The model's time gap (drift_env chase_time_gap_blind_s: a player's plan is unknown), how far
     // ahead its acceleration becomes the pace asked (chase_response_s), and the top of that pace as
     // a percentage of the policy's top pace (chase_pace_max): a chaser needs some speed over the
@@ -109,6 +113,12 @@ public class GradientDriftConfiguration
     // setting the policy file brings, each bot car's numbers, spawns and placements, and the timing
     // line every 60 s (unless LogTimingIntervalSeconds says otherwise). Off: warnings only.
     public bool VerboseLogging { get; set; } = false;
+
+    // Show each bot in game under its entry list DRIVERNAME (and this country code's flag, e.g.
+    // ITA; empty = none) instead of AssettoServer's "<NamePrefix> <slot>". A bot with no
+    // DRIVERNAME keeps AssettoServer's name.
+    public bool ShowEntryListNames { get; set; } = true;
+    public string BotNation { get; set; } = "";
 
     // Every this many seconds, a line in the server log with the time the plugin took on the
     // server's update thread: milliseconds a tick, split into the network, the sensors (rays,
@@ -228,6 +238,13 @@ public class GradientDriftConfiguration
     public float CgHeightMeters { get; set; } = 0.40f;
     public float FrontPeakSlipAngleRadians { get; set; } = 11.7f * MathF.PI / 180f;
     public float RearPeakSlipAngleRadians { get; set; } = 12.0f * MathF.PI / 180f;
+    // Each axle's sideways force follows the brush (Fiala) curve, steep at first and rounding over
+    // into full sliding, instead of a straight line to its peak; full sliding comes at the peak
+    // slip angle plus the tyre's FLEX (tyres.ini, degrees per N) x the static load on one tire.
+    // Set by the policy file.
+    public bool RoundTireCurve { get; set; } = false;
+    public float FrontTireFlex { get; set; } = 0.000852f;
+    public float RearTireFlex { get; set; } = 0.000852f;
     // The steering lock at the road wheels. A policy file that was trained with another lock
     // says so ("plugin_settings": MaxSteerAngleDeg) and that value is used instead; the same
     // goes for MaxSteerRateDegS, the two rear limits and the wrong-way recovery's four thresholds.
@@ -342,6 +359,13 @@ public class GradientDriftConfiguration
     public float GroundRayStartAboveMeters { get; set; } = 1.5f;
     public float GroundRayMaxDistanceMeters { get; set; } = 6.0f;
     public float GroundRayHeightSmoothingFactor { get; set; } = 1.0f;
+    // The ground the car rides on is the straight line best fitting the ground this far ahead of
+    // and behind it along the way it is going, so bumps shorter than about twice this are
+    // smoothed out while hills are followed exactly. 0 = the ground straight below only.
+    public float RideHeightSpanMeters { get; set; } = 3.0f;
+    // Where the ray finds nothing (a crack in the ground mesh), the last height is held this long
+    // before the fallback below takes over.
+    public float GroundRayMissHoldSeconds { get; set; } = 0.5f;
 
     // Only when that ray finds no ground: the racing line's own height, blended toward the
     // nearest road-mesh point (plus RoadMeshHeightOffsetM) as the car gets between

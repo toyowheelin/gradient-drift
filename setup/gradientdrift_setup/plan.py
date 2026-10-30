@@ -4,6 +4,7 @@ import filecmp
 import json
 import math
 import os
+import re
 from collections import Counter
 from dataclasses import dataclass, field
 
@@ -16,7 +17,7 @@ PLUGIN_FILES = ['GradientDriftPlugin.dll', 'GradientDriftPlugin.deps.json', 'Gra
 # Every policy a plugin release shipped (SHA-256 of the file, line endings as LF), with the release.
 # A server's policy that is one of these is a stock one, replaced by the policy setup carries even
 # beside the same plugin; any other was made for the server (polished for its track) and is kept.
-# Add each release's policy here (build-plugin.yml refuses a plugin-v* tag whose policy is missing).
+# Add each release's policy here (build-plugin.yml refuses a v* release tag whose policy is missing).
 SHIPPED_POLICIES = {
     'd4388a8477bf5284d0d358e12908eb7293a7018b0140a46fd55f13bac99d2212': 'plugin-v0.1.0',
 }
@@ -38,6 +39,13 @@ OPTIONAL_TRACK_FILES = ('_road_mesh.csv', '_course_edges.csv', '_pace_reference.
 # unless it covers half a lap.
 MIN_DISTANCE_TO_LINE_M = 100
 MIN_AFK_TIMEOUT_S = 600
+# AssettoServer spawns an AI car only at a point of the line at least
+# SpawnSafetyDistanceToPlayerMeters (150) from every player and a random 20-70 m
+# (Min/MaxAiSafetyDistanceMeters) from the AI cars either side: on a small track no point is
+# that far from a player, so bots spawn only by luck. Setup sizes these to the track: the player
+# distance to this share of the track's span, the AI gap to this share of the even spacing.
+SPAWN_PLAYER_DISTANCE_SHARE = 0.25
+SPAWN_AI_GAP_SHARE = 0.5
 
 
 @dataclass
@@ -73,6 +81,13 @@ def choose_car(server):
     if 'gravygarage_street_miata' in server.cars:
         return 'gravygarage_street_miata'
     return server.cars[0] if server.cars else ''
+
+
+def bot_name_now(server, default='DriftBot'):
+    """The bots' name the server already gives them (AiParams.NamePrefix), unless it is still
+    AssettoServer's own Traffic: the name to offer, so running setup again keeps a chosen name."""
+    name = str(server.ai_params.get('NamePrefix', '') or '').strip()
+    return name if name and name != 'Traffic' else default
 
 
 def bot_slots(server, game=None, bots=1, car=None, skin=None, slots=None):
@@ -222,6 +237,7 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     t = track_facts(game, server.track, server.layout) if game else None
     where = server.track + (f' ({server.layout})' if server.layout else '')
     lap_m = 0.0
+    span_m = 0.0
     ai_copy = None          # the game's AI line copied as it is, when the server lacks one
     rel_ai = ''
     if t is None:
@@ -230,6 +246,7 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         p.blockers.append(f"the game install has no content/tracks/{server.track}")
     else:
         lap_m = t.lap_m
+        span_m = t.span_m
         server_ai = server.server_ai_line()
         rel_ai = os.path.relpath(server_ai, server.folder).replace(os.sep, '/')
         if t.ai_points < 2 and not t.recorded:
@@ -337,9 +354,9 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     pace_missing = [m for m in needed_missing if m.endswith('_pace_reference.csv')]
     needed_missing = [m for m in needed_missing if m not in pace_missing]
     if needed_missing:
-        p.blockers.append(f"the plugin needs {' and '.join(needed_missing)} in the server folder: make them with "
-                          f"drift_rl/setup_track.py <game>/content/tracks/{server.track} --server <this folder>"
-                          + (", or give setup the folder they are in" if not track_data else ''))
+        p.blockers.append(f"the plugin needs {' and '.join(needed_missing)} in the server folder. Setup makes them "
+                          f"from the game's copy of {server.track} once what stops it above is fixed (the track "
+                          "missing from the game install, or no AI line)")
     if pace_missing:
         # made here from the track's shape (drift_rl/pace_model.py), as training makes it, when the
         # track's data is (or is about to be) there
@@ -367,9 +384,8 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
                                 "written, and stop if they look wrong",
                                 op=('track_check', policy, home, server.track, final_pace_reference())))
     if pace_missing:
-        p.blockers.append(f"this policy needs {pace_missing[0]} in the server folder: training with paces on "
-                          f"{server.track} writes it into drift_rl/tracks/{server.track}/"
-                          + (", or give setup the folder it is in" if not track_data else ''))
+        p.blockers.append(f"this policy needs {pace_missing[0]} in the server folder. Setup works it out from the "
+                          "track's data, which it makes from the game install once what stops it above is fixed")
 
     # --- the cars, slot by slot ---
     p.slots = bot_slots(server, game, bots, car, skin, slots)
@@ -460,6 +476,32 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         if a.get('PlayerRadiusMeters', 200) < want:
             ai_param('PlayerRadiusMeters', a.get('PlayerRadiusMeters', 200), want,
                      f"keep bots spaced round the {lap_m:.0f} m lap instead of taking away the ones far from a player")
+    if span_m:
+        want = max(20, int(span_m * SPAWN_PLAYER_DISTANCE_SHARE))
+        if a.get('SpawnSafetyDistanceToPlayerMeters', 150) > want:
+            ai_param('SpawnSafetyDistanceToPlayerMeters', a.get('SpawnSafetyDistanceToPlayerMeters', 150), want,
+                     f"let bots spawn on a track {span_m:.0f} m across (no point of it is 150 m from a player)")
+    if lap_m and bots > 1:
+        gap = int(lap_m / (bots + 1) * SPAWN_AI_GAP_SHARE)
+        if a.get('MaxAiSafetyDistanceMeters', 70) > gap:
+            ai_param('MaxAiSafetyDistanceMeters', a.get('MaxAiSafetyDistanceMeters', 70), gap,
+                     f"room to spawn {bots} bots round the {lap_m:.0f} m lap")
+            if a.get('MinAiSafetyDistanceMeters', 20) > gap:
+                ai_param('MinAiSafetyDistanceMeters', a.get('MinAiSafetyDistanceMeters', 20), gap,
+                         f"room to spawn {bots} bots round the {lap_m:.0f} m lap: the least gap too")
+    # AssettoServer names AI cars '<NamePrefix> <slot>' and ignores the entry list's DRIVERNAME
+    name_now = str(a.get('NamePrefix', 'Traffic'))
+    if bot_name and name_now != bot_name:
+        quoted = bot_name if re.fullmatch(r'[A-Za-z0-9_ .-]+', bot_name) else '"' + bot_name.replace('\\', '\\\\').replace('"', '\\"') + '"'
+        p.changes.append(Change(x, f"name the bots '{bot_name} <slot number>' in game (AssettoServer uses this, "
+                                "not the entry list's names)", f'AiParams.NamePrefix: {name_now}',
+                                f'AiParams.NamePrefix: {quoted}', op=('yaml_child', 'AiParams', 'NamePrefix', quoted)))
+    for key in ('MinCollisionStopTimeSeconds', 'MaxCollisionStopTimeSeconds'):
+        if a.get(key, 1 if key.startswith('Min') else 3) != 0:
+            ai_param(key, a.get(key, 1 if key.startswith('Min') else 3), 0,
+                     "don't freeze a bot when a player touches it: "
+                     + ('the shortest stop to 0 s (traffic stops for seconds; a drift bot drives on)'
+                        if key.startswith('Min') else 'the longest stop to 0 s'))
 
     config = server.plugin_config or {}
     if not config.get('EnableLearnedPolicy'):
@@ -549,8 +591,12 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     # an any-car policy (it reads the car inputs: more than 55) drives each bot with its own car's numbers
     if inputs > 55 and game:
         from .carfile import car_file_text, pace_source, same_car_file
-        pace_made = any(c.op[:1] == ('pace_reference',) for c in p.changes)
-        source, why_not = pace_source(policy, home, server.folder, server.track, made_here=pace_made) \
+        # the track's data this run makes or puts in the server (its files, its AI line) is there
+        # before the cars' scales are worked out
+        pace_made = any(c.op[:1] in (('track_data',), ('pace_reference',))
+                        or (c.op[:1] == ('copy',) and (c.file in track_names or c.file == rel_ai)) for c in p.changes)
+        source, why_not = pace_source(policy, home, server.folder, server.track, made_here=pace_made,
+                                     server_line=server.server_ai_line()) \
             if paces else (None, None)
         if why_not:
             p.notes.append(f"the bots' cars keep PACE_SCALE 1 (each asked for the reference car's speed): {why_not}")

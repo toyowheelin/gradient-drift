@@ -14,6 +14,13 @@ repository. Not legal advice.
 | [acd_extractor](https://github.com/bovis/acd_extractor) | Bovis | MIT (stated in its gemspec; no licence file) | `drift_rl/cars/acd_to_ini.py` follows its decryption and embeds its 160-byte test archive as a self-test (MIT notice in the file). |
 | [Assetto Corsa Telemetry Recorder](https://www.overtake.gg/downloads/) v0.1.1 (OverTake, AC Apps) | markelitxu21, Dec 28, 2025 | **None stated.** Its terms of service say only "I am the sole creator". | Not in this repository. Recorded the human driving reference the simulator was compared against. |
 
+## Images
+
+* **Project Logo:** Generated using Google Nano Banana 2. (`docs/logo.jpg`, shown at the top of
+  the README.)
+* The AssettoServer logo in the README's AssettoServer badge is AssettoServer's own, used to link
+  to that project.
+
 ## Libraries
 
 **The trainer** (`drift_rl/`, run from source; installed by the user, not shipped here): numpy
@@ -82,4 +89,9 @@ AGPL-3.0 program carry the work, given the notices.
   D1 Grand Prix's scoring criteria.
 * Cai et al., "High-speed Autonomous Drifting with Deep Reinforcement Learning", 2020 (reward
   ideas); the analysis of Ken Gushi's drift in Stanford's MARTY (what a held drift looks like).
+* The brush tyre curve (`RoundTireCurve`) - E. Fiala, "Seitenkräfte am rollenden Luftreifen",
+  VDI-Zeitschrift 96, 1954; the form Stanford's drifting work uses (Hindiyeh and Gerdes, "A
+  Controller Framework for Autonomous Drifting: Design, Stability, and Experimental Validation",
+  ASME Journal of Dynamic Systems, Measurement, and Control, 2014). Its full-sliding angle is
+  the car's own tyres.ini `FRICTION_LIMIT_ANGLE` plus `FLEX` x the tire's load.
 
