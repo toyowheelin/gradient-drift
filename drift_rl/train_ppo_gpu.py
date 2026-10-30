@@ -1033,7 +1033,7 @@ def main():
                     if kick_w > 0.0:
                         kick = ((mu - b_teach[idx]) ** 2).sum(dim=1).mean()
                         loss = loss + kick_w * kick
-                        kick_errs.append(float(kick))
+                        kick_errs.append(float(kick.detach()))
                     opt.zero_grad(set_to_none=True)
                     loss.backward()
                     nn.utils.clip_grad_norm_(trained, 0.5)
