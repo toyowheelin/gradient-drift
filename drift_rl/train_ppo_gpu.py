@@ -118,6 +118,20 @@ def main():
     ap.add_argument('--hidden', type=int, default=None,
                     help='units per hidden layer (two layers); default: the checkpoint\'s with --resume, else 128 '
                          '(a narrower --init-policy is widened)')
+    ap.add_argument('--layers', type=int, default=None,
+                    help='hidden layers in the driving network (default: the checkpoint\'s with --resume, else 2)')
+    ap.add_argument('--vf-hidden', type=int, default=None,
+                    help='units per hidden layer of the value network (default --hidden). It never ships, so it can '
+                         'be bigger at no cost to the plugin, as GT Sophy\'s critic was')
+    ap.add_argument('--kickstart', default=None, metavar='POLICY',
+                    help='from scratch: pull the new network toward this policy\'s actions at first, the pull fading '
+                         'to nothing over --kickstart-ticks (Kickstarting, Schmitt et al. 2018, '
+                         'https://arxiv.org/abs/1803.03835): a bigger fresh network that starts out drifting, then '
+                         'learns on its own')
+    ap.add_argument('--kickstart-weight', type=float, default=1.0,
+                    help='weight of the pull (squared action difference) at the start')
+    ap.add_argument('--kickstart-ticks', type=int, default=150_000_000,
+                    help='ticks over which the pull fades linearly to zero')
     ap.add_argument('--residual', type=int, default=0, metavar='UNITS',
                     help='with --init-policy and --chase: keep the starting network frozen and train a second one '
                          '(two layers of UNITS) added to its action only while a lead is present (residual '
@@ -181,6 +195,13 @@ def main():
     ap.add_argument('--value-warmup-updates', type=int, default=60,
                     help='with --init-policy: updates that train only the value network first')
     ap.add_argument('--grip-randomisation', type=float, default=None)
+    ap.add_argument('--drift-starts', type=float, default=0.0, metavar='SHARE',
+                    help='this share of episodes starts at speed and already sideways, a third of them mid '
+                         'transition (drift_env EnvConfig.drift_start_*; randomised start states after Zhou et al. '
+                         '2025, https://arxiv.org/abs/2507.23339). Evaluations still start on the line.')
+    ap.add_argument('--ghost-starts', type=float, default=0.0, metavar='SHARE',
+                    help='this share of the --drift-starts copies a sliding moment of the track\'s ghosts instead '
+                         '(the bot leads and the people\'s laps: drift_env EnvConfig.drift_start_ghost_share)')
     ap.add_argument('--sliding-grip', type=float, nargs=2, default=None, metavar=('LOW', 'HIGH'),
                     help="draw the plugin's RearSlidingGrip (share of peak sideways grip the "
                          "rear axle keeps while sliding; less = a slower drift) per episode from this range and "
@@ -227,10 +248,17 @@ def main():
                 args.skill = list(ppo['skill'])
             if args.envs is None and ppo.get('envs'):
                 args.envs = ppo['envs']
-    if args.hidden is None:
+    if args.resume and (args.hidden is None or args.layers is None or args.vf_hidden is None):
         import torch as _torch
-        args.hidden = (_torch.load(args.resume, map_location='cpu', weights_only=True)['hidden']
-                       if args.resume else 128)
+        _ck = _torch.load(args.resume, map_location='cpu', weights_only=True)
+        args.hidden = args.hidden or _ck['hidden']
+        args.layers = args.layers or _ck.get('layers', 2)
+        args.vf_hidden = args.vf_hidden or _ck.get('vf_hidden', args.hidden)
+    args.hidden = args.hidden or 128
+    args.layers = args.layers or 2
+    args.vf_hidden = args.vf_hidden or args.hidden
+    if args.kickstart and (args.init_policy or args.residual):
+        sys.exit('--kickstart is for a fresh network: not with --init-policy or --residual')
 
     sys.path.insert(0, _HERE)
     try:
@@ -269,6 +297,11 @@ def main():
     env_cfg = de.EnvConfig()
     if args.grip_randomisation is not None:
         env_cfg.grip_randomisation = args.grip_randomisation
+    if not 0.0 <= args.drift_starts <= 1.0 - env_cfg.recovery_start_fraction:
+        sys.exit(f"--drift-starts: a share from 0 to {1.0 - env_cfg.recovery_start_fraction:g} "
+                 "(the recovery starts take the rest)")
+    env_cfg.drift_start_fraction = args.drift_starts
+    env_cfg.drift_start_ghost_share = args.ghost_starts
     grip_low_start = 1.0        # bottom of the range the starting network already handles
     if args.init_policy and not args.resume:
         init_meta = Policy.load_json(args.init_policy).meta
@@ -469,10 +502,10 @@ def main():
     print(f"simulator: {sim.upper()} ({n_envs} cars)   network: {dev.type.upper()}   GPU: {gpu_name}", flush=True)
 
     # ---- networks ----
-    def mlp(out, out_gain, hidden=None, n_in=de.OBS_SIZE):
+    def mlp(out, out_gain, hidden=None, n_in=de.OBS_SIZE, depth=2):
         hidden = hidden or args.hidden
         layers, last = [], n_in
-        for _ in range(2):
+        for _ in range(depth):
             lin = nn.Linear(last, hidden)
             nn.init.orthogonal_(lin.weight, 2 ** 0.5)
             nn.init.zeros_(lin.bias)
@@ -483,7 +516,9 @@ def main():
         nn.init.zeros_(lin.bias)
         return nn.Sequential(*layers, lin).to(dev)
 
-    pi = mlp(de.ACT_SIZE, 0.01)            # starts ~0 = the existing controller
+    pi = mlp(de.ACT_SIZE, 0.01, depth=args.layers)            # starts ~0 = the existing controller
+    if args.layers != 2 and args.init_policy:
+        sys.exit('--init-policy widens a two-layer network: leave --layers at 2')
     if args.init_pedal is not None and not args.init_policy and not args.resume:
         # a fresh network asks for the pedal at this share: at 0 a pedal-mode car (EnableRearFrictionCircle)
         # coasts, and a fresh network learns to sit still (chase_scratch1 stalled for 100M ticks)
@@ -492,7 +527,34 @@ def main():
     # the value network: with --privileged-critic it also reads drift_env.PRIV_NAMES (already scaled to
     # about +-1), the policy never does
     n_priv = de.N_PRIV if args.privileged_critic else 0
-    vf = mlp(1, 1.0, n_in=de.OBS_SIZE + n_priv)
+    vf = mlp(1, 1.0, args.vf_hidden, n_in=de.OBS_SIZE + n_priv, depth=args.layers)
+
+    # the kickstarting teacher: its own network and input scaling, on the raw inputs it was trained with
+    teacher = None
+    if args.kickstart:
+        tp = Policy.load_json(args.kickstart)
+        if tp.residual is not None or tp.mlp.W[-1].shape[0] != de.ACT_SIZE:
+            sys.exit(f"--kickstart {args.kickstart}: needs a plain policy with {de.ACT_SIZE} outputs")
+        t_n = len(tp.obs_mean)
+        t_names = list(tp.meta.get('obs_names') or [])[:t_n]
+        if t_names:
+            bad = [j for j, nm in enumerate(t_names) if nm != de.OBS_NAMES[j] and j != de.SLIDING_GRIP_OBS_SLOT]
+            if bad:
+                sys.exit(f"--kickstart {args.kickstart}: inputs {bad[:8]} mean something else in this trainer")
+        t_w = [torch.tensor(w, dtype=torch.float32, device=dev) for w in tp.mlp.W]
+        t_b = [torch.tensor(b, dtype=torch.float32, device=dev) for b in tp.mlp.b]
+        t_mean = torch.tensor(tp.obs_mean, dtype=torch.float32, device=dev)
+        t_std = torch.tensor(tp.obs_std, dtype=torch.float32, device=dev)
+
+        def teacher(raw):
+            h = torch.clamp((raw[:, :t_n].float() - t_mean) / t_std, -10.0, 10.0)
+            for j in range(len(t_w)):
+                h = h @ t_w[j].T + t_b[j]
+                if j < len(t_w) - 1:
+                    h = torch.tanh(h)
+            return torch.clamp(h, -1.0, 1.0)
+        print(f"kickstart: pulled toward {args.kickstart}'s actions ({t_n} inputs), weight "
+              f"{args.kickstart_weight:g} fading to 0 over {args.kickstart_ticks:,} ticks", flush=True)
 
     def value(x, pv):
         return vf(torch.cat([x, pv], dim=1) if n_priv else x)[:, 0]
@@ -547,8 +609,9 @@ def main():
 
     if args.resume:
         ck = torch.load(args.resume, map_location=dev, weights_only=True)
-        if ck['hidden'] != args.hidden:
-            sys.exit(f"checkpoint was trained with --hidden {ck['hidden']}; pass the same value.")
+        if ck['hidden'] != args.hidden or ck.get('layers', 2) != args.layers or ck.get('vf_hidden', ck['hidden']) != args.vf_hidden:
+            sys.exit(f"checkpoint was trained with --hidden {ck['hidden']} --layers {ck.get('layers', 2)} "
+                     f"--vf-hidden {ck.get('vf_hidden', ck['hidden'])}; pass the same values.")
         if ck['log_std'].shape[0] != de.ACT_SIZE or ck['obs_mean'].shape[0] != de.OBS_SIZE:
             sys.exit(f"{args.resume} is from a run with {ck['obs_mean'].shape[0]} inputs and {ck['log_std'].shape[0]} "
                      f"outputs; this trainer has {de.OBS_SIZE} and {de.ACT_SIZE}. Start a new run from that run's "
@@ -716,7 +779,7 @@ def main():
 
     def make_policy():
         lins = [m for m in pi if isinstance(m, nn.Linear)]
-        m = MLP([de.OBS_SIZE, args.hidden, args.hidden, de.ACT_SIZE])
+        m = MLP([de.OBS_SIZE] + [args.hidden] * args.layers + [de.ACT_SIZE])
         m.W = [l.weight.detach().double().cpu().numpy().copy() for l in lins]
         m.b = [l.bias.detach().double().cpu().numpy().copy() for l in lins]
         r = None
@@ -738,6 +801,7 @@ def main():
                     'opt': opt.state_dict(), 'obs_mean': obs_mean, 'obs_var': obs_var,
                     'obs_count': obs_count, 'ret_mean': ret_mean, 'ret_var': ret_var,
                     'ret_count': ret_count, 'steps_done': steps_done, 'lr': lr, 'hidden': args.hidden,
+                    'layers': args.layers, 'vf_hidden': args.vf_hidden,
                     'freeze_obs_norm': freeze_obs_norm, 'grip_low_now': grip_low_now(), 'best_eval': best_eval},
                    os.path.join(out_dir, 'checkpoint.pt'))
 
@@ -746,6 +810,7 @@ def main():
     obs_buf = torch.zeros((T, N, de.OBS_SIZE), dtype=f32, device=dev)
     act_buf = torch.zeros((T, N, de.ACT_SIZE), dtype=f32, device=dev)
     lead_buf = torch.zeros((T, N), dtype=f32, device=dev)
+    teach_buf = torch.zeros((T, N, de.ACT_SIZE), dtype=f32, device=dev) if teacher else None
     priv_buf = torch.zeros((T, N, n_priv), dtype=f32, device=dev)
     no_priv = torch.zeros((N, 0), dtype=f32, device=dev)
 
@@ -888,6 +953,8 @@ def main():
                 for t in range(T):
                     x = norm_obs(obs)
                     lead_buf[t] = obs[:, gate_slot]
+                    if teacher:
+                        teach_buf[t] = teacher(obs)
                     mu = actor(x, lead_buf[t])
                     a = mu + log_std.exp() * torch.randn_like(mu)
                     obs_buf[t], act_buf[t] = x, a
@@ -932,6 +999,9 @@ def main():
             b_lead = lead_buf.reshape(-1)
             b_priv = priv_buf.reshape(b_lead.shape[0], n_priv)
             b_act = act_buf.reshape(-1, de.ACT_SIZE)
+            b_teach = teach_buf.reshape(-1, de.ACT_SIZE) if teacher else None
+            kick_w = args.kickstart_weight * max(0.0, 1.0 - steps_done / args.kickstart_ticks) if teacher else 0.0
+            kick_errs = []
             b_logp, b_adv, b_ret = logp_buf.reshape(-1), adv.reshape(-1), ret.reshape(-1)
             n = b_obs.shape[0]
             # Fixed minibatch SIZE, not a fixed number of minibatches: with thousands of cars one
@@ -960,6 +1030,10 @@ def main():
                         loss = args.vf_coef * v_loss
                     else:
                         loss = pi_loss - args.ent_coef * entropy + args.vf_coef * v_loss
+                    if kick_w > 0.0:
+                        kick = ((mu - b_teach[idx]) ** 2).sum(dim=1).mean()
+                        loss = loss + kick_w * kick
+                        kick_errs.append(float(kick))
                     opt.zero_grad(set_to_none=True)
                     loss.backward()
                     nn.utils.clip_grad_norm_(trained, 0.5)
@@ -977,6 +1051,7 @@ def main():
                     break
             # hold the policy change per update near --target-kl by adapting the learning rate
             mean_kl = float(np.mean(kls))
+            kick_err = float(np.mean(kick_errs)) if kick_errs else 0.0
             if update <= warmup_updates:
                 pass
             elif mean_kl > 2.0 * args.target_kl:
@@ -1018,6 +1093,7 @@ def main():
                       + (f"  | chase return {last_chase['return']:.1f} gap {last_chase['gap']:.1f}m "
                          f"in-band {last_chase['in_band']:.0%} hits {last_chase['hits']:.1%} "
                          f"slip-diff {last_chase['slip']:.1f} line-diff {last_chase['line']:.2f} |" if last_chase else "")
+                      + (f"  kickstart {kick_w:.2f} (off by {kick_err:.3f})" if kick_w > 0.0 else "")
                       + f"  kl {mean_kl:.4f}  lr {lr:.1e}  "
                       f"std {row['std_steer']:.2f}/{row['std_speed']:.2f}/{row['std_brake']:.2f}"
                       + (f"  | training cars: grip {grip_low_now():.2f}-{grip_range[1]:.2f}"

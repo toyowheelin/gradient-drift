@@ -557,6 +557,26 @@ class EnvConfig:
     recovery_start_fraction: float = 0.15
     recovery_lateral_m: float = 20.0
     recovery_heading_rad: float = 0.8
+    # mid-drift starts: this share of episodes (after the recovery starts) begins at speed and
+    # already sideways - held in a drift the way the course turns at that point (slip angle drawn
+    # from drift_start_slip_deg, countersteer to match, full throttle), or for
+    # drift_start_transition_share of them swinging from one side to the other. Randomised start
+    # states, sideways and at speed, are part of how Zhou et al. trained a drifting policy that
+    # held up on a real car ("Learning to Drift with Individual Wheel Drive", Tsinghua, 2025,
+    # https://arxiv.org/abs/2507.23339); from standstill a policy meets a fast transition only
+    # after getting itself into one. Only after an episode ends
+    # (an environment's first episode starts on the line); evaluate() never uses them.
+    drift_start_fraction: float = 0.0
+    drift_start_transition_share: float = 0.3
+    drift_start_slip_low_deg: float = 20.0
+    drift_start_slip_high_deg: float = 45.0
+    # this share of the mid-drift starts copies a moment of a recorded lap instead (the track's
+    # ghosts: bot runs and the people's laps from telemetry_ghosts.py) where the car slides at
+    # least DRIFT_START_GHOST_SLIP_DEG: its place, heading, slip, yaw rate, speed and steering.
+    # Starting from states a demonstrator reached (Nair et al. 2018, https://arxiv.org/abs/1709.10089;
+    # Salimans and Chen 2018, https://arxiv.org/abs/1812.03381). A track without ghosts falls back
+    # to the made-up starts above.
+    drift_start_ghost_share: float = 0.0
     # per-car MaxSpeed (CeilingKmh): real runs show 74.8 - 85.7 km/h
     max_speed_kmh_low: float = 72.0
     max_speed_kmh_high: float = 88.0
@@ -814,6 +834,124 @@ def _reset_one(i, states, counters, prev_act, ep, r0, r1, r2, r3, r4, r5, r6, cf
         prev_act[i, j] = 0.0
     for j in range(ep.shape[1]):
         ep[i, j] = 0.0
+    return k
+
+
+DRIFT_START_SPEED = (0.8, 1.0)        # share of the speed asked at that point (no pace: of MaxSpeed x 0.5 - 0.8)
+DRIFT_START_CORNER_RADIUS_M = 80.0    # tighter: drift the way the course turns; wider: either way, round 60 m
+DRIFT_START_SWING_DEGS = (40.0, 120.0)  # yaw rate of a transition, toward the other side
+
+
+@njit(cache=True)
+def _drift_start(s, pa, p, k, u, r_side, cfg, pace_ref, sp_pos, sp_dir, sp_length, sp_next):
+    """Turns the on-line start _reset_one just made at spline point k into a moving one, sideways
+    (EnvConfig.drift_start_*). u: a uniform choosing a held drift or a transition and, split, the
+    speed and swing; r_side: one choosing the side and slip angle (both reused from the reset's
+    own draws, so a run without these starts draws exactly the numbers it always did)."""
+    transition = u < cfg[ENV_CFG_DRIFT_START + 1]
+    w = u / cfg[ENV_CFG_DRIFT_START + 1] if transition else \
+        (u - cfg[ENV_CFG_DRIFT_START + 1]) / max(1.0 - cfg[ENV_CFG_DRIFT_START + 1], 1e-9)
+    w = min(max(w, 0.0), 0.999999)
+    w_speed = math.floor(w * 256.0) / 255.0
+    w_swing = w * 256.0 - math.floor(w * 256.0)
+    side = 1.0 if r_side < 0.5 else -1.0
+    mag = abs(r_side * 2.0 - 1.0)
+    # the course's curvature over the next 15 m (+ = heading increasing)
+    j = k
+    run = 0.0
+    while run < 15.0 and sp_next[j] >= 0 and sp_next[j] != k:
+        run += sp_length[j]
+        j = sp_next[j]
+    curv = fs.wrap_pi(sp_dir[j] - sp_dir[k]) / run if run > 1.0 else 0.0
+    # speed: what the car is asked for here (its pace x the course's reference, never over its limit)
+    max_ms = s[S_MAX_SPEED]
+    ref = pace_ref[k] if pace_ref.shape[0] == sp_pos.shape[0] else 0.0
+    if p[fs.P_PACE_SCALE] > 0.0:
+        ref *= p[fs.P_PACE_SCALE]
+    if ref > 0.0 and s[fs.S_PACE] > 0.0:
+        v = min(s[fs.S_PACE] * ref / 3.6, max_ms) * (DRIFT_START_SPEED[0] + w_speed * (DRIFT_START_SPEED[1] - DRIFT_START_SPEED[0]))
+    else:
+        v = max_ms * (0.5 + 0.3 * w_speed)
+    v = max(v, 8.0)
+    slip_low, slip_high = cfg[ENV_CFG_DRIFT_START + 2], cfg[ENV_CFG_DRIFT_START + 3]
+    if transition:
+        # swinging through: a smaller angle on one side, rotating toward the other
+        beta = side * math.radians(mag * slip_low)
+        yaw = -side * math.radians(DRIFT_START_SWING_DEGS[0] + w_swing * (DRIFT_START_SWING_DEGS[1] - DRIFT_START_SWING_DEGS[0]))
+    else:
+        if abs(curv) * DRIFT_START_CORNER_RADIUS_M < 1.0:
+            curv = side / 60.0
+        turn = 1.0 if curv > 0.0 else -1.0
+        beta = turn * math.radians(slip_low + mag * (slip_high - slip_low))   # nose into the turn
+        yaw = v * curv                                    # the direction of travel follows the course
+    s[S_HEADING] = fs.wrap_pi(sp_dir[k] + beta)          # travelling along the line, pointing beta off it
+    s[fs.S_OWN_SPEED] = v * math.cos(beta)
+    s[fs.S_LATV] = -v * math.sin(beta)
+    s[fs.S_YAW] = yaw
+    # hands where they would be: the front wheels along their own direction of travel
+    # (countersteer), throttle down
+    steer = math.atan2(s[fs.S_LATV] + p[fs.P_DIST_CG_FRONT_M] * yaw, s[fs.S_OWN_SPEED])
+    steer = max(-p[fs.P_MAX_STEER_RAD], min(p[fs.P_MAX_STEER_RAD], steer))
+    s[S_LAST_STEER] = steer
+    pa[0] = steer / max(p[fs.P_MAX_STEER_RAD], 1e-6)
+    pa[1] = 1.0
+    # not a first tick: the plugin's own first-tick handling would set the speed from the pedal
+    s[S_CORR_ANGLE] = sp_dir[k]
+    s[S_PREV_NEAREST] = k
+
+
+DRIFT_START_GHOST_SLIP_DEG = 12.0
+
+
+@njit(cache=True)
+def _ghost_start(s, pa, p, r_ghost, r_time, gh, gh_len, sp_pos, sp_dir, sp_cum):
+    """Puts the car where a ghost was at a sliding moment (EnvConfig.drift_start_ghost_share);
+    False, the car untouched, when the ghost drawn has none in the stretch searched."""
+    n_g = gh_len.shape[0]
+    if n_g == 0:
+        return False
+    g = min(n_g - 1, int(r_ghost * n_g))
+    n = gh_len[g]
+    if n < 4:
+        return False
+    j0 = min(n - 2, int(r_time * (n - 1)))
+    j = -1
+    for d in range(400):
+        c = (j0 + d) % (n - 1)
+        if abs(gh[g, c, GH_SLIP]) >= math.radians(DRIFT_START_GHOST_SLIP_DEG) and gh[g, c, GH_SPEED] > 5.0:
+            j = c
+            break
+    if j < 0:
+        return False
+    # the spline point at that place along the line (for the height and the corrector's start)
+    arc = gh[g, j, GH_ARC]
+    lo, hi = 0, sp_cum.shape[0] - 1
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if sp_cum[mid] <= arc:
+            lo = mid
+        else:
+            hi = mid - 1
+    k = lo
+    v = gh[g, j, GH_SPEED]
+    beta = gh[g, j, GH_SLIP]
+    s[S_X] = gh[g, j, GH_X]
+    s[S_Y] = sp_pos[k, 1]
+    s[S_Z] = gh[g, j, GH_Z]
+    s[S_HEADING] = fs.wrap_pi(gh[g, j, GH_HEADING])
+    s[fs.S_OWN_SPEED] = v * math.cos(beta)
+    s[fs.S_LATV] = -v * math.sin(beta)
+    s[fs.S_YAW] = gh[g, j, GH_YAW]
+    steer = gh[g, j, GH_STEER]
+    if steer == 0.0:        # a ghost without its controls: the front wheels along their own path
+        steer = math.atan2(s[fs.S_LATV] + p[fs.P_DIST_CG_FRONT_M] * s[fs.S_YAW], s[fs.S_OWN_SPEED])
+    steer = max(-p[fs.P_MAX_STEER_RAD], min(p[fs.P_MAX_STEER_RAD], steer))
+    s[S_LAST_STEER] = steer
+    pa[0] = steer / max(p[fs.P_MAX_STEER_RAD], 1e-6)
+    pa[1] = 1.0
+    s[S_CORR_ANGLE] = sp_dir[k]
+    s[S_PREV_NEAREST] = k
+    return True
 
 
 @njit(cache=True)
@@ -1605,8 +1743,17 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         e[E_REASON] = reason
         for j in range(ep.shape[1]):
             ep_out[i, j] = e[j]
-        _reset_one(i, states, counters, prev_act, ep, rnd[i, 2], rnd[i, 3], rnd[i, 4], rnd[i, 5], rnd[i, 8], rnd[i, 9], rnd[i, 10],
-                   env_cfg, sp_pos, sp_dir)
+        k = _reset_one(i, states, counters, prev_act, ep, rnd[i, 2], rnd[i, 3], rnd[i, 4], rnd[i, 5], rnd[i, 8], rnd[i, 9], rnd[i, 10],
+                       env_cfg, sp_pos, sp_dir)
+        u = (rnd[i, 8] - env_cfg[8]) / max(env_cfg[ENV_CFG_DRIFT_START], 1e-9)
+        if rnd[i, 8] >= env_cfg[8] and u < 1.0:
+            _drift_start(s, prev_act[i], p, k, u, rnd[i, 4], env_cfg, pace_ref, sp_pos, sp_dir, sp_length, sp_next)
+            # the ghost draw reuses the reset's own uniforms, their low digits so it is not tied to them
+            r_g = rnd[i, 9] * 997.0 - math.floor(rnd[i, 9] * 997.0)
+            if r_g < env_cfg[ENV_CFG_DRIFT_START + 4]:
+                r_t = rnd[i, 10] * 991.0 - math.floor(rnd[i, 10] * 991.0)
+                _ghost_start(s, prev_act[i], p, r_g / max(env_cfg[ENV_CFG_DRIFT_START + 4], 1e-9), r_t,
+                             gh, gh_len, sp_pos, sp_dir, sp_cum)
         ndt = _sample_dt(rnd[i, 6], rnd[i, 7], env_cfg, 0.049)
         fs.step_pre(s, ndt, p, mids[i], sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd)
         build_obs(s, mids[i], prev_act[i], p, obs[i], sp_dir, la_idx, la_min_radius, co, 0.0)
@@ -1830,6 +1977,7 @@ RND_COLS = 13      # uniforms per car per step: [0,1] next tick length, [2..5,8,
 
 ENV_CFG_SLIDING_GRIP_LOW = 11      # indices into env_cfg_vector()
 ENV_CFG_PACE_LOW = 13
+ENV_CFG_DRIFT_START = 22
 
 
 def env_cfg_vector(cfg):
@@ -1840,7 +1988,9 @@ def env_cfg_vector(cfg):
                      cfg.recovery_heading_rad, cfg.rear_sliding_grip_low, cfg.rear_sliding_grip_high,
                      cfg.pace_low, cfg.pace_high, cfg.pace_change_s, cfg.chase_time_gap_s,
                      cfg.chase_time_gap_blind_s, cfg.chase_response_s, cfg.chase_pace_max, cfg.chase_pace_min,
-                     1.0 if cfg.chase_touch_push else 0.0])
+                     1.0 if cfg.chase_touch_push else 0.0, cfg.drift_start_fraction,
+                     cfg.drift_start_transition_share, cfg.drift_start_slip_low_deg, cfg.drift_start_slip_high_deg,
+                     cfg.drift_start_ghost_share])
 
 
 def ghost_arrays(world):
@@ -2151,7 +2301,7 @@ def evaluate(world, policy_fn, n_episodes=64, seed=12345, env_config=None, rewar
     the same spawns and the same tick-length sequence for every policy, so two calls with the
     same seed are a like-for-like comparison."""
     # always from ordinary on-line starts, whatever mix of recovery starts training used
-    eval_config = replace(env_config or EnvConfig(), recovery_start_fraction=0.0)
+    eval_config = replace(env_config or EnvConfig(), recovery_start_fraction=0.0, drift_start_fraction=0.0)
     env = DriftVecEnv(world, n_envs=n_episodes, env_config=eval_config, reward_config=reward_config,
                       seed=seed)
     obs = env.reset()
