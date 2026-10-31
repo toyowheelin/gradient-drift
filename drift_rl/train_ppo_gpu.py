@@ -160,6 +160,10 @@ def main():
     ap.add_argument('--min-std-brake', type=float, default=0.15,
                     help='the same for the brake output: with the general floor it collapsed within a few million '
                          'ticks and the policy stopped trying harder braking when asked for a slower pace')
+    ap.add_argument('--max-std-brake', type=float, default=float(np.exp(0.5)),
+                    help='ceiling on the brake output\'s exploration noise (default: the general ceiling, 1.65). With '
+                         'a bigger --ent-coef the brake noise grows to the ceiling (scratch_re, fresh2) and random '
+                         'front braking stops slides before they pay; 0.3 keeps it near where it starts')
     ap.add_argument('--car-pool', default=None, metavar='JSON',
                     help='train on several cars: a cars/car_numbers.py --json file (rear-drive cars only; each '
                          'gets a welded diff and at least a 50-degree angle kit, drift_env.DRIFT_STEER_LOCK_DEG)')
@@ -897,6 +901,7 @@ def main():
     last_eval = None
     recent = []
     update = 0
+    nonfinite_ticks, nonfinite_reports, skipped_steps = 0, 0, 0
     interrupted = False
     # --init-policy gives a good driver but a blank value network. Advantages computed from a
     # blank value network are noise, so for the first few updates only the value network learns.
@@ -964,6 +969,20 @@ def main():
                     o, r, term, trunc = env.step(a.to(env.device, f64))
                     obs = o.to(dev)
                     r = r.to(dev)
+                    # the sim ends a car whose state goes non-finite (end reason 7), but one bad number
+                    # reaching the running normalisation turns the whole network to NaN (fresh2, 28M):
+                    # zero it here and say where it came from
+                    bad = ~(torch.isfinite(obs).all(dim=1) & torch.isfinite(r))
+                    if bool(bad.any()):
+                        nonfinite_ticks += int(bad.sum())
+                        if nonfinite_reports < 10:
+                            nonfinite_reports += 1
+                            cars = torch.nonzero(bad).flatten()[:4].tolist()
+                            slots = torch.nonzero(~torch.isfinite(obs[bad]).all(dim=0)).flatten().tolist()
+                            print(f'  non-finite sim output at {steps_done:,} ticks: cars {cars}, obs slots {slots}, '
+                                  f'reward finite {bool(torch.isfinite(r[bad]).all())}', flush=True)
+                        obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+                        r = torch.nan_to_num(r, nan=0.0, posinf=0.0, neginf=0.0)
                     term, trunc = term.to(dev), trunc.to(dev)
                     done = term | trunc
                     # reward scaling by the running std of the discounted return
@@ -1034,13 +1053,19 @@ def main():
                         kick = ((mu - b_teach[idx]) ** 2).sum(dim=1).mean()
                         loss = loss + kick_w * kick
                         kick_errs.append(float(kick.detach()))
+                    if not bool(torch.isfinite(loss)):
+                        # never step on a non-finite loss: one such step makes every weight NaN
+                        skipped_steps += 1
+                        continue
                     opt.zero_grad(set_to_none=True)
                     loss.backward()
-                    nn.utils.clip_grad_norm_(trained, 0.5)
+                    if not bool(torch.isfinite(nn.utils.clip_grad_norm_(trained, 0.5))):
+                        skipped_steps += 1
+                        continue
                     opt.step()
                     with torch.no_grad():
                         log_std.clamp_(float(np.log(args.min_std)), 0.5)
-                        log_std[2].clamp_(min=float(np.log(args.min_std_brake)))
+                        log_std[2].clamp_(float(np.log(args.min_std_brake)), float(np.log(args.max_std_brake)))
                         kl = float(((ratio - 1.0) - log_ratio).mean())
                         cfs.append(float(((ratio - 1.0).abs() > args.clip).float().mean()))
                     kls.append(kl)
@@ -1050,7 +1075,11 @@ def main():
                 if stop:
                     break
             # hold the policy change per update near --target-kl by adapting the learning rate
-            mean_kl = float(np.mean(kls))
+            if skipped_steps:
+                print(f'  skipped {skipped_steps} gradient steps with a non-finite loss at {steps_done:,} ticks '
+                      f'({nonfinite_ticks} non-finite sim outputs so far)', flush=True)
+                skipped_steps = 0
+            mean_kl = float(np.mean(kls)) if kls else 0.0
             kick_err = float(np.mean(kick_errs)) if kick_errs else 0.0
             if update <= warmup_updates:
                 pass

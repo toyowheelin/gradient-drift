@@ -320,7 +320,7 @@ CAR_HALF_WIDTH_M = 0.85
 # why an episode ended early (E_REASON)
 REASONS = {0: 'time limit (completed)', 1: 'too far from the line', 2: 'spun round (travelling backwards)',
            3: 'off the track surface too long', 4: 'stuck (no progress)', 5: 'left the mesh',
-           6: 'hit the car ahead'}
+           6: 'hit the car ahead', 7: 'simulation blew up (non-finite state or reward)'}
 EP_NAMES = ['return', 'length', 'progress_m', 'mean_abs_slip_deg', 'drift_fraction',
             'pushout_tick_fraction', 'pushout_m_per_100m', 'offroad_fraction', 'spin_recovery_fraction',
             'mean_speed_kmh', 'mean_abs_cte_m', 'near_wall_fraction', 'steer_saturated_fraction',
@@ -1605,6 +1605,17 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         reason = 4.0
     elif contact and rw[R_CHASE_CONTACT_ENDS] > 0.5:
         reason = 6.0
+    # a NaN fails every comparison above, so a car whose state or reward went non-finite would
+    # never end and its observations would poison the trainer's running normalisation (fresh2 went
+    # NaN at 28M ticks): end it and start the car afresh
+    blown = not math.isfinite(r)
+    for k in (fs.S_X, fs.S_Y, fs.S_Z, fs.S_HEADING, fs.S_YAW, fs.S_LATV, fs.S_OWN_SPEED,
+              fs.S_LAST_STEER, fs.S_PACE):
+        if not math.isfinite(s[k]):
+            blown = True
+    if blown:
+        r = 0.0
+        reason = 7.0
     term = reason > 0.0
     if term:
         r -= rw[R_TERMINAL]
