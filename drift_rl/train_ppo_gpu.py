@@ -165,6 +165,9 @@ def main():
     ap.add_argument('--min-std-brake', type=float, default=0.15,
                     help='the same for the brake output: with the general floor it collapsed within a few million '
                          'ticks and the policy stopped trying harder braking when asked for a slower pace')
+    ap.add_argument('--max-std', type=float, default=float(np.exp(0.5)),
+                    help='ceiling on every output\'s exploration noise (default 1.65); --max-std-pedal / '
+                         '--max-std-brake can set lower ones for those outputs')
     ap.add_argument('--max-std-pedal', type=float, default=float(np.exp(0.5)),
                     help='ceiling on the pedal (or target speed) output\'s exploration noise (default: the general '
                          'ceiling, 1.65, which fresh2s\'s pedal noise reached under --ent-coef 0.01)')
@@ -1136,7 +1139,7 @@ def main():
                         continue
                     opt.step()
                     with torch.no_grad():
-                        log_std.clamp_(float(np.log(args.min_std)), 0.5)
+                        log_std.clamp_(float(np.log(args.min_std)), float(np.log(args.max_std)))
                         log_std[1].clamp_(max=float(np.log(args.max_std_pedal)))
                         log_std[2].clamp_(float(np.log(args.min_std_brake)), float(np.log(args.max_std_brake)))
                         kl = float(((ratio - 1.0) - log_ratio).mean())
