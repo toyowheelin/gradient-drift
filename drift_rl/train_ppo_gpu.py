@@ -465,8 +465,10 @@ def main():
                 sys.exit(f"--chase: no ghosts for {t}; make them with record_ghosts.py --track {t}")
         print(f"chase: {args.chase:.0%} of episodes behind a ghost leader ({', '.join(f'{t} {len(w.ghosts)}' for t, w in zip(tracks, worlds))}), "
               f"asked gap {args.chase_gap[0]:g} - {args.chase_gap[1]:g}", flush=True)
-    if (args.chase_scenarios or args.privileged_critic) and args.chase <= 0.0:
-        sys.exit('--chase-scenarios and --privileged-critic need --chase')
+    if args.chase_scenarios and args.chase <= 0.0:
+        sys.exit('--chase-scenarios needs --chase')
+    # --privileged-critic without --chase is allowed (its inputs are all 0 with no car ahead): a solo
+    # first stage that is later resumed with --chase needs the same critic
     if args.skill:
         env_cfg.skill_low, env_cfg.skill_high = args.skill
         print(f"skill: {args.skill[0]:g} - {args.skill[1]:g} per episode, shown to the policy (input {de.SKILL_OBS_SLOT})")
