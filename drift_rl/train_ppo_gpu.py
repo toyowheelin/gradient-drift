@@ -326,6 +326,30 @@ def main():
                          'tell from how the car answered what grip it has. The policy file carries a "history" block '
                          'the plugin builds the same way. 0 = off')
     ap.add_argument('--history-every', type=int, default=2, metavar='TICKS', help='ticks between history frames')
+    ap.add_argument('--mirror', type=float, default=0.0, metavar='WEIGHT',
+                    help='mirror symmetry: loss WEIGHT x |action at the mirrored inputs - mirrored action|^2, so a '
+                         'left-hand drift is driven as the right-hand one (drift_env.mirror_obs_map; Yu, Turk and '
+                         'Liu 2018, https://arxiv.org/abs/1801.08093; Mittal et al. 2024, '
+                         'https://arxiv.org/abs/2403.04359). 0 = off')
+    ap.add_argument('--mirror-ramp-ticks', type=int, default=50_000_000,
+                    help='--mirror: its weight rises from 0 over this many ticks (a policy trained on tracks that turn '
+                         'more one way is lopsided: trialQ brakes differently in mirrored moments, and the full weight '
+                         'at once costs it a third of its return)')
+    ap.add_argument('--cat', type=float, default=0.0, metavar='P_MAX',
+                    help='constraints as terminations (CaT, Chane-Sane et al. 2024, https://arxiv.org/abs/2403.18765): '
+                         'a tick that touches the lead, comes within --cat-wall-m of a wall or needs the spin recovery '
+                         'cuts the discount on everything after it by P_MAX, as if the episode ended there with that '
+                         'chance. Meant to stand in for those penalties: turn them down with --reward. 0 = off')
+    ap.add_argument('--cat-wall-m', type=float, default=0.3, help='CaT: a side pin this close to a wall is a violation')
+    ap.add_argument('--adr', action='store_true',
+                    help='automatic curriculum (after Automatic Domain Randomization, OpenAI et al. 2019, '
+                         'https://arxiv.org/abs/1910.07113): instead of fixed schedules, the closest asked chase gap '
+                         'moves toward the bottom of --chase-gap while evaluation hits stay under --adr-hits and back '
+                         'when over twice that, and the --dr-axle-grip / --dr-peak-slip / --obs-noise ranges grow '
+                         'from 0 toward the given values while the training cars\' drift stays over --adr-drift')
+    ap.add_argument('--adr-hits', type=float, default=0.12, help='ADR: chase hits share that lets the gap close')
+    ap.add_argument('--adr-drift', type=float, default=0.55, help='ADR: training drift share that lets the ranges grow')
+    ap.add_argument('--adr-step', type=float, default=0.1, help='ADR: share of each range moved per evaluation')
     args = ap.parse_args()
     if args.resume:
         # a continued run keeps the cars, skills and number of cars it was trained with (given again
@@ -381,6 +405,17 @@ def main():
     IN = de.OBS_SIZE + len(hist_slots) * args.history_frames      # the policy's inputs
     history = TorchHistory(torch, hist_slots, args.history_frames, args.history_every,
                            de.OBS_NAMES.index('first_tick')) if hist_slots else None
+    if args.mirror > 0.0:
+        _perm, _sign = de.mirror_obs_map()
+        # the history frames repeat their slots, so they change sign with them and do not move
+        _perm = np.r_[_perm, np.arange(de.OBS_SIZE, IN)]
+        _sign = np.r_[_sign, np.tile(_sign[hist_slots], args.history_frames)] if hist_slots else _sign
+        mirror_perm = torch.as_tensor(_perm, dtype=torch.long)
+        mirror_sign = torch.as_tensor(_sign, dtype=torch.float32)
+        mirror_act = torch.tensor([-1.0] + [1.0] * (de.ACT_SIZE - 1))
+    adr = {'gap_low': None, 'dr': 0.0} if args.adr else None
+    if args.adr and args.chase <= 0.0 and not (args.dr_axle_grip or args.dr_peak_slip or args.obs_noise):
+        sys.exit('--adr needs --chase or a --dr-* / --obs-noise range to move')
 
     # ---- where things run ----
     has_cuda = torch.cuda.is_available()
@@ -407,6 +442,8 @@ def main():
     if args.grip_randomisation is not None:
         env_cfg.grip_randomisation = args.grip_randomisation
     env_cfg.dr_axle_grip, env_cfg.dr_peak_slip = args.dr_axle_grip, args.dr_peak_slip
+    if args.adr:
+        env_cfg.dr_axle_grip = env_cfg.dr_peak_slip = 0.0      # ADR grows them from nothing
     if not 0.0 <= args.drift_starts <= 1.0 - env_cfg.recovery_start_fraction:
         sys.exit(f"--drift-starts: a share from 0 to {1.0 - env_cfg.recovery_start_fraction:g} "
                  "(the recovery starts take the rest)")
@@ -817,6 +854,8 @@ def main():
         steps_done, lr = ck['steps_done'], ck['lr']
         if amp_d is not None and ck.get('amp_d') is not None:
             amp_d.load_state_dict(ck['amp_d'])
+        if adr is not None and ck.get('adr'):
+            adr.update(ck['adr'])
         freeze_obs_norm = ck.get('freeze_obs_norm', False)
         # the best evaluation so far, so a run continued in its own folder does not overwrite a
         # better policy.json with its first evaluation; older checkpoints lack it - then the folder's
@@ -1031,6 +1070,25 @@ def main():
             report.append(f"{t} sliding {np.mean(np.abs(g[:, :, de.GH_SLIP]) > np.radians(20.0)):.0%}")
         print(f"  self-play leads re-recorded at {steps_done:,} ticks in {time.time() - t0:.0f} s: {', '.join(report)}", flush=True)
 
+    def adr_update(row):
+        """--adr after an evaluation: the closest asked gap and the randomisation ranges move one step."""
+        if args.chase > 0.0 and last_chase and adr['gap_low'] is not None:
+            lo, span = args.chase_gap[0], chase_low_start - args.chase_gap[0]
+            if last_chase['hits'] <= args.adr_hits:
+                adr['gap_low'] = max(lo, adr['gap_low'] - args.adr_step * span)
+            elif last_chase['hits'] > 2.0 * args.adr_hits:
+                adr['gap_low'] = min(chase_low_start, adr['gap_low'] + args.adr_step * span)
+        drift = row.get('train_drift_fraction')
+        if drift is not None and np.isfinite(drift) and (args.dr_axle_grip or args.dr_peak_slip or args.obs_noise):
+            adr['dr'] = min(1.0, adr['dr'] + args.adr_step) if drift >= args.adr_drift else max(0.0, adr['dr'] - args.adr_step)
+            env_cfg.dr_axle_grip, env_cfg.dr_peak_slip = args.dr_axle_grip * adr['dr'], args.dr_peak_slip * adr['dr']
+            if multi:
+                targets = [g.env.cfg for g in env.groups]
+            else:
+                targets = [env.env.cfg] if hasattr(env, 'env') else [env.cfg]
+            for c in targets:
+                c.dr_axle_grip, c.dr_peak_slip = env_cfg.dr_axle_grip, env_cfg.dr_peak_slip
+
     def save_checkpoint():
         torch.save({'pi': pi.state_dict(), 'vf': vf.state_dict(), 'log_std': log_std.detach(),
                     'res': res.state_dict() if res is not None else None,
@@ -1039,7 +1097,7 @@ def main():
                     'ret_count': ret_count, 'steps_done': steps_done, 'lr': lr, 'hidden': args.hidden,
                     'layers': args.layers, 'vf_hidden': args.vf_hidden, 'branch_layers': args.branch_layers,
                     'freeze_obs_norm': freeze_obs_norm, 'grip_low_now': grip_low_now(), 'best_eval': best_eval,
-                    'amp_d': amp_d.state_dict() if amp_d is not None else None},
+                    'amp_d': amp_d.state_dict() if amp_d is not None else None, 'adr': adr},
                    os.path.join(out_dir, 'checkpoint.pt'))
 
     N, T = n_envs, (args.rollout or (32 if sim == 'gpu' else 64))
@@ -1049,6 +1107,10 @@ def main():
     lead_buf = torch.zeros((T, N), dtype=f32, device=dev)
     teach_buf = torch.zeros((T, N, de.ACT_SIZE), dtype=f32, device=dev) if teacher else None
     priv_buf = torch.zeros((T, N, n_priv), dtype=f32, device=dev)
+    cat_buf = torch.zeros((T, N), dtype=f32, device=dev)
+    cat_log = []
+    _pins = slice(de.OBS_NAMES.index('pin_0/12'), de.OBS_NAMES.index('pin_0/12') + de.N_PINS)
+    _spin = de.OBS_NAMES.index('spin_recovering')
     if amp_d is not None:
         amp_pre = torch.zeros((T, N, len(amp_slots)), dtype=f32, device=dev)
         amp_post = torch.zeros((T, N, len(amp_slots)), dtype=f32, device=dev)
@@ -1118,6 +1180,10 @@ def main():
               f"{args.chase_gap_anneal_ticks:,} ticks", flush=True)
 
     def chase_gap_low_now():
+        if adr is not None:
+            if adr['gap_low'] is None:
+                adr['gap_low'] = chase_low_start
+            return adr['gap_low']
         if args.chase_gap_anneal_ticks <= 0:
             return args.chase_gap[0]
         f = min(1.0, max(0.0, (steps_done - grip_anneal_from) / args.chase_gap_anneal_ticks))
@@ -1196,7 +1262,7 @@ def main():
                 for t in range(T):
                     x = norm_obs(history.step(obs) if history else obs)
                     if args.obs_noise > 0.0:
-                        x = x + args.obs_noise * torch.randn_like(x)
+                        x = x + args.obs_noise * (adr['dr'] if adr is not None else 1.0) * torch.randn_like(x)
                     lead_buf[t] = obs[:, gate_slot]
                     if teacher:
                         teach_buf[t] = teacher(obs)
@@ -1227,6 +1293,15 @@ def main():
                         r = torch.nan_to_num(r, nan=0.0, posinf=0.0, neginf=0.0)
                     term, trunc = term.to(dev), trunc.to(dev)
                     done = term | trunc
+                    if args.cat > 0.0:
+                        # what this tick led to (an ended car's last observation, not its next start)
+                        post = obs.clone()
+                        if bool(done.any()):
+                            post[done] = torch.nan_to_num(env.final_obs.to(dev)[done])
+                        touch = (post[:, gate_slot] > 0.5) & (post[:, gate_slot + 1] <= 0.0)
+                        wall = post[:, _pins].min(dim=1).values * 12.0 < args.cat_wall_m
+                        spin = post[:, _spin] > 0.5
+                        cat_buf[t] = args.cat * (touch | wall | spin).to(f32)
                     if amp_d is not None:
                         post = obs[:, amp_slots].to(f32)
                         if bool(done.any()):
@@ -1243,7 +1318,7 @@ def main():
                             fo = env.final_obs.to(dev)[trunc]
                             fo = norm_obs(history.peek(fo, trunc) if history else fo)
                             fp = env.final_priv.to(dev, f32)[trunc] if n_priv else no_priv[:int(trunc.sum())]
-                            r[trunc] += args.gamma * value(fo, fp)
+                            r[trunc] += args.gamma * (1.0 - cat_buf[t][trunc]) * value(fo, fp)
                         running_ret[done] = 0.0
                         if len(ep_rows) < 64:
                             ep_rows.append(env.ep_out[done.to(env.device)].cpu().numpy())
@@ -1266,7 +1341,7 @@ def main():
                 adv = torch.zeros((T, N), dtype=f32, device=dev)
                 last = torch.zeros(N, dtype=f32, device=dev)
                 for t in range(T - 1, -1, -1):
-                    nonterm = 1.0 - done_buf[t]
+                    nonterm = (1.0 - done_buf[t]) * (1.0 - cat_buf[t])
                     delta = rew_buf[t] + args.gamma * val_buf[t + 1] * nonterm - val_buf[t]
                     last = delta + args.gamma * args.lam * nonterm * last
                     adv[t] = last
@@ -1280,7 +1355,9 @@ def main():
                 # each sample's next input (same car, next tick) and whether there is one (no episode end between)
                 b_next = torch.cat([obs_buf[1:], last_x[None]], dim=0).reshape(-1, IN)
                 b_cont = (1.0 - done_buf).reshape(-1)
-            caps_t_log, caps_s_log = [], []
+            caps_t_log, caps_s_log, mirror_log = [], [], []
+            if args.cat > 0.0:
+                cat_log.append(float((cat_buf > 0).float().mean()))
             b_teach = teach_buf.reshape(-1, de.ACT_SIZE) if teacher else None
             kick_w = args.kickstart_weight * max(0.0, 1.0 - steps_done / args.kickstart_ticks) if teacher else 0.0
             kick_errs = []
@@ -1328,6 +1405,16 @@ def main():
                         caps_s = ((mu - mu_near) ** 2).sum(dim=1).mean()
                         loss = loss + args.caps_spatial * caps_s
                         caps_s_log.append(float(caps_s.detach()))
+                    if args.mirror > 0.0:
+                        # mirror the raw inputs, scale them again, and ask for the mirrored action
+                        sd = (obs_var.sqrt() + 1e-8).to(f32)
+                        raw = b_obs[idx] * sd + obs_mean.to(f32)
+                        xm = torch.clamp((raw[:, mirror_perm.to(dev)] * mirror_sign.to(dev) - obs_mean.to(f32)) / sd, -10.0, 10.0)
+                        # on the actions as applied (clipped): outputs past the clip are the same action
+                        mir = ((torch.clamp(actor(xm, b_lead[idx]), -1.0, 1.0)
+                                - torch.clamp(mu, -1.0, 1.0) * mirror_act.to(dev)) ** 2).sum(dim=1).mean()
+                        loss = loss + args.mirror * min(1.0, steps_done / max(1, args.mirror_ramp_ticks)) * mir
+                        mirror_log.append(float(mir.detach()))
                     if not bool(torch.isfinite(loss)):
                         # never step on a non-finite loss: one such step makes every weight NaN
                         skipped_steps += 1
@@ -1405,6 +1492,8 @@ def main():
                 next_self_ghosts = steps_done + args.self_ghost_every
             if (now - t_last_eval) / 60.0 >= args.eval_minutes or steps_done >= target_steps:
                 evaluate_now()
+                if adr is not None:
+                    adr_update(row)
                 t_last_eval = time.time()
                 print(f"[{steps_done:>13,} ticks {row['minutes']:6.1f} min {row['ticks_per_s']:9,.0f}/s] "
                       f"eval return {last_eval['return']:8.2f}  "
@@ -1426,6 +1515,9 @@ def main():
                       + (f"  kickstart {kick_w:.2f} (off by {kick_err:.3f})" if kick_w > 0.0 else "")
                       + (f"  amp style {amp_log.get('style', 0):.2f} D human {amp_log.get('d_human', 0):+.2f} cars {amp_log.get('d_cars', 0):+.2f}"
                          if amp_d is not None else "")
+                      + (f"  mirror {np.mean(mirror_log):.4f}" if mirror_log else "")
+                      + (f"  cat {np.mean(cat_log[-10:]):.3f} of ticks" if cat_log else "")
+                      + (f"  adr gap-low {adr['gap_low']:.2f} dr {adr['dr']:.2f}" if adr is not None and adr['gap_low'] is not None else "")
                       + (f"  caps t {np.mean(caps_t_log):.4f}" if caps_t_log else "")
                       + (f"  caps s {np.mean(caps_s_log):.4f}" if caps_s_log else "")
                       + f"  kl {mean_kl:.4f}  lr {lr:.1e}  "

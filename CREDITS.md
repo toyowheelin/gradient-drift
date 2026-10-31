@@ -119,6 +119,15 @@ AGPL-3.0 program carry the work, given the notices.
 * Kumar, Fu, Pathak and Malik, "RMA: Rapid Motor Adaptation for Legged Robots", RSS 2021,
   <https://arxiv.org/abs/2107.04034> - adapting from a short history of states and actions (the
   trainer's `--history-frames`; one network reads the history directly, not RMA's two phases).
+* Mirror symmetry (the trainer's `--mirror`): Yu, Turk and Liu, "Learning Symmetric and
+  Low-Energy Locomotion", SIGGRAPH 2018, <https://arxiv.org/abs/1801.08093>; Mittal et al.,
+  "Symmetry Considerations for Learning Task Symmetric Robot Policies", ICRA 2024,
+  <https://arxiv.org/abs/2403.04359>.
+* Chane-Sane et al., "CaT: Constraints as Terminations for Legged Locomotion Learning", 2024,
+  <https://arxiv.org/abs/2403.18765> - the trainer's `--cat`.
+* OpenAI et al., "Solving Rubik's Cube with a Robot Hand" (Automatic Domain Randomization), 2019,
+  <https://arxiv.org/abs/1910.07113> - the idea behind the trainer's `--adr`, which moves its
+  ranges on the evaluation's results rather than on episodes run at the range's edges.
 * Jaderberg et al., "Population Based Training of Neural Networks", DeepMind, 2017,
   <https://arxiv.org/abs/1711.09846> - `pbt.py`.
 * Bansal, Pachocki, Sidor, Sutskever and Mordatch, "Emergent Complexity via Multi-Agent

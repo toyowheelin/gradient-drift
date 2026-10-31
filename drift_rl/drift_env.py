@@ -79,6 +79,31 @@ OBS_NAMES = (
     + ['lead_plan'] + [f'lead_{n}_{h:g}s' for h in (0.5, 1.0, 2.0) for n in ('gap/20', 'line/5', 'slip/(pi/2)')]
     + ['lead_steer/(pi/4)', 'lead_pedal', 'lead_brake', 'lead_accel/5']
 )
+def mirror_obs_map():
+    """(perm, sign) with obs_mirrored = obs[perm] * sign: the same moment seen left-right mirrored (the
+    course, the car and the lead reflected across the car's own axis). Steering, slip, yaw rate, line
+    offsets and turn angles change sign; the fan rays, the side pins and the course room left and
+    right swap. Used by train_ppo_gpu.py --mirror (Yu, Turk and Liu 2018; Mittal et al. 2024)."""
+    n = len(OBS_NAMES)
+    perm = np.arange(n)
+    sign = np.ones(n)
+    idx = {name: i for i, name in enumerate(OBS_NAMES)}
+    flip = ['lateral_velocity/10', 'yaw_rate/2', 'body_slip/(pi/2)', 'angle_diff/pi', 'cross_track_error/15',
+            'fan_center_minus_heading/pi', 'prev_action_steer', 'last_steer/max_steer',
+            'lead_left/20', 'lead_rel_heading/pi', 'lead_slip/(pi/2)', 'lead_yaw/2', 'lead_line/5',
+            'lead_line_here/5', 'lead_slip_here/(pi/2)', 'lead_steer/(pi/4)']
+    flip += [f'spline_turn_ahead_{int(d)}m/pi' for d in LOOKAHEAD_M]
+    flip += [f'lead_{nm}_{h:g}s' for h in (0.5, 1.0, 2.0) for nm in ('line/5', 'slip/(pi/2)')]
+    for name in flip:
+        sign[idx[name]] = -1.0
+    swaps = [(f'fan_ray_{i}/60', f'fan_ray_{N_RAYS - 1 - i}/60') for i in range(N_RAYS // 2)]
+    swaps += [(f'pin_{i}/12', f'pin_{N_PINS - 1 - i}/12') for i in range(N_PINS // 2)]
+    swaps += [(f'course_room_pos_{int(d)}m/10', f'course_room_neg_{int(d)}m/10') for d in EDGE_AHEAD_M]
+    for a, b in swaps:
+        perm[idx[a]], perm[idx[b]] = idx[b], idx[a]
+    return perm, sign
+
+
 OBS_SIZE_V1 = 46                 # policies from before the course-room inputs read only the first 46
 OBS_SIZE_V2 = 52                 # ... and from before the pace and brake inputs, the first 52
 OBS_SIZE_V3 = 54                 # ... and from before the pace error input, the first 54
