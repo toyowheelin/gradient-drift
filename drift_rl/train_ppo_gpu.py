@@ -1006,8 +1006,8 @@ def main():
             slots = self_slots[t]
             n_ticks = w.ghosts.shape[1]
             new = []
-            for c0 in range(0, len(slots), 8):
-                cars = min(8, len(slots) - c0)
+            for c0 in range(0, len(slots), 32):
+                cars = min(32, len(slots) - c0)
                 pace = float(_sg_rng.uniform(lo, hi)) if hi > 0.0 else None
                 new.append(record_ghosts.record(w, policy, cars, n_ticks + 100, 100, pace, 1.0,
                                                 seed=int(_sg_rng.integers(1 << 30))))
