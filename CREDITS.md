@@ -105,4 +105,23 @@ AGPL-3.0 program carry the work, given the notices.
 * Schmitt et al., "Kickstarting Deep Reinforcement Learning", DeepMind, 2018,
   <https://arxiv.org/abs/1803.03835> - a new network pulled toward a trained one's actions at
   first, the pull fading away (the trainer's `--kickstart`).
+* Mysore, Mabsout, Mancuso and Saenko, "Regularizing Action Policies for Smooth Control with
+  Reinforcement Learning" (CAPS), ICRA 2021, <https://arxiv.org/abs/2012.06644> - the trainer's
+  `--caps-temporal` and `--caps-spatial`.
+* Domain randomisation (the trainer's `--dr-axle-grip`, `--dr-peak-slip`, `--obs-noise`): Tobin
+  et al., "Domain Randomization for Transferring Deep Neural Networks from Simulation to the Real
+  World", 2017, <https://arxiv.org/abs/1703.06907>; Peng, Andrychowicz, Zaremba and Abbeel,
+  "Sim-to-Real Transfer of Robotic Control with Dynamics Randomization", ICRA 2018,
+  <https://arxiv.org/abs/1710.06537>.
+* Peng, Ma, Abbeel, Levine and Kanazawa, "AMP: Adversarial Motion Priors for Stylized
+  Physics-Based Character Control", SIGGRAPH 2021, <https://arxiv.org/abs/2104.02180> - the
+  trainer's `--amp` (its least-squares discriminator, gradient penalty and style reward).
+* Kumar, Fu, Pathak and Malik, "RMA: Rapid Motor Adaptation for Legged Robots", RSS 2021,
+  <https://arxiv.org/abs/2107.04034> - adapting from a short history of states and actions (the
+  trainer's `--history-frames`; one network reads the history directly, not RMA's two phases).
+* Jaderberg et al., "Population Based Training of Neural Networks", DeepMind, 2017,
+  <https://arxiv.org/abs/1711.09846> - `pbt.py`.
+* Bansal, Pachocki, Sidor, Sutskever and Mordatch, "Emergent Complexity via Multi-Agent
+  Competition", ICLR 2018, <https://arxiv.org/abs/1710.03748> - opponents drawn from the
+  learner's own past (the trainer's `--self-ghosts`).
 
