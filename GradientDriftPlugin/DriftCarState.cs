@@ -75,8 +75,14 @@ internal sealed class DriftCarState
     public float Pace;
     // LeadPlayers: a player is chasing this car, and its pace waits for them.
     public bool LeadingPlayer;
-    // ChasePlayers: this car is chasing a player ahead; its pace comes from the IDM.
+    // ChasePlayers: this car is chasing the car ahead (a player, or a bot with ChaseBots); its pace
+    // comes from the IDM.
     public bool ChasingPlayer;
+    // ... whether that lead is a bot, when this chase began, and until when this bot takes up no
+    // other bot (ChaseBotCooldownSeconds), server milliseconds.
+    public bool ChaseLeadIsBot;
+    public long ChaseStartMs;
+    public long ChaseBotCooldownUntilMs;
     // ... the player's session id, and the gap between the outlines last tick (a tandem policy's
     // closing speed input; NaN = none yet).
     public byte ChaseLeadId;
