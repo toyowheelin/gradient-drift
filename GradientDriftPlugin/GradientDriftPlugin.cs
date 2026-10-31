@@ -2472,20 +2472,22 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     // ChasePaceMin of the policy's slowest pace and ChasePaceMaxPercent of its fastest.
     private bool ChasePlayer(DriftPolicy policy, DriftCarState state, float arc, float low, float high)
     {
-        float gap = -1f;
+        float gap = float.NaN;
         float leadSpeed = 0f;
         byte leadId = 0;
         for (int j = 0; j < _playerArcs.Count; j++)
         {
             float d = WrapAlongLap(_playerArcs[j] - arc);
-            if (d < 0.5f * _lapLength && (gap < 0f || d - CarLengthMeters < gap))
+            if (d < 0.5f * _lapLength && (float.IsNaN(gap) || d - CarLengthMeters < gap))
             {
                 gap = d - CarLengthMeters;
                 leadSpeed = _playerSpeeds[j];
                 leadId = _playerIds[j];
             }
         }
-        bool chasing = gap > -CarLengthMeters && gap < (state.ChasingPlayer
+        // NaN: no player ahead (it was -1, which read as a player overlapping the bot's nose, so a
+        // bot with nobody ahead started chasing no one)
+        bool chasing = !float.IsNaN(gap) && gap > -CarLengthMeters && gap < (state.ChasingPlayer
             ? MathF.Max(_configuration.ChaseOptOutMeters, _configuration.ChaseOptInMeters) : _configuration.ChaseOptInMeters);
         if (chasing != state.ChasingPlayer || leadId != state.ChaseLeadId)
         {
