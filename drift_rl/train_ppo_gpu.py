@@ -246,6 +246,26 @@ def main():
                     help="with a --sliding-grip range wider than the starting policy's: lower the bottom of the "
                          "range gradually over this many ticks instead of at once (default: the first half of "
                          "this run). A policy trained at full sliding grip spins at 0.9, so it has to be walked down.")
+    # ---- the "every proven idea" switches (each off by default, so one-off ablations can be run) ----
+    ap.add_argument('--caps-temporal', type=float, default=0.0, metavar='WEIGHT',
+                    help='CAPS temporal smoothness (Mysore et al., "Regularizing Action Policies for Smooth '
+                         'Control with Reinforcement Learning", ICRA 2021, https://arxiv.org/abs/2012.06644): '
+                         'loss WEIGHT x |mean action now - mean action next tick|^2. 0 = off')
+    ap.add_argument('--caps-spatial', type=float, default=0.0, metavar='WEIGHT',
+                    help='CAPS spatial smoothness: loss WEIGHT x |mean action - mean action at inputs moved by '
+                         '--caps-sigma|^2 (similar inputs, similar actions). 0 = off')
+    ap.add_argument('--caps-sigma', type=float, default=0.05,
+                    help='CAPS spatial: the input nudge, in input standard deviations')
+    ap.add_argument('--obs-noise', type=float, default=0.0, metavar='SIGMA',
+                    help='sensor noise while training: every policy input gets N(0, SIGMA) of its own standard '
+                         'deviation added (observation randomisation, Peng et al. 2018, '
+                         'https://arxiv.org/abs/1710.06537). Evaluation stays clean. 0 = off')
+    ap.add_argument('--dr-axle-grip', type=float, default=0.0, metavar='SHARE',
+                    help='hidden tyre randomisation: per episode each axle\'s true peak friction x 1 +- SHARE, '
+                         'front and rear drawn apart, while the car inputs show the car file\'s numbers '
+                         '(Tobin et al. 2017; Peng et al. 2018). Evaluation stays at the car\'s numbers. 0 = off')
+    ap.add_argument('--dr-peak-slip', type=float, default=0.0, metavar='SHARE',
+                    help='hidden tyre randomisation: each axle\'s peak slip angle x 1 +- SHARE, the same way. 0 = off')
     args = ap.parse_args()
     if args.resume:
         # a continued run keeps the cars, skills and number of cars it was trained with (given again
@@ -320,6 +340,7 @@ def main():
     env_cfg = de.EnvConfig()
     if args.grip_randomisation is not None:
         env_cfg.grip_randomisation = args.grip_randomisation
+    env_cfg.dr_axle_grip, env_cfg.dr_peak_slip = args.dr_axle_grip, args.dr_peak_slip
     if not 0.0 <= args.drift_starts <= 1.0 - env_cfg.recovery_start_fraction:
         sys.exit(f"--drift-starts: a share from 0 to {1.0 - env_cfg.recovery_start_fraction:g} "
                  "(the recovery starts take the rest)")
@@ -989,14 +1010,14 @@ def main():
         policy = make_policy()
         episodes = max(32, args.eval_episodes // len(eval_worlds))
         for name, w in eval_worlds:
-            ev = de.evaluate(w, policy, episodes, seed=999, env_config=replace(env_cfg, privileged=False),
+            ev = de.evaluate(w, policy, episodes, seed=999, env_config=replace(env_cfg, privileged=False, dr_axle_grip=0.0, dr_peak_slip=0.0),
                              reward_config=rew_cfg)
             per_track[name] = {k: float(ev[k].mean()) for k in EVAL_KEYS}
         last_eval = {k: float(np.mean([v[k] for v in per_track.values()])) for k in EVAL_KEYS}
         if args.chase > 0.0:
             # chase episodes only, at the whole --chase-gap range (what chase_report.py shows)
             name, w = eval_worlds[0]
-            ev = de.evaluate(w, policy, episodes, seed=998, env_config=replace(env_cfg, chase_share=1.0, chase_scenarios=False,
+            ev = de.evaluate(w, policy, episodes, seed=998, env_config=replace(env_cfg, chase_share=1.0, chase_scenarios=False, dr_axle_grip=0.0, dr_peak_slip=0.0,
                                                                                  privileged=False),
                              reward_config=rew_cfg)
             had = ev['chase_fraction'] > 0
@@ -1030,6 +1051,8 @@ def main():
             with torch.no_grad():
                 for t in range(T):
                     x = norm_obs(obs)
+                    if args.obs_noise > 0.0:
+                        x = x + args.obs_noise * torch.randn_like(x)
                     lead_buf[t] = obs[:, gate_slot]
                     if teacher:
                         teach_buf[t] = teacher(obs)
@@ -1075,7 +1098,8 @@ def main():
                     rew_buf[t], done_buf[t] = r, done.to(f32)
                     if not freeze_obs_norm:
                         obs_mean, obs_var, obs_count = rms_update(obs_mean, obs_var, obs_count, obs)
-                val_buf[T] = value(norm_obs(obs), priv_now())
+                last_x = norm_obs(obs)
+                val_buf[T] = value(last_x, priv_now())
                 steps_done += N * T
 
                 adv = torch.zeros((T, N), dtype=f32, device=dev)
@@ -1091,6 +1115,11 @@ def main():
             b_lead = lead_buf.reshape(-1)
             b_priv = priv_buf.reshape(b_lead.shape[0], n_priv)
             b_act = act_buf.reshape(-1, de.ACT_SIZE)
+            if args.caps_temporal > 0.0:
+                # each sample's next input (same car, next tick) and whether there is one (no episode end between)
+                b_next = torch.cat([obs_buf[1:], last_x[None]], dim=0).reshape(-1, de.OBS_SIZE)
+                b_cont = (1.0 - done_buf).reshape(-1)
+            caps_t_log, caps_s_log = [], []
             b_teach = teach_buf.reshape(-1, de.ACT_SIZE) if teacher else None
             kick_w = args.kickstart_weight * max(0.0, 1.0 - steps_done / args.kickstart_ticks) if teacher else 0.0
             kick_errs = []
@@ -1128,6 +1157,16 @@ def main():
                         kick = ((mu - b_teach[idx]) ** 2).sum(dim=1).mean()
                         loss = loss + kick_w * kick
                         kick_errs.append(float(kick.detach()))
+                    if args.caps_temporal > 0.0:
+                        mu_next = actor(b_next[idx], b_lead[idx])
+                        caps_t = (((mu - mu_next) ** 2).sum(dim=1) * b_cont[idx]).mean()
+                        loss = loss + args.caps_temporal * caps_t
+                        caps_t_log.append(float(caps_t.detach()))
+                    if args.caps_spatial > 0.0:
+                        mu_near = actor(b_obs[idx] + args.caps_sigma * torch.randn_like(b_obs[idx]), b_lead[idx])
+                        caps_s = ((mu - mu_near) ** 2).sum(dim=1).mean()
+                        loss = loss + args.caps_spatial * caps_s
+                        caps_s_log.append(float(caps_s.detach()))
                     if not bool(torch.isfinite(loss)):
                         # never step on a non-finite loss: one such step makes every weight NaN
                         skipped_steps += 1
@@ -1203,6 +1242,8 @@ def main():
                          f"in-band {last_chase['in_band']:.0%} hits {last_chase['hits']:.1%} "
                          f"slip-diff {last_chase['slip']:.1f} line-diff {last_chase['line']:.2f} |" if last_chase else "")
                       + (f"  kickstart {kick_w:.2f} (off by {kick_err:.3f})" if kick_w > 0.0 else "")
+                      + (f"  caps t {np.mean(caps_t_log):.4f}" if caps_t_log else "")
+                      + (f"  caps s {np.mean(caps_s_log):.4f}" if caps_s_log else "")
                       + f"  kl {mean_kl:.4f}  lr {lr:.1e}  "
                       f"std {row['std_steer']:.2f}/{row['std_speed']:.2f}/{row['std_brake']:.2f}"
                       + (f"  | training cars: grip {grip_low_now():.2f}-{grip_range[1]:.2f}"

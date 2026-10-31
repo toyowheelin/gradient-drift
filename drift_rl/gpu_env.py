@@ -127,12 +127,18 @@ class DriftGpuEnv:
                                        dtype=torch.float64))
 
     def _randomise_grip(self, mask):
-        g = self.cfg.grip_randomisation
-        if g <= 0.0:
-            return
         torch = self.torch
         k = int(mask.sum())
         if k == 0:
+            return
+        for share, names in ((self.cfg.dr_axle_grip, ('DR_FRONT_GRIP_SCALE', 'DR_REAR_GRIP_SCALE')),
+                             (self.cfg.dr_peak_slip, ('DR_FRONT_PEAK_SLIP_SCALE', 'DR_REAR_PEAK_SLIP_SCALE'))):
+            if share > 0.0:
+                for name in names:
+                    self.t['params'][mask, fs_cpu.P[name]] = \
+                        1.0 + (torch.rand(k, generator=self.gen, device=self.device, dtype=torch.float64) * 2 - 1) * share
+        g = self.cfg.grip_randomisation
+        if g <= 0.0:
             return
         scale = 1.0 + (torch.rand(k, generator=self.gen, device=self.device, dtype=torch.float64) * 2 - 1) * g
         for idx in self._grip_idx:
@@ -164,7 +170,7 @@ class DriftGpuEnv:
             self.t['actions'].copy_(actions)
         self._fill_random()
         self.de.step_kernel[self._blocks, self._tpb](*self._step_args)
-        if self.cfg.grip_randomisation > 0.0:
+        if self.cfg.grip_randomisation > 0.0 or self.cfg.dr_axle_grip > 0.0 or self.cfg.dr_peak_slip > 0.0:
             self._randomise_grip(self.terminated | self.truncated)
         return self.obs, self.rewards, self.terminated, self.truncated
 

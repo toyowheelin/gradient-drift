@@ -154,6 +154,13 @@ _PNAMES = [
     # friction circle when they are spinning, as a share of their peak: spun up by the throttle a
     # tire grips less in all directions than at its peak (step_post). 0 or 1 = off
     'REAR_SPIN_GRIP_SHARE',
+    # Hidden domain randomisation (trainer --dr-axle-grip / --dr-peak-slip; Tobin et al. 2017,
+    # https://arxiv.org/abs/1703.06907; Peng et al. 2018, https://arxiv.org/abs/1710.06537): the
+    # simulated tyres' true front / rear peak friction and peak slip angles are these multiples of the
+    # car's numbers, while the car inputs keep showing the car's numbers. A car file never matches
+    # the game's tyres exactly; the policy learns to drive cars a little off what it is told.
+    # 0 = 1 = off. Training only: the plugin has no such setting.
+    'DR_FRONT_GRIP_SCALE', 'DR_REAR_GRIP_SCALE', 'DR_FRONT_PEAK_SLIP_SCALE', 'DR_REAR_PEAK_SLIP_SCALE',
 ]
 P = {name: i for i, name in enumerate(_PNAMES)}
 
@@ -879,6 +886,10 @@ def tire_curve_angles(p):
     angle, plus with RoundTireCurve FLEX x the static load on one of its tires."""
     front = p[P_FRONT_PEAK_SLIP_RAD]
     rear = p[P_REAR_PEAK_SLIP_RAD]
+    if p[P_DR_FRONT_PEAK_SLIP_SCALE] > 0.0:
+        front *= p[P_DR_FRONT_PEAK_SLIP_SCALE]
+    if p[P_DR_REAR_PEAK_SLIP_SCALE] > 0.0:
+        rear *= p[P_DR_REAR_PEAK_SLIP_SCALE]
     if p[P_EXT_ROUND_TIRE_CURVE] > 0.5:
         front += math.radians(p[P_FRONT_TIRE_FLEX] * 0.5 * p[P_FRONT_STATIC_LOAD_N])
         rear += math.radians(p[P_REAR_TIRE_FLEX] * 0.5 * p[P_REAR_STATIC_LOAD_N])
@@ -1131,6 +1142,18 @@ def step_pre(s, dt_s, p, mid, sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp
 
 @njit(cache=True)
 def axle_friction(p, s):
+    """(front, rear) peak friction of each axle this tick (_axle_friction_model), times the hidden
+    domain randomisation scales (DR_*_GRIP_SCALE; 0 = 1)."""
+    mu_f, mu_r = _axle_friction_model(p, s)
+    if p[P_DR_FRONT_GRIP_SCALE] > 0.0:
+        mu_f *= p[P_DR_FRONT_GRIP_SCALE]
+    if p[P_DR_REAR_GRIP_SCALE] > 0.0:
+        mu_r *= p[P_DR_REAR_GRIP_SCALE]
+    return mu_f, mu_r
+
+
+@njit(cache=True)
+def _axle_friction_model(p, s):
     """(front, rear) peak friction of each axle this tick. The tyre file's peak (DY0) is the grip
     of a tire with no load on it; each kN on a tire takes DY1 off (EnableTireLoadSensitivity).
     An axle's two tires share its load evenly at rest; cornering moves
