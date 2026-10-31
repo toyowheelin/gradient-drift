@@ -274,6 +274,15 @@ def main():
                          'Needs --chase. 0 = off')
     ap.add_argument('--self-ghost-every', type=int, default=25_000_000, metavar='TICKS',
                     help='ticks between --self-ghosts refreshes')
+    ap.add_argument('--amp', default=None, metavar='NPZ',
+                    help='Adversarial Motion Priors (Peng et al. 2021, https://arxiv.org/abs/2104.02180): a '
+                         'discriminator learns to tell the training cars\' motion (speed, body slip, yaw rate, '
+                         'tick to tick) from the human\'s in this file (amp_reference.py), and the cars are paid '
+                         '--amp-weight x its style reward on top of the task reward. Off without a file')
+    ap.add_argument('--amp-weight', type=float, default=0.02,
+                    help='style reward per tick at a perfect match (the task reward is about 0.05 - 0.1 a tick)')
+    ap.add_argument('--amp-grad-penalty', type=float, default=10.0, help="the discriminator's gradient penalty on the human's pairs")
+    ap.add_argument('--amp-steps', type=int, default=8, help='discriminator minibatch steps per update')
     args = ap.parse_args()
     if args.resume:
         # a continued run keeps the cars, skills and number of cars it was trained with (given again
@@ -693,6 +702,19 @@ def main():
             mu = mu + (lead > 0.5).to(mu.dtype)[:, None] * res(x) * res_mask.to(mu.dtype)
         return mu
 
+    # Adversarial Motion Priors (--amp): the discriminator, its human state pairs and optimiser
+    amp_d = None
+    if args.amp:
+        import amp_reference
+        _ref = np.load(args.amp)
+        amp_expert = torch.tensor(_ref['pairs'], dtype=torch.float32, device=dev)
+        amp_slots = torch.tensor(amp_reference.OBS_SLOTS, device=dev)
+        amp_d = nn.Sequential(nn.Linear(2 * amp_reference.N_FEATURES, 256), nn.ReLU(), nn.Linear(256, 256), nn.ReLU(),
+                              nn.Linear(256, 1)).to(dev)
+        amp_opt = torch.optim.Adam(amp_d.parameters(), lr=1e-4, eps=1e-5)
+        amp_min_speed = amp_reference.MIN_KMH / 3.6 / 25.0
+        print(f"AMP: {len(amp_expert):,} human state pairs from {args.amp}; style reward up to {args.amp_weight:g} a tick", flush=True)
+
     # running statistics, kept in float64 on the network's device
     f64 = torch.float64
     obs_mean = torch.zeros(de.OBS_SIZE, dtype=f64, device=dev)
@@ -739,6 +761,8 @@ def main():
         obs_mean, obs_var, obs_count = ck['obs_mean'], ck['obs_var'], ck['obs_count']
         ret_mean, ret_var, ret_count = ck['ret_mean'], ck['ret_var'], ck['ret_count']
         steps_done, lr = ck['steps_done'], ck['lr']
+        if amp_d is not None and ck.get('amp_d') is not None:
+            amp_d.load_state_dict(ck['amp_d'])
         freeze_obs_norm = ck.get('freeze_obs_norm', False)
         # the best evaluation so far, so a run continued in its own folder does not overwrite a
         # better policy.json with its first evaluation; older checkpoints lack it - then the folder's
@@ -950,7 +974,8 @@ def main():
                     'obs_count': obs_count, 'ret_mean': ret_mean, 'ret_var': ret_var,
                     'ret_count': ret_count, 'steps_done': steps_done, 'lr': lr, 'hidden': args.hidden,
                     'layers': args.layers, 'vf_hidden': args.vf_hidden, 'branch_layers': args.branch_layers,
-                    'freeze_obs_norm': freeze_obs_norm, 'grip_low_now': grip_low_now(), 'best_eval': best_eval},
+                    'freeze_obs_norm': freeze_obs_norm, 'grip_low_now': grip_low_now(), 'best_eval': best_eval,
+                    'amp_d': amp_d.state_dict() if amp_d is not None else None},
                    os.path.join(out_dir, 'checkpoint.pt'))
 
     N, T = n_envs, (args.rollout or (32 if sim == 'gpu' else 64))
@@ -960,6 +985,10 @@ def main():
     lead_buf = torch.zeros((T, N), dtype=f32, device=dev)
     teach_buf = torch.zeros((T, N, de.ACT_SIZE), dtype=f32, device=dev) if teacher else None
     priv_buf = torch.zeros((T, N, n_priv), dtype=f32, device=dev)
+    if amp_d is not None:
+        amp_pre = torch.zeros((T, N, len(amp_slots)), dtype=f32, device=dev)
+        amp_post = torch.zeros((T, N, len(amp_slots)), dtype=f32, device=dev)
+        amp_log = {}
     no_priv = torch.zeros((N, 0), dtype=f32, device=dev)
 
     def priv_now():
@@ -1113,6 +1142,8 @@ def main():
                     logp_buf[t] = logp_of(a, mu, log_std)
                     priv_buf[t] = priv_now()
                     val_buf[t] = value(x, priv_buf[t])
+                    if amp_d is not None:
+                        amp_pre[t] = obs[:, amp_slots].to(f32)
                     o, r, term, trunc = env.step(a.to(env.device, f64))
                     obs = o.to(dev)
                     r = r.to(dev)
@@ -1132,6 +1163,11 @@ def main():
                         r = torch.nan_to_num(r, nan=0.0, posinf=0.0, neginf=0.0)
                     term, trunc = term.to(dev), trunc.to(dev)
                     done = term | trunc
+                    if amp_d is not None:
+                        post = obs[:, amp_slots].to(f32)
+                        if bool(done.any()):
+                            post[done] = torch.nan_to_num(env.final_obs.to(dev)[done][:, amp_slots].to(f32))
+                        amp_post[t] = post
                     # reward scaling by the running std of the discounted return
                     running_ret = running_ret * args.gamma + r
                     ret_mean, ret_var, ret_count = rms_update(ret_mean, ret_var, ret_count, running_ret)
@@ -1151,6 +1187,14 @@ def main():
                         obs_mean, obs_var, obs_count = rms_update(obs_mean, obs_var, obs_count, obs)
                 last_x = norm_obs(obs)
                 val_buf[T] = value(last_x, priv_now())
+                if amp_d is not None:
+                    # the style reward of each tick's transition (AMP's least-squares form), in the
+                    # task reward's scaled units; nothing below AMP's slowest human speed
+                    d_out = amp_d(torch.cat([amp_pre, amp_post], dim=2).reshape(T * N, -1)).reshape(T, N)
+                    style = torch.clamp(1.0 - 0.25 * (d_out - 1.0) ** 2, min=0.0)
+                    style = style * (amp_pre[:, :, 0] > amp_min_speed).to(f32)
+                    rew_buf += args.amp_weight * style / float(ret_var.sqrt() + 1e-8)
+                    amp_log['style'] = float(style.mean())
                 steps_done += N * T
 
                 adv = torch.zeros((T, N), dtype=f32, device=dev)
@@ -1244,6 +1288,24 @@ def main():
                         break
                 if stop:
                     break
+            if amp_d is not None:
+                agent = torch.cat([amp_pre, amp_post], dim=2).reshape(T * N, -1)
+                agent = agent[amp_pre.reshape(T * N, -1)[:, 0] > amp_min_speed]
+                d_losses = []
+                for _ in range(args.amp_steps if len(agent) else 0):
+                    ia = torch.randint(0, len(agent), (min(mb, len(agent)),), device=dev)
+                    ie = torch.randint(0, len(amp_expert), (min(mb, len(agent)),), device=dev)
+                    xe = amp_expert[ie].clone().requires_grad_(True)
+                    de_out, da_out = amp_d(xe), amp_d(agent[ia])
+                    grad = torch.autograd.grad(de_out.sum(), xe, create_graph=True)[0]
+                    d_loss = 0.5 * (((de_out - 1.0) ** 2).mean() + ((da_out + 1.0) ** 2).mean()) \
+                        + 0.5 * args.amp_grad_penalty * (grad ** 2).sum(dim=1).mean()
+                    amp_opt.zero_grad(set_to_none=True)
+                    d_loss.backward()
+                    amp_opt.step()
+                    d_losses.append(float(d_loss.detach()))
+                    amp_log['d_human'], amp_log['d_cars'] = float(de_out.mean()), float(da_out.mean())
+                amp_log['d_loss'] = float(np.mean(d_losses)) if d_losses else float('nan')
             # hold the policy change per update near --target-kl by adapting the learning rate
             if skipped_steps:
                 print(f'  skipped {skipped_steps} gradient steps with a non-finite loss at {steps_done:,} ticks '
@@ -1296,6 +1358,8 @@ def main():
                          f"in-band {last_chase['in_band']:.0%} hits {last_chase['hits']:.1%} "
                          f"slip-diff {last_chase['slip']:.1f} line-diff {last_chase['line']:.2f} |" if last_chase else "")
                       + (f"  kickstart {kick_w:.2f} (off by {kick_err:.3f})" if kick_w > 0.0 else "")
+                      + (f"  amp style {amp_log.get('style', 0):.2f} D human {amp_log.get('d_human', 0):+.2f} cars {amp_log.get('d_cars', 0):+.2f}"
+                         if amp_d is not None else "")
                       + (f"  caps t {np.mean(caps_t_log):.4f}" if caps_t_log else "")
                       + (f"  caps s {np.mean(caps_s_log):.4f}" if caps_s_log else "")
                       + f"  kl {mean_kl:.4f}  lr {lr:.1e}  "
