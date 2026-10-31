@@ -278,8 +278,10 @@ def main():
     args.branch_layers = args.branch_layers or 0
     if args.branch_layers and (args.init_policy or args.residual or args.kickstart):
         sys.exit('--branch-layers is for a fresh network: not with --init-policy, --residual or --kickstart')
-    if args.kickstart and (args.init_policy or args.residual):
-        sys.exit('--kickstart is for a fresh network: not with --init-policy or --residual')
+    if args.kickstart and args.residual:
+        sys.exit('--kickstart is not for a --residual run')
+    # --kickstart with --init-policy (e.g. both the same file) keeps the started-from policy as an
+    # anchor: a fine-tune for something new (chasing) is pulled back toward how it drove
 
     sys.path.insert(0, _HERE)
     try:
@@ -581,8 +583,10 @@ def main():
         pi = Branched().to(dev)
     else:
         pi = mlp(de.ACT_SIZE, 0.01, depth=args.layers)        # starts ~0 = the existing controller
-    if args.layers != 2 and args.init_policy:
-        sys.exit('--init-policy widens a two-layer network: leave --layers at 2')
+    if args.init_policy and not args.resume:
+        _depth = len(Policy.load_json(args.init_policy).mlp.W) - 1
+        if _depth != args.layers:
+            sys.exit(f'--init-policy: {args.init_policy} has {_depth} hidden layers; pass --layers {_depth}')
     if args.init_pedal is not None and not args.init_policy and not args.resume:
         # a fresh network asks for the pedal at this share: at 0 a pedal-mode car (EnableRearFrictionCircle)
         # coasts, and a fresh network learns to sit still (chase_scratch1 stalled for 100M ticks)
