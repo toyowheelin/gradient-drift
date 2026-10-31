@@ -130,6 +130,7 @@ Many are replaced at start, without anything in the YAML:
 | `EnableRearFrictionCircle` | `false` | Policy file |
 | `DisableBrakes` | `false` | Policy file. With `EnableRearFrictionCircle`: no pedal braking and no brake action, so the car slows only by lifting and with its angle (gen18 on) |
 | `FrontBrakeOnly` | `false` | Policy file. With `EnableRearFrictionCircle`: no pedal braking, but the brake action (the front axle, with the throttle) still works, so the car can scrub speed and keep its angle |
+| `RearSpinGripShare` | `1` (off) | Policy file. With `EnableRearFrictionCircle`: the rear friction circle while the throttle spins the tires, as a share of their peak; it shrinks toward this with the share of full-throttle thrust used |
 | `MaxLongitudinalDecelMs2` | `5.6` | Hardest braking, m/s² |
 | `MinSlipAngleSpeedMs` | `3.0` | Speed floor in the slip-angle formula |
 | `MaxLateralDynamicsSubStepSeconds` | `0.05` | Longest physics sub-step |
