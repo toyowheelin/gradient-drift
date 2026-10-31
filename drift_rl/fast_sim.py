@@ -150,6 +150,17 @@ _PNAMES = [
     # load (tyres.ini: FLEX, "the bigger the added slip angle with load", degrees per N).
     # Assetto Corsa's E36 front gives 75 - 90% of its peak by 4 - 8 deg (the owner's laps).
     'EXT_ROUND_TIRE_CURVE', 'FRONT_TIRE_FLEX', 'REAR_TIRE_FLEX',
+    # RearSpinGripShare (the same kind of setting): with EnableRearFrictionCircle, the rear tires'
+    # friction circle when they are spinning, as a share of their peak: spun up by the throttle a
+    # tire grips less in all directions than at its peak (step_post). 0 or 1 = off
+    'REAR_SPIN_GRIP_SHARE',
+    # Hidden domain randomisation (trainer --dr-axle-grip / --dr-peak-slip; Tobin et al. 2017,
+    # https://arxiv.org/abs/1703.06907; Peng et al. 2018, https://arxiv.org/abs/1710.06537): the
+    # simulated tyres' true front / rear peak friction and peak slip angles are these multiples of the
+    # car's numbers, while the car inputs keep showing the car's numbers. A car file never matches
+    # the game's tyres exactly; the policy learns to drive cars a little off what it is told.
+    # 0 = 1 = off. Training only: the plugin has no such setting.
+    'DR_FRONT_GRIP_SCALE', 'DR_REAR_GRIP_SCALE', 'DR_FRONT_PEAK_SLIP_SCALE', 'DR_REAR_PEAK_SLIP_SCALE',
 ]
 P = {name: i for i, name in enumerate(_PNAMES)}
 
@@ -875,6 +886,10 @@ def tire_curve_angles(p):
     angle, plus with RoundTireCurve FLEX x the static load on one of its tires."""
     front = p[P_FRONT_PEAK_SLIP_RAD]
     rear = p[P_REAR_PEAK_SLIP_RAD]
+    if p[P_DR_FRONT_PEAK_SLIP_SCALE] > 0.0:
+        front *= p[P_DR_FRONT_PEAK_SLIP_SCALE]
+    if p[P_DR_REAR_PEAK_SLIP_SCALE] > 0.0:
+        rear *= p[P_DR_REAR_PEAK_SLIP_SCALE]
     if p[P_EXT_ROUND_TIRE_CURVE] > 0.5:
         front += math.radians(p[P_FRONT_TIRE_FLEX] * 0.5 * p[P_FRONT_STATIC_LOAD_N])
         rear += math.radians(p[P_REAR_TIRE_FLEX] * 0.5 * p[P_REAR_STATIC_LOAD_N])
@@ -1127,6 +1142,18 @@ def step_pre(s, dt_s, p, mid, sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp
 
 @njit(cache=True)
 def axle_friction(p, s):
+    """(front, rear) peak friction of each axle this tick (_axle_friction_model), times the hidden
+    domain randomisation scales (DR_*_GRIP_SCALE; 0 = 1)."""
+    mu_f, mu_r = _axle_friction_model(p, s)
+    if p[P_DR_FRONT_GRIP_SCALE] > 0.0:
+        mu_f *= p[P_DR_FRONT_GRIP_SCALE]
+    if p[P_DR_REAR_GRIP_SCALE] > 0.0:
+        mu_r *= p[P_DR_REAR_GRIP_SCALE]
+    return mu_f, mu_r
+
+
+@njit(cache=True)
+def _axle_friction_model(p, s):
     """(front, rear) peak friction of each axle this tick. The tyre file's peak (DY0) is the grip
     of a tire with no load on it; each kN on a tire takes DY1 off (EnableTireLoadSensitivity).
     An axle's two tires share its load evenly at rest; cornering moves
@@ -1218,6 +1245,9 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
     # sideways grip, sqrt(peak^2 - F_x^2) is. Lift, and a sliding rear axle grips at its peak;
     # full throttle leaves it RearSlidingGrip x the peak. A human's car on this course, rear
     # sliding at 20 - 60 deg: 1.26 x its load sideways with no wheelspin, 0.54 at full throttle.
+    # RearSpinGripShare shrinks the whole circle while the throttle spins the tires: an E36 in the
+    # game, rear sliding 25 - 60 deg at full throttle, has 0.90 - 1.0 of the total rear grip this
+    # model gives it (0.89 - 1.02 on two tracks; forces from its recorded motion, per static rear load).
     #
     # The brake action (a third output): braking WITH the throttle, the way a drifter
     # scrubs off speed to hold a gap without giving up the angle. It works the front axle only -
@@ -1272,6 +1302,15 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
             to_limit = t_mass * ((s[S_MAX_SPEED] - prev_own) / dt_s - slide_loss) - front_along - front_brake_fx
             rear_fx = max(0.0, min(rear_fx, to_limit))
             front_fx = front_brake_fx
+            # RearSpinGripShare: the circle shrinks toward that share of the peak with the share of
+            # the full-throttle thrust the tires are driven with (no shrinking for thrust the engine
+            # or the speed limit holds back: those tires are not spinning)
+            spin_share = p[P_REAR_SPIN_GRIP_SHARE]
+            full_fx = t_rear_peak * math.sqrt(max(0.0, 1.0 - grip_at_full_throttle * grip_at_full_throttle))
+            if spin_share > 0.0 and spin_share < 1.0 and full_fx > 1e-6:
+                spun = 1.0 - (1.0 - spin_share) * min(1.0, rear_fx / full_fx)
+                t_rear_peak *= spun
+                rear_fx *= spun
         else:
             brake_force = -act_speed * p[P_MAX_LONGITUDINAL_DECEL_MS2] * t_mass
             rear_fx = -min(rear_share * brake_force, t_rear_peak)

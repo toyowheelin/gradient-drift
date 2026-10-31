@@ -582,6 +582,11 @@ class EnvConfig:
     max_speed_kmh_high: float = 88.0
     # optional +-fraction on both axles' peak friction, per episode (0 = the plugin's own values)
     grip_randomisation: float = 0.0
+    # hidden domain randomisation (fast_sim DR_*_SCALE): per episode, each axle's true peak friction
+    # times 1 +- dr_axle_grip and its peak slip angle times 1 +- dr_peak_slip, drawn separately for
+    # front and rear; the car inputs still show the car's own numbers. 0 = off
+    dr_axle_grip: float = 0.0
+    dr_peak_slip: float = 0.0
     # Several cars (car_param_values() of each): every episode draws one, then varies it - its
     # weight by +-car_mass_randomisation (loads and yaw inertia together) and its engine's force by
     # +-car_power_randomisation - so a policy meets cars between and around the ones it was given.
@@ -2098,6 +2103,11 @@ class DriftVecEnv:
         self.final_priv = np.zeros((n_envs, N_PRIV))
 
     def _randomise_grip(self, idx):
+        for share, names in ((self.cfg.dr_axle_grip, ('DR_FRONT_GRIP_SCALE', 'DR_REAR_GRIP_SCALE')),
+                             (self.cfg.dr_peak_slip, ('DR_FRONT_PEAK_SLIP_SCALE', 'DR_REAR_PEAK_SLIP_SCALE'))):
+            if share > 0.0:
+                for name in names:
+                    self.params[idx, fs.P[name]] = 1.0 + self.rng.uniform(-share, share, size=len(idx))
         g = self.cfg.grip_randomisation
         if g <= 0.0:
             return
@@ -2409,6 +2419,7 @@ PLUGIN_SETTING_PARAMS = {
     'FrontBrakeOnly': ('EXT_FRONT_BRAKE_ONLY', float),              # 1 = no pedal brake; the brake action stays
     'CarOutlineContact': ('EXT_CAR_OUTLINE_CONTACT', float),        # 1 = walls touch the car's outline, not a circle
     'RoundTireCurve': ('EXT_ROUND_TIRE_CURVE', float),              # 1 = brush-curve tyres (fast_sim._tire_curve)
+    'RearSpinGripShare': ('REAR_SPIN_GRIP_SHARE', float),          # rear circle while spinning, share of peak; 1 = off
 }
 DEFAULT_MAX_STEER_DEG = 28.125      # the plugin's MaxSteerAngleRadians default
 
