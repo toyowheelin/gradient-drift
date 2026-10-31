@@ -313,8 +313,9 @@ def main():
                          'discriminator learns to tell the training cars\' motion (speed, body slip, yaw rate, '
                          'tick to tick) from the human\'s in this file (amp_reference.py), and the cars are paid '
                          '--amp-weight x its style reward on top of the task reward. Off without a file')
-    ap.add_argument('--amp-weight', type=float, default=0.02,
-                    help='style reward per tick at a perfect match (the task reward is about 0.05 - 0.1 a tick)')
+    ap.add_argument('--amp-weight', type=float, default=0.1,
+                    help='style reward per tick at a perfect match (a good solo drift earns about 0.5 a tick, '
+                         'so 0.1 is a fifth of the task at most)')
     ap.add_argument('--amp-grad-penalty', type=float, default=10.0, help="the discriminator's gradient penalty on the human's pairs")
     ap.add_argument('--amp-steps', type=int, default=8, help='discriminator minibatch steps per update')
     ap.add_argument('--history-frames', type=int, default=0, metavar='K',
