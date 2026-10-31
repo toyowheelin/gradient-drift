@@ -161,7 +161,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private readonly List<(DriftCarState State, byte LeadId, bool IsBot, float Gap, float LeadSpeed, bool Kept)> _chaseOffers = new();
     private long _chaseEpochMs = -1;
     private int[] _gapOrder = new int[8];
-    private readonly float[] _observation = new float[DriftPolicy.ObservationSize];
+    private readonly float[] _observation = new float[DriftPolicy.ObservationSize + DriftPolicy.MaxHistoryInputs];
 
     private DriftTelemetry? _telemetry;
     private long _tickCounter;
@@ -973,6 +973,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 }
             }
 
+            policy.AppendHistory(_observation, state.Policy);
             DriftPolicyAction action = policy.Evaluate(_observation);
             _timing.Add(PluginTiming.Part.Network, networkStart);
             float steerAction = action.Valid ? action.Steer : state.Policy.PreviousSteerAction;

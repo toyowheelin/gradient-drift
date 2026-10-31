@@ -52,6 +52,40 @@ BRAKE_INIT_BIAS = -0.3
 BRAKE_INIT_STD = 0.3
 
 
+# --history-frames: the inputs a history frame holds (drift_env.OBS_NAMES): how the car moved and
+# what the policy asked of it
+HISTORY_INPUTS = ('own_speed/25', 'lateral_velocity/10', 'yaw_rate/2', 'body_slip/(pi/2)', 'prev_action_steer',
+                  'prev_action_speed', 'prev_action_brake', 'last_front_saturation', 'last_rear_saturation')
+
+
+class TorchHistory:
+    """policy.Policy.history_step for the trainer's batch of cars, on tensors: step() returns the
+    env's inputs with the history block after them and keeps the present frame; peek() the same
+    without keeping it (a finished episode's last observation)."""
+
+    def __init__(self, torch, slots, frames, every, reset_slot):
+        self.torch, self.slots, self.frames, self.every, self.reset_slot = torch, slots, frames, every, reset_slot
+        self.buf = None
+
+    def _frames(self, base, buf):
+        return self.torch.cat([base] + [buf[f * self.every - 1] for f in range(1, self.frames + 1)], dim=1)
+
+    def step(self, base):
+        now = base[:, self.slots]
+        if self.buf is None or self.buf.shape[1] != base.shape[0]:
+            self.buf = now[None].repeat(self.frames * self.every, 1, 1)
+        first = base[:, self.reset_slot] > 0.5
+        if bool(first.any()):
+            self.buf[:, first] = now[first][None]
+        out = self._frames(base, self.buf)
+        self.buf = self.torch.cat([now[None], self.buf[:-1]], dim=0)
+        return out
+
+    def peek(self, base, rows=None):
+        buf = self.buf if rows is None else self.buf[:, rows]
+        return self._frames(base, buf)
+
+
 def widen(W, b, n_inputs, hidden, rng, n_outputs=None, new_output_bias=0.0):
     """A policy's layers [(W, b)] grown to n_inputs inputs, hidden units per hidden layer and
     n_outputs outputs without changing what it does: the new inputs get no weight; each new unit
@@ -283,6 +317,12 @@ def main():
                     help='style reward per tick at a perfect match (the task reward is about 0.05 - 0.1 a tick)')
     ap.add_argument('--amp-grad-penalty', type=float, default=10.0, help="the discriminator's gradient penalty on the human's pairs")
     ap.add_argument('--amp-steps', type=int, default=8, help='discriminator minibatch steps per update')
+    ap.add_argument('--history-frames', type=int, default=0, metavar='K',
+                    help='short-history input (RMA-style, Kumar et al. 2021, https://arxiv.org/abs/2107.04034): the '
+                         'policy also reads HISTORY_INPUTS as they were 1 .. K x --history-every ticks ago, so it can '
+                         'tell from how the car answered what grip it has. The policy file carries a "history" block '
+                         'the plugin builds the same way. 0 = off')
+    ap.add_argument('--history-every', type=int, default=2, metavar='TICKS', help='ticks between history frames')
     args = ap.parse_args()
     if args.resume:
         # a continued run keeps the cars, skills and number of cars it was trained with (given again
@@ -310,6 +350,8 @@ def main():
         if args.branch_layers is None:
             args.branch_layers = _ck.get('branch_layers', 0)
     args.hidden = args.hidden or 128
+    if args.history_frames and (args.residual or args.branch_layers):
+        sys.exit('--history-frames is not for --residual or --branch-layers runs')
     args.layers = args.layers or 2
     args.vf_hidden = args.vf_hidden or args.hidden
     args.branch_layers = args.branch_layers or 0
@@ -332,6 +374,10 @@ def main():
     import gpu_env
     from policy import MLP, Policy
     from track_files import TRACK
+    hist_slots = [de.OBS_NAMES.index(n) for n in HISTORY_INPUTS] if args.history_frames > 0 else []
+    IN = de.OBS_SIZE + len(hist_slots) * args.history_frames      # the policy's inputs
+    history = TorchHistory(torch, hist_slots, args.history_frames, args.history_every,
+                           de.OBS_NAMES.index('first_tick')) if hist_slots else None
 
     # ---- where things run ----
     has_cuda = torch.cuda.is_available()
@@ -575,7 +621,8 @@ def main():
     print(f"simulator: {sim.upper()} ({n_envs} cars)   network: {dev.type.upper()}   GPU: {gpu_name}", flush=True)
 
     # ---- networks ----
-    def mlp(out, out_gain, hidden=None, n_in=de.OBS_SIZE, depth=2):
+    def mlp(out, out_gain, hidden=None, n_in=None, depth=2):
+        n_in = n_in or IN
         hidden = hidden or args.hidden
         layers, last = [], n_in
         for _ in range(depth):
@@ -643,7 +690,7 @@ def main():
     # the value network: with --privileged-critic it also reads drift_env.PRIV_NAMES (already scaled to
     # about +-1), the policy never does
     n_priv = de.N_PRIV if args.privileged_critic else 0
-    vf = mlp(1, 1.0, args.vf_hidden, n_in=de.OBS_SIZE + n_priv, depth=args.layers)
+    vf = mlp(1, 1.0, args.vf_hidden, n_in=IN + n_priv, depth=args.layers)
 
     # the kickstarting teacher: its own network and input scaling, on the raw inputs it was trained with
     teacher = None
@@ -717,8 +764,8 @@ def main():
 
     # running statistics, kept in float64 on the network's device
     f64 = torch.float64
-    obs_mean = torch.zeros(de.OBS_SIZE, dtype=f64, device=dev)
-    obs_var = torch.ones(de.OBS_SIZE, dtype=f64, device=dev)
+    obs_mean = torch.zeros(IN, dtype=f64, device=dev)
+    obs_var = torch.ones(IN, dtype=f64, device=dev)
     obs_count = 1e-4
     ret_var = torch.ones((), dtype=f64, device=dev)
     ret_mean = torch.zeros((), dtype=f64, device=dev)
@@ -742,14 +789,14 @@ def main():
                 or ck.get('branch_layers', 0) != args.branch_layers:
             sys.exit(f"checkpoint was trained with --hidden {ck['hidden']} --layers {ck.get('layers', 2)} "
                      f"--vf-hidden {ck.get('vf_hidden', ck['hidden'])}; pass the same values.")
-        if ck['log_std'].shape[0] != de.ACT_SIZE or ck['obs_mean'].shape[0] != de.OBS_SIZE:
+        if ck['log_std'].shape[0] != de.ACT_SIZE or ck['obs_mean'].shape[0] != IN:
             sys.exit(f"{args.resume} is from a run with {ck['obs_mean'].shape[0]} inputs and {ck['log_std'].shape[0]} "
                      f"outputs; this trainer has {de.OBS_SIZE} and {de.ACT_SIZE}. Start a new run from that run's "
                      "policy.json with --init-policy instead (it is widened, driving exactly as before).")
         pi.load_state_dict(ck['pi'])
         if res is not None and ck.get('res') is not None:
             res.load_state_dict(ck['res'])
-        if ck['vf']['0.weight'].shape[1] != de.OBS_SIZE + n_priv:
+        if ck['vf']['0.weight'].shape[1] != IN + n_priv:
             sys.exit(f"{args.resume} has a value network for {ck['vf']['0.weight'].shape[1]} inputs: resume "
                      f"{'without' if n_priv else 'with'} --privileged-critic, as it was trained")
         vf.load_state_dict(ck['vf'])
@@ -784,7 +831,7 @@ def main():
         lins = [m for m in pi if isinstance(m, nn.Linear)]
         n_old = p0.mlp.W[0].shape[1]
         out_old = p0.mlp.W[-1].shape[0]
-        weights = widen(p0.mlp.W, p0.mlp.b, de.OBS_SIZE, args.hidden, np.random.default_rng(args.seed),
+        weights = widen(p0.mlp.W, p0.mlp.b, IN, args.hidden, np.random.default_rng(args.seed),
                         n_outputs=de.ACT_SIZE, new_output_bias=BRAKE_INIT_BIAS)
         # an input whose meaning changed since that policy was trained (its name differs): no
         # weight, as if new (gen4's km/h pace -> the fraction of the course's flat-out speed)
@@ -807,6 +854,10 @@ def main():
             print(f"{args.init_policy}: input {j} was '{old_names[j]}', now '{de.OBS_NAMES[j]}': it starts with no weight")
         obs_mean = torch.as_tensor(np.r_[old_mean, [m for m, _ in new_norm]], dtype=f64, device=dev)
         obs_var = torch.as_tensor(np.r_[old_std, [sd for _, sd in new_norm]], dtype=f64, device=dev) ** 2
+        if hist_slots and obs_mean.shape[0] == de.OBS_SIZE:
+            # the history inputs start with no weight, scaled like the inputs they repeat
+            obs_mean = torch.cat([obs_mean, obs_mean[hist_slots].repeat(args.history_frames)])
+            obs_var = torch.cat([obs_var, obs_var[hist_slots].repeat(args.history_frames)])
         if n_old < de.OBS_SIZE:
             print(f"{args.init_policy} reads {n_old} inputs: inputs {n_old} - {de.OBS_SIZE - 1} "
                   f"({', '.join(de.OBS_NAMES[n_old:])}) start with no weight")
@@ -881,6 +932,12 @@ def main():
                          'scenarios': bool(args.chase_scenarios), 'privileged_critic': bool(args.privileged_critic),
                          'residual_steer_only': bool(args.residual_steer_only),
                          'controller': {k: getattr(env_cfg, k) for k in de.CHASE_CONTROLLER}}
+    if hist_slots:
+        # the plugin reads this: it appends the same history block (DriftPolicy.AppendHistory)
+        meta['history'] = {'slots': hist_slots, 'frames': args.history_frames, 'every': args.history_every,
+                           'reset_slot': de.OBS_NAMES.index('first_tick')}
+        meta['obs_names'] += [f'{de.OBS_NAMES[j]}@-{f * args.history_every}' for f in range(1, args.history_frames + 1)
+                              for j in hist_slots]
     if args.skill:
         # the plugin reads this: the skills it may ask the policy for
         meta['skill_range'] = [float(args.skill[0]), float(args.skill[1])]
@@ -919,7 +976,7 @@ def main():
                 assert np.allclose(m.forward(x.double().cpu().numpy()), pi(x).double().cpu().numpy(), atol=1e-4)
         else:
             lins = [m for m in pi if isinstance(m, nn.Linear)]
-            m = MLP([de.OBS_SIZE] + [args.hidden] * args.layers + [de.ACT_SIZE])
+            m = MLP([IN] + [args.hidden] * args.layers + [de.ACT_SIZE])
             m.W = [l.weight.detach().double().cpu().numpy().copy() for l in lins]
             m.b = [l.bias.detach().double().cpu().numpy().copy() for l in lins]
         r = None
@@ -980,7 +1037,7 @@ def main():
 
     N, T = n_envs, (args.rollout or (32 if sim == 'gpu' else 64))
     f32 = torch.float32
-    obs_buf = torch.zeros((T, N, de.OBS_SIZE), dtype=f32, device=dev)
+    obs_buf = torch.zeros((T, N, IN), dtype=f32, device=dev)
     act_buf = torch.zeros((T, N, de.ACT_SIZE), dtype=f32, device=dev)
     lead_buf = torch.zeros((T, N), dtype=f32, device=dev)
     teach_buf = torch.zeros((T, N, de.ACT_SIZE), dtype=f32, device=dev) if teacher else None
@@ -1130,7 +1187,7 @@ def main():
                 env.set_chase_gap_low(chase_gap_low_now())
             with torch.no_grad():
                 for t in range(T):
-                    x = norm_obs(obs)
+                    x = norm_obs(history.step(obs) if history else obs)
                     if args.obs_noise > 0.0:
                         x = x + args.obs_noise * torch.randn_like(x)
                     lead_buf[t] = obs[:, gate_slot]
@@ -1176,7 +1233,8 @@ def main():
                         if bool(trunc.any()):
                             # a time-limit cut-off is not a real ending: bootstrap from the value
                             # of the observation the episode was cut off at
-                            fo = norm_obs(env.final_obs.to(dev)[trunc])
+                            fo = env.final_obs.to(dev)[trunc]
+                            fo = norm_obs(history.peek(fo, trunc) if history else fo)
                             fp = env.final_priv.to(dev, f32)[trunc] if n_priv else no_priv[:int(trunc.sum())]
                             r[trunc] += args.gamma * value(fo, fp)
                         running_ret[done] = 0.0
@@ -1184,8 +1242,9 @@ def main():
                             ep_rows.append(env.ep_out[done.to(env.device)].cpu().numpy())
                     rew_buf[t], done_buf[t] = r, done.to(f32)
                     if not freeze_obs_norm:
-                        obs_mean, obs_var, obs_count = rms_update(obs_mean, obs_var, obs_count, obs)
-                last_x = norm_obs(obs)
+                        obs_mean, obs_var, obs_count = rms_update(obs_mean, obs_var, obs_count,
+                                                                  history.peek(obs) if history else obs)
+                last_x = norm_obs(history.peek(obs) if history else obs)
                 val_buf[T] = value(last_x, priv_now())
                 if amp_d is not None:
                     # the style reward of each tick's transition (AMP's least-squares form), in the
@@ -1206,13 +1265,13 @@ def main():
                     adv[t] = last
                 ret = adv + val_buf[:T]
 
-            b_obs = obs_buf.reshape(-1, de.OBS_SIZE)
+            b_obs = obs_buf.reshape(-1, IN)
             b_lead = lead_buf.reshape(-1)
             b_priv = priv_buf.reshape(b_lead.shape[0], n_priv)
             b_act = act_buf.reshape(-1, de.ACT_SIZE)
             if args.caps_temporal > 0.0:
                 # each sample's next input (same car, next tick) and whether there is one (no episode end between)
-                b_next = torch.cat([obs_buf[1:], last_x[None]], dim=0).reshape(-1, de.OBS_SIZE)
+                b_next = torch.cat([obs_buf[1:], last_x[None]], dim=0).reshape(-1, IN)
                 b_cont = (1.0 - done_buf).reshape(-1)
             caps_t_log, caps_s_log = [], []
             b_teach = teach_buf.reshape(-1, de.ACT_SIZE) if teacher else None
@@ -1304,7 +1363,7 @@ def main():
                     d_loss.backward()
                     amp_opt.step()
                     d_losses.append(float(d_loss.detach()))
-                    amp_log['d_human'], amp_log['d_cars'] = float(de_out.mean()), float(da_out.mean())
+                    amp_log['d_human'], amp_log['d_cars'] = float(de_out.detach().mean()), float(da_out.detach().mean())
                 amp_log['d_loss'] = float(np.mean(d_losses)) if d_losses else float('nan')
             # hold the policy change per update near --target-kl by adapting the learning rate
             if skipped_steps:
