@@ -120,6 +120,11 @@ def main():
                          '(a narrower --init-policy is widened)')
     ap.add_argument('--layers', type=int, default=None,
                     help='hidden layers in the driving network (default: the checkpoint\'s with --resume, else 2)')
+    ap.add_argument('--branch-layers', type=int, default=None,
+                    help='split the driving network after its --layers shared layers into a steering branch and a '
+                         'pedal + brake branch, each this many --hidden-unit layers deep (default: the checkpoint\'s '
+                         'with --resume, else 0 = one network). Saved as an ordinary policy file (the branches '
+                         'side by side, with zero weights between them), so the plugin runs it unchanged')
     ap.add_argument('--vf-hidden', type=int, default=None,
                     help='units per hidden layer of the value network (default --hidden). It never ships, so it can '
                          'be bigger at no cost to the plugin, as GT Sophy\'s critic was')
@@ -255,15 +260,21 @@ def main():
                 args.skill = list(ppo['skill'])
             if args.envs is None and ppo.get('envs'):
                 args.envs = ppo['envs']
-    if args.resume and (args.hidden is None or args.layers is None or args.vf_hidden is None):
+    if args.resume and (args.hidden is None or args.layers is None or args.vf_hidden is None
+                        or args.branch_layers is None):
         import torch as _torch
         _ck = _torch.load(args.resume, map_location='cpu', weights_only=True)
         args.hidden = args.hidden or _ck['hidden']
         args.layers = args.layers or _ck.get('layers', 2)
         args.vf_hidden = args.vf_hidden or _ck.get('vf_hidden', args.hidden)
+        if args.branch_layers is None:
+            args.branch_layers = _ck.get('branch_layers', 0)
     args.hidden = args.hidden or 128
     args.layers = args.layers or 2
     args.vf_hidden = args.vf_hidden or args.hidden
+    args.branch_layers = args.branch_layers or 0
+    if args.branch_layers and (args.init_policy or args.residual or args.kickstart):
+        sys.exit('--branch-layers is for a fresh network: not with --init-policy, --residual or --kickstart')
     if args.kickstart and (args.init_policy or args.residual):
         sys.exit('--kickstart is for a fresh network: not with --init-policy or --residual')
 
@@ -525,14 +536,55 @@ def main():
         nn.init.zeros_(lin.bias)
         return nn.Sequential(*layers, lin).to(dev)
 
-    pi = mlp(de.ACT_SIZE, 0.01, depth=args.layers)            # starts ~0 = the existing controller
+    class Branched(nn.Module):
+        """Shared layers, then a steering branch and a pedal + brake branch (--branch-layers): each
+        control gets its own layers to work out its part from what the shared ones see."""
+
+        def __init__(self):
+            super().__init__()
+            self.trunk = mlp(args.hidden, 2 ** 0.5, depth=args.layers - 1)
+            self.trunk.append(nn.Tanh())
+            self.steer = mlp(1, 0.01, n_in=args.hidden, depth=args.branch_layers)
+            self.pedal = mlp(de.ACT_SIZE - 1, 0.01, n_in=args.hidden, depth=args.branch_layers)
+
+        def forward(self, x):
+            h = self.trunk(x)
+            return torch.cat([self.steer(h), self.pedal(h)], dim=1)
+
+        def flat(self):
+            """(W, b) of the equivalent plain network: trunk layers as they are, the branches side by side
+            with zero weights between them, so it is an ordinary policy file."""
+            g = lambda t: t.detach().double().cpu().numpy()
+            W, b = [], []
+            for l in self.trunk:
+                if isinstance(l, nn.Linear):
+                    W.append(g(l.weight)); b.append(g(l.bias))
+            sl = [l for l in self.steer if isinstance(l, nn.Linear)]
+            pl = [l for l in self.pedal if isinstance(l, nn.Linear)]
+            for k, (a, c) in enumerate(zip(sl, pl)):
+                wa, wc = g(a.weight), g(c.weight)
+                if k == 0:
+                    w = np.vstack([wa, wc])                     # both read the trunk's output
+                else:
+                    w = np.zeros((wa.shape[0] + wc.shape[0], wa.shape[1] + wc.shape[1]))
+                    w[:wa.shape[0], :wa.shape[1]] = wa          # steer reads only the steer half
+                    w[wa.shape[0]:, wa.shape[1]:] = wc
+                W.append(w); b.append(np.concatenate([g(a.bias), g(c.bias)]))
+            return W, b
+
+    if args.branch_layers:
+        if args.layers < 1:
+            sys.exit('--branch-layers needs --layers 1 or more (the shared layers)')
+        pi = Branched().to(dev)
+    else:
+        pi = mlp(de.ACT_SIZE, 0.01, depth=args.layers)        # starts ~0 = the existing controller
     if args.layers != 2 and args.init_policy:
         sys.exit('--init-policy widens a two-layer network: leave --layers at 2')
     if args.init_pedal is not None and not args.init_policy and not args.resume:
         # a fresh network asks for the pedal at this share: at 0 a pedal-mode car (EnableRearFrictionCircle)
         # coasts, and a fresh network learns to sit still (chase_scratch1 stalled for 100M ticks)
         with torch.no_grad():
-            pi[-1].bias[1] = args.init_pedal
+            (pi.pedal[-1].bias[0] if args.branch_layers else pi[-1].bias[1]).fill_(args.init_pedal)
     # the value network: with --privileged-critic it also reads drift_env.PRIV_NAMES (already scaled to
     # about +-1), the policy never does
     n_priv = de.N_PRIV if args.privileged_critic else 0
@@ -618,7 +670,8 @@ def main():
 
     if args.resume:
         ck = torch.load(args.resume, map_location=dev, weights_only=True)
-        if ck['hidden'] != args.hidden or ck.get('layers', 2) != args.layers or ck.get('vf_hidden', ck['hidden']) != args.vf_hidden:
+        if ck['hidden'] != args.hidden or ck.get('layers', 2) != args.layers or ck.get('vf_hidden', ck['hidden']) != args.vf_hidden \
+                or ck.get('branch_layers', 0) != args.branch_layers:
             sys.exit(f"checkpoint was trained with --hidden {ck['hidden']} --layers {ck.get('layers', 2)} "
                      f"--vf-hidden {ck.get('vf_hidden', ck['hidden'])}; pass the same values.")
         if ck['log_std'].shape[0] != de.ACT_SIZE or ck['obs_mean'].shape[0] != de.OBS_SIZE:
@@ -787,10 +840,18 @@ def main():
                    'sim': sim, 'network_device': dev.type, 'n_envs': n_envs, 'gpu': gpu_name}, f, indent=2)
 
     def make_policy():
-        lins = [m for m in pi if isinstance(m, nn.Linear)]
-        m = MLP([de.OBS_SIZE] + [args.hidden] * args.layers + [de.ACT_SIZE])
-        m.W = [l.weight.detach().double().cpu().numpy().copy() for l in lins]
-        m.b = [l.bias.detach().double().cpu().numpy().copy() for l in lins]
+        if args.branch_layers:
+            W, b = pi.flat()
+            m = MLP([de.OBS_SIZE] + [len(x) for x in b])
+            m.W, m.b = W, b
+            with torch.no_grad():       # the side-by-side file must drive exactly as the branches do
+                x = torch.randn(8, de.OBS_SIZE, device=dev)
+                assert np.allclose(m.forward(x.double().cpu().numpy()), pi(x).double().cpu().numpy(), atol=1e-4)
+        else:
+            lins = [m for m in pi if isinstance(m, nn.Linear)]
+            m = MLP([de.OBS_SIZE] + [args.hidden] * args.layers + [de.ACT_SIZE])
+            m.W = [l.weight.detach().double().cpu().numpy().copy() for l in lins]
+            m.b = [l.bias.detach().double().cpu().numpy().copy() for l in lins]
         r = None
         if res is not None:
             rl = [l for l in res if isinstance(l, nn.Linear)]
@@ -810,7 +871,7 @@ def main():
                     'opt': opt.state_dict(), 'obs_mean': obs_mean, 'obs_var': obs_var,
                     'obs_count': obs_count, 'ret_mean': ret_mean, 'ret_var': ret_var,
                     'ret_count': ret_count, 'steps_done': steps_done, 'lr': lr, 'hidden': args.hidden,
-                    'layers': args.layers, 'vf_hidden': args.vf_hidden,
+                    'layers': args.layers, 'vf_hidden': args.vf_hidden, 'branch_layers': args.branch_layers,
                     'freeze_obs_norm': freeze_obs_norm, 'grip_low_now': grip_low_now(), 'best_eval': best_eval},
                    os.path.join(out_dir, 'checkpoint.pt'))
 
