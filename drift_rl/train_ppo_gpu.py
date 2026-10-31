@@ -316,7 +316,9 @@ def main():
     ap.add_argument('--amp-weight', type=float, default=0.1,
                     help='style reward per tick at a perfect match (a good solo drift earns about 0.5 a tick, '
                          'so 0.1 is a fifth of the task at most)')
-    ap.add_argument('--amp-grad-penalty', type=float, default=10.0, help="the discriminator's gradient penalty on the human's pairs")
+    ap.add_argument('--amp-grad-penalty', type=float, default=1.0,
+                    help="the discriminator's gradient penalty on the human's pairs (its inputs scaled to the human's "
+                         "spread). 10 with unscaled inputs left it unable to tell the cars from the human (combo_all)")
     ap.add_argument('--amp-steps', type=int, default=8, help='discriminator minibatch steps per update')
     ap.add_argument('--history-frames', type=int, default=0, metavar='K',
                     help='short-history input (RMA-style, Kumar et al. 2021, https://arxiv.org/abs/2107.04034): the '
@@ -756,6 +758,10 @@ def main():
         import amp_reference
         _ref = np.load(args.amp)
         amp_expert = torch.tensor(_ref['pairs'], dtype=torch.float32, device=dev)
+        # the discriminator reads each feature scaled to the human's spread: the cars' and the human's
+        # slip differ by ~0.2 in the policy's units, too little for a gradient-penalised net to see
+        amp_mu, amp_sd = amp_expert.mean(dim=0), amp_expert.std(dim=0) + 1e-6
+        amp_expert = (amp_expert - amp_mu) / amp_sd
         amp_slots = torch.tensor(amp_reference.OBS_SLOTS, device=dev)
         amp_d = nn.Sequential(nn.Linear(2 * amp_reference.N_FEATURES, 256), nn.ReLU(), nn.Linear(256, 256), nn.ReLU(),
                               nn.Linear(256, 1)).to(dev)
@@ -1250,7 +1256,7 @@ def main():
                 if amp_d is not None:
                     # the style reward of each tick's transition (AMP's least-squares form), in the
                     # task reward's scaled units; nothing below AMP's slowest human speed
-                    d_out = amp_d(torch.cat([amp_pre, amp_post], dim=2).reshape(T * N, -1)).reshape(T, N)
+                    d_out = amp_d((torch.cat([amp_pre, amp_post], dim=2).reshape(T * N, -1) - amp_mu) / amp_sd).reshape(T, N)
                     style = torch.clamp(1.0 - 0.25 * (d_out - 1.0) ** 2, min=0.0)
                     style = style * (amp_pre[:, :, 0] > amp_min_speed).to(f32)
                     rew_buf += args.amp_weight * style / float(ret_var.sqrt() + 1e-8)
@@ -1350,7 +1356,7 @@ def main():
                     break
             if amp_d is not None:
                 agent = torch.cat([amp_pre, amp_post], dim=2).reshape(T * N, -1)
-                agent = agent[amp_pre.reshape(T * N, -1)[:, 0] > amp_min_speed]
+                agent = (agent[amp_pre.reshape(T * N, -1)[:, 0] > amp_min_speed] - amp_mu) / amp_sd
                 d_losses = []
                 for _ in range(args.amp_steps if len(agent) else 0):
                     ia = torch.randint(0, len(agent), (min(mb, len(agent)),), device=dev)
@@ -1359,7 +1365,7 @@ def main():
                     de_out, da_out = amp_d(xe), amp_d(agent[ia])
                     grad = torch.autograd.grad(de_out.sum(), xe, create_graph=True)[0]
                     d_loss = 0.5 * (((de_out - 1.0) ** 2).mean() + ((da_out + 1.0) ** 2).mean()) \
-                        + 0.5 * args.amp_grad_penalty * (grad ** 2).sum(dim=1).mean()
+                        + args.amp_grad_penalty * (grad ** 2).sum(dim=1).mean()
                     amp_opt.zero_grad(set_to_none=True)
                     d_loss.backward()
                     amp_opt.step()
