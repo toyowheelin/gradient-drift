@@ -160,6 +160,9 @@ def main():
     ap.add_argument('--min-std-brake', type=float, default=0.15,
                     help='the same for the brake output: with the general floor it collapsed within a few million '
                          'ticks and the policy stopped trying harder braking when asked for a slower pace')
+    ap.add_argument('--max-std-pedal', type=float, default=float(np.exp(0.5)),
+                    help='ceiling on the pedal (or target speed) output\'s exploration noise (default: the general '
+                         'ceiling, 1.65, which fresh2s\'s pedal noise reached under --ent-coef 0.01)')
     ap.add_argument('--max-std-brake', type=float, default=float(np.exp(0.5)),
                     help='ceiling on the brake output\'s exploration noise (default: the general ceiling, 1.65). With '
                          'a bigger --ent-coef the brake noise grows to the ceiling (scratch_re, fresh2) and random '
@@ -1042,7 +1045,9 @@ def main():
                     a_mb = (a_mb - a_mb.mean()) / (a_mb.std() + 1e-8)
                     mu = actor(b_obs[idx], b_lead[idx])
                     logp = logp_of(b_act[idx], mu, log_std)
-                    log_ratio = logp - b_logp[idx]
+                    # clamped so exp() cannot overflow to inf (inf x a zero advantage is NaN); a step
+                    # this far off is clipped by the PPO objective anyway
+                    log_ratio = (logp - b_logp[idx]).clamp(-20.0, 20.0)
                     ratio = log_ratio.exp()
                     pi_loss = -torch.min(ratio * a_mb, torch.clamp(ratio, 1 - args.clip, 1 + args.clip) * a_mb).mean()
                     entropy = (log_std + 0.5 * (LOG_2PI + 1.0)).sum()
@@ -1058,6 +1063,10 @@ def main():
                     if not bool(torch.isfinite(loss)):
                         # never step on a non-finite loss: one such step makes every weight NaN
                         skipped_steps += 1
+                        if skipped_steps == 1:
+                            print(f'  non-finite loss: policy {float(pi_loss):g} value {float(v_loss):g} '
+                                  f'entropy {float(entropy):g} returns finite {bool(torch.isfinite(b_ret[idx]).all())} '
+                                  f'advantages finite {bool(torch.isfinite(a_mb).all())}', flush=True)
                         continue
                     opt.zero_grad(set_to_none=True)
                     loss.backward()
@@ -1067,6 +1076,7 @@ def main():
                     opt.step()
                     with torch.no_grad():
                         log_std.clamp_(float(np.log(args.min_std)), 0.5)
+                        log_std[1].clamp_(max=float(np.log(args.max_std_pedal)))
                         log_std[2].clamp_(float(np.log(args.min_std_brake)), float(np.log(args.max_std_brake)))
                         kl = float(((ratio - 1.0) - log_ratio).mean())
                         cfs.append(float(((ratio - 1.0).abs() > args.clip).float().mean()))
