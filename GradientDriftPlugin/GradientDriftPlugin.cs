@@ -70,6 +70,28 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private const float SpacingGain = 2f;
     private const float SpacingEaseSeconds = 4f;
 
+    // LeadPlayers: a bot (or train) with a player close behind it on the line waits for them. Its
+    // pace goes to the top of the range with the player within LeadNearMeters of its tail, down to
+    // the floor as they drop back to LeadFarMeters; further back, or not chasing, spacing as usual.
+    private const float LeadNearMeters = 5f;
+    private const float LeadFarMeters = 40f;
+    private const float LeadEaseSeconds = 1.5f;
+    private const float LeadMinSpeedMs = 5f;
+    private const float CarLengthMeters = 4.5f;
+
+    // ChasePlayers: a bot chases a player who pulls in within ChaseOptInMeters of its nose (about
+    // 25 ft, the owner's opt-in), until they are ChaseOptOutMeters ahead. Its pace comes from the
+    // Intelligent Driver Model (Treiber, Hennecke, Helbing 2000), the standard car-following law of
+    // traffic simulation, with the constants drift_env trains with (IDM_*): desired gap
+    // s* = ChaseGapMeters + v * ChaseTimeGapSeconds + v * dv / (2 sqrt(IdmAccel * IdmBrake)), the
+    // acceleration it gives turned into a speed ChaseResponseSeconds ahead, and that into the pace,
+    // up to ChasePaceMaxPercent of the policy's top pace.
+    private const float ChaseOptInMeters = 7.5f;
+    private const float ChaseOptOutMeters = 40f;
+    private const float IdmAccel = 4f;
+    private const float IdmBrake = 3f;
+    private const float IdmFreeSpeed = 1.5f;
+
     // Telemetry SessionId of a row that carries only the human car (no AI car was out that tick).
     private const byte HumanOnlySessionId = 255;
 
@@ -125,6 +147,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private Vector3 _aheadPositionBefore;     // the car in front's position the follower was kept clear of
     private readonly Dictionary<AiState, (Vector3 Position, long TimeMs)> _followerLast = new();
     private readonly List<(DriftCarState State, float Arc)> _spaced = new();
+    private readonly List<float> _playerArcs = new();
+    private readonly List<float> _playerSpeeds = new();     // along the line, m/s, as _playerArcs
     private int[] _gapOrder = new int[8];
     private readonly float[] _observation = new float[DriftPolicy.ObservationSize];
 
@@ -1628,6 +1652,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         // never more than the car's speed limit (drift_env._step_one asks the same): a long
         // straight's reference can run far past what any bot is allowed to reach
         float askedKmh = state.Pace * MathF.Min(_paceReferenceKmh![askedPointId] * _car.PaceScale, maxSpeedMs * 3.6f);
+        state.LineSpeedMs = speed;
+        state.PaceOneMs = MathF.Min(_paceReferenceKmh![askedPointId] * _car.PaceScale, maxSpeedMs * 3.6f) / 3.6f;
         if (p.PaceTicks == 0)
         {
             p.PaceSpeedAverageMs = speed;
@@ -2339,11 +2365,15 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float high = byPace ? policy.PaceHigh : policy.RearSlidingGripHigh;
         float middle = byPace ? _basePace : _rearSlidingGrip;
         float halfRange = 0.5f * (high - low);
-        float ease = Math.Min(1f, dt / SpacingEaseSeconds);
+        if (byPace && (_configuration.LeadPlayers || _configuration.ChasePlayers))
+        {
+            FindChasingPlayers();
+        }
         for (int i = 0; i < n; i++)
         {
             DriftCarState state = _spaced[i].State;
             float target = middle;
+            float ease = Math.Min(1f, dt / SpacingEaseSeconds);
             state.GapAheadM = -1f;
             if (spacing)
             {
@@ -2353,7 +2383,26 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 target = Math.Clamp(middle + SpacingGain * imbalance * halfRange, low, high);
                 state.GapAheadM = ahead;
             }
-            if (byPace)
+            float playerGap = byPace ? PlayerGapBehind(state, _spaced[i].Arc) : -1f;
+            bool leading = playerGap >= 0f && playerGap < LeadFarMeters;
+            if (leading)
+            {
+                float behindShare = Math.Clamp((playerGap - LeadNearMeters) / (LeadFarMeters - LeadNearMeters), 0f, 1f);
+                target = high - behindShare * (high - low);
+                ease = Math.Min(1f, dt / LeadEaseSeconds);
+            }
+            if (leading != state.LeadingPlayer)
+            {
+                state.LeadingPlayer = leading;
+                VerboseLog.Information(state.LeadingPlayer
+                    ? "GradientDrift: a bot is leading a player {Gap:F0} m behind it"
+                    : "GradientDrift: a bot stopped leading a player ({Gap:F0} m)", playerGap);
+            }
+            if (byPace && _configuration.ChasePlayers && ChasePlayer(state, _spaced[i].Arc, low, high))
+            {
+                state.RearSlidingGrip = _rearSlidingGrip;
+            }
+            else if (byPace)
             {
                 state.Pace += (target - state.Pace) * ease;
                 state.RearSlidingGrip = _rearSlidingGrip;
@@ -2363,6 +2412,106 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 state.RearSlidingGrip += (target - state.RearSlidingGrip) * ease;
             }
         }
+    }
+
+    // ChasePlayers: whether this bot chases a player ahead of it, and if so its pace from the IDM.
+    private bool ChasePlayer(DriftCarState state, float arc, float low, float high)
+    {
+        float gap = -1f;
+        float leadSpeed = 0f;
+        for (int j = 0; j < _playerArcs.Count; j++)
+        {
+            float d = WrapAlongLap(_playerArcs[j] - arc);
+            if (d < 0.5f * _lapLength && (gap < 0f || d - CarLengthMeters < gap))
+            {
+                gap = d - CarLengthMeters;
+                leadSpeed = _playerSpeeds[j];
+            }
+        }
+        bool chasing = gap > -CarLengthMeters && gap < (state.ChasingPlayer ? ChaseOptOutMeters : ChaseOptInMeters);
+        if (chasing != state.ChasingPlayer)
+        {
+            state.ChasingPlayer = chasing;
+            VerboseLog.Information(chasing
+                ? "GradientDrift: a bot is chasing a player {Gap:F0} m ahead of it"
+                : "GradientDrift: a bot stopped chasing a player ({Gap:F0} m)", gap);
+        }
+        if (!chasing || state.PaceOneMs <= 0f)
+        {
+            return false;
+        }
+        float v = MathF.Max(0f, state.LineSpeedMs);
+        float top = MathF.Max(low, high * _configuration.ChasePaceMaxPercent / 100f);
+        float v0 = MathF.Max(1f, IdmFreeSpeed * top * state.PaceOneMs);
+        float desired = MathF.Max(0f, _configuration.ChaseGapMeters + v * _configuration.ChaseTimeGapSeconds
+            + v * (v - leadSpeed) / (2f * MathF.Sqrt(IdmAccel * IdmBrake)));
+        float ratio = desired / MathF.Max(gap, 0.1f);
+        float accel = MathF.Max(-3f * IdmBrake, IdmAccel * (1f - MathF.Pow(v / v0, 4) - ratio * ratio));
+        state.Pace = Math.Clamp((v + accel * _configuration.ChaseResponseSeconds) / state.PaceOneMs, low, top);
+        return true;
+    }
+
+    // LeadPlayers and ChasePlayers, once a tick: where each moving player is along the line, and
+    // their speed along it, if they drive its way.
+    private void FindChasingPlayers()
+    {
+        _playerArcs.Clear();
+        _playerSpeeds.Clear();
+        if (_lapArc == null)
+        {
+            return;
+        }
+        foreach (EntryCar car in _entryCarManager.EntryCars)
+        {
+            if (car.AiControlled || car.Client?.HasSentFirstUpdate != true)
+            {
+                continue;
+            }
+            Vector3 velocity = car.Status.Velocity;
+            if (new Vector2(velocity.X, velocity.Z).LengthSquared() < LeadMinSpeedMs * LeadMinSpeedMs)
+            {
+                continue;
+            }
+            int point = _spline.WorldToSpline(car.Status.Position).PointId;
+            if (point < 0 || point >= _lapArc.Length)
+            {
+                continue;
+            }
+            Vector3 forward = _spline.Operations.GetForwardVector(point);
+            float along = forward.X * velocity.X + forward.Z * velocity.Z;
+            if (along > 0f)
+            {
+                _playerArcs.Add(_lapArc[point]);
+                _playerSpeeds.Add(along / MathF.Max(new Vector2(forward.X, forward.Z).Length(), 1e-3f));
+            }
+        }
+    }
+
+    // LeadPlayers: from the nearest player behind this bot (or its train's last car) to that tail,
+    // along the line, roughly bumper to bumper; -1 = none within half a lap, or not leading.
+    private float PlayerGapBehind(DriftCarState state, float arc)
+    {
+        if (!_configuration.LeadPlayers || _playerArcs.Count == 0)
+        {
+            return -1f;
+        }
+        float train = 0f;
+        if (_configuration.TrainSize > 1)
+        {
+            float speed = new Vector2(state.Velocity.X, state.Velocity.Z).Length();
+            train = (_configuration.TrainSize - 1)
+                * MathF.Max(_configuration.TandemMinGapMeters, _configuration.TandemGapSeconds * speed);
+        }
+        float nearest = -1f;
+        foreach (float playerArc in _playerArcs)
+        {
+            float d = WrapAlongLap(arc - playerArc);
+            if (d < 0.5f * _lapLength && (nearest < 0f || d < nearest))
+            {
+                nearest = d;
+            }
+        }
+        return nearest < 0f ? -1f : MathF.Max(0f, nearest - train - CarLengthMeters);
     }
 
     // HoldBotSpacing: a car just taken over goes to the middle of the largest gap between the

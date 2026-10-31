@@ -55,6 +55,24 @@ public class GradientDriftConfiguration
     // The same for a gen4 policy, whose paces are km/h along the line ("pace_kmh_range").
     public float BotPaceKmh { get; set; } = 0f;
 
+    // Tandem with a player chasing: a bot (or train) with a player close behind waits for them -
+    // full pace with the player right on its tail, slowing to BotPaceMinPercent as they drop back
+    // 40 m; further back, spacing as usual. A policy that reads its pace only.
+    public bool LeadPlayers { get; set; } = false;
+
+    // Tandem with a bot chasing a player: a player who pulls in within ChaseOptInMeters ahead of a
+    // bot's nose is chased until they get ChaseOptOutMeters ahead. The bot's pace comes from the
+    // Intelligent Driver Model, aiming ChaseGapMeters behind them. A policy that reads its pace only.
+    public bool ChasePlayers { get; set; } = false;
+    public float ChaseGapMeters { get; set; } = 2f;
+    // The model's time gap (drift_env chase_time_gap_blind_s: a player's plan is unknown), how far
+    // ahead its acceleration becomes the pace asked (chase_response_s), and the top of that pace as
+    // a percentage of the policy's top pace (chase_pace_max): a chaser needs some speed over the
+    // player's to catch up.
+    public float ChaseTimeGapSeconds { get; set; } = 0.2f;
+    public float ChaseResponseSeconds { get; set; } = 0.6f;
+    public float ChasePaceMaxPercent { get; set; } = 110f;
+
     // Tandem trains: bots in order of their entry, this many to a train. The first of each train is
     // driven by the policy; the others replay what it sent a moment earlier (TandemTrains.cs), so
     // they follow its line exactly. 1 = every bot drives alone. With HoldBotSpacing the trains are

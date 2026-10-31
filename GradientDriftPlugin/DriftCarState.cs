@@ -73,6 +73,14 @@ internal sealed class DriftCarState
     // The pace this car is asked to drive, in the policy's units (a fraction of the course's
     // flat-out speed, or km/h for gen4): the setting, or what HoldBotSpacing has eased it to; 0 = none.
     public float Pace;
+    // LeadPlayers: a player is chasing this car, and its pace waits for them.
+    public bool LeadingPlayer;
+    // ChasePlayers: this car is chasing a player ahead; its pace comes from the IDM.
+    public bool ChasingPlayer;
+    // Its speed along the line last tick, and the speed a pace of 1 asks there (the course's
+    // reference, held to the car's limit), m/s: the IDM works in speeds.
+    public float LineSpeedMs;
+    public float PaceOneMs;
 
     // The wandering noise of a driver below full skill (BotSkill): steering and pedal.
     public float SkillNoiseSteer;

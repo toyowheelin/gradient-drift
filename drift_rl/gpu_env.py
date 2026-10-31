@@ -29,7 +29,7 @@ def kernel_arg_names():
     """Argument order of drift_env.step_kernel / step_batch, in one place."""
     return (['states', 'mids', 'diags', 'actions', 'prev_act', 'counters', 'ep', 'params', 'rw', 'obs',
              'rewards', 'terminated', 'truncated', 'final_obs', 'ep_out', 'rnd', 'env_cfg',
-             'episode_ticks', 'sp_dir', 'la_idx', 'la_min_radius', 'pace_ref'], _WORLD_NAMES)
+             'episode_ticks', 'sp_dir', 'la_idx', 'la_min_radius', 'pace_ref'], _WORLD_NAMES + ['gh', 'gh_len'])
 
 
 _WORLD_NAMES = ['sp_pos', 'sp_radius', 'sp_length', 'sp_next', 'sp_prev', 'sp_fwd', 'sp_cum', 'tri_v',
@@ -67,6 +67,8 @@ def host_arrays(world, n_envs, env_cfg, rew_cfg):
     }
     for name, arr in zip(_WORLD_NAMES, world.arrays()):
         a[name] = arr
+    # ghost leaders (chase episodes): passed to the step, but the GPU environment starts no chases yet
+    a['gh'], a['gh_len'] = de_cpu.ghost_arrays(world)
     a['_base_params'] = base
     return a
 
@@ -144,6 +146,9 @@ class DriftGpuEnv:
         """Bottom of the range paces are drawn from (the trainer walks it down)."""
         self.t['env_cfg'][de_cpu.ENV_CFG_PACE_LOW] = low
 
+    def set_chase_gap_low(self, low):
+        """No chase episodes on the GPU simulator."""
+
     def reset(self):
         self._randomise_grip(self.torch.ones(self.n, dtype=self.torch.bool, device=self.device))
         self._fill_random()
@@ -179,6 +184,8 @@ class TorchCpuEnv:
         self.terminated, self.truncated = torch.from_numpy(e.terminated), torch.from_numpy(e.truncated)
         self.final_obs, self.ep_out = torch.from_numpy(e.final_obs), torch.from_numpy(e.ep_out)
         self.diags, self.states = torch.from_numpy(e.diags), torch.from_numpy(e.states)
+        # the privileged critic's inputs (EnvConfig.privileged; drift_env.PRIV_NAMES)
+        self.priv, self.final_priv = torch.from_numpy(e.priv), torch.from_numpy(e.final_priv)
 
     def set_sliding_grip_low(self, low):
         """Bottom of the range new episodes draw RearSlidingGrip from (the trainer walks it down)."""
@@ -187,6 +194,10 @@ class TorchCpuEnv:
     def set_pace_low(self, low):
         """Bottom of the range paces are drawn from (the trainer walks it down)."""
         self.env.env_cfg[de_cpu.ENV_CFG_PACE_LOW] = low
+
+    def set_chase_gap_low(self, low):
+        """Bottom of the range chase episodes draw the asked gap from (the trainer walks it down)."""
+        self.env.cfg.chase_gap_low = low
 
     def reset(self):
         self.env.reset()
@@ -245,6 +256,8 @@ class MultiTrackCpuEnv:
         self.truncated = cat([e.truncated for e in G])
         self.final_obs = cat([e.final_obs for e in G])
         self.ep_out = cat([e.ep_out for e in G])
+        self.priv = cat([e.priv for e in G])
+        self.final_priv = cat([e.final_priv for e in G])
 
     def set_sliding_grip_low(self, low):
         self.grip_low = low
@@ -255,6 +268,10 @@ class MultiTrackCpuEnv:
         self.pace_low = low
         for e in self.groups:
             e.set_pace_low(low)
+
+    def set_chase_gap_low(self, low):
+        for e in self.groups:
+            e.set_chase_gap_low(low)
 
     def reset(self):
         for e in self.groups:

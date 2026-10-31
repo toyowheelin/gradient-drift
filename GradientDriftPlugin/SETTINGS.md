@@ -52,6 +52,12 @@ The settings come in two kinds:
 | `TandemGapVariation` | `0.25` | The gap wanders by up to this share either way (0.25 = ±25%), slowly and differently for each car, so a train doesn't look robotic. |
 | `TandemMinGapMeters` | `4.8` | Never closer than this to the car in front, nose to nose. A car is about 4.4 m long. |
 | `TandemLateralOffsetMeters` | `0.6` | How far a follower may sit to one side of the lead's line. Each wanders between about a fifth of this and all of it, on a side of its own. |
+| `LeadPlayers` | `false` | A bot (or train) with a player chasing close behind waits for them: full pace with the player right on its tail, slowing to `BotPaceMinPercent` as they drop back to 40 m. Further back, the bots space themselves as usual. Only for a policy that reads its pace (every current one). |
+| `ChasePlayers` | `false` | A bot chases a player who pulls in within about 7.5 m (25 ft) in front of its nose, until the player gets 40 m ahead. Its pace comes from the Intelligent Driver Model, the standard car-following model of traffic simulation, aiming `ChaseGapMeters` behind the player and easing off early when it closes fast. Only for a policy that reads its pace (every current one). Test setting on the tandem branch. |
+| `ChaseGapMeters` | `2` | With `ChasePlayers`: the gap the chasing bot aims for behind the player, bumper to bumper, before the speed-dependent margin the model adds. |
+| `ChaseTimeGapSeconds` | `0.2` | With `ChasePlayers`: the speed-dependent margin, in seconds of the bot's speed added to `ChaseGapMeters`. Lower sits closer at speed but leaves less room when the player slows. |
+| `ChaseResponseSeconds` | `0.6` | With `ChasePlayers`: how quickly the bot's pace answers the gap, in seconds. Lower closes up and backs off faster. |
+| `ChasePaceMaxPercent` | `110` | With `ChasePlayers`: the most pace the chasing bot may ask, as a percentage of the policy's top pace. Over 100 gives it some speed in hand to catch a player who drives at the bots' top pace. |
 
 ### How the bots look (cosmetic only)
 
