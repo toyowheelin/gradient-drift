@@ -266,6 +266,14 @@ def main():
                          '(Tobin et al. 2017; Peng et al. 2018). Evaluation stays at the car\'s numbers. 0 = off')
     ap.add_argument('--dr-peak-slip', type=float, default=0.0, metavar='SHARE',
                     help='hidden tyre randomisation: each axle\'s peak slip angle x 1 +- SHARE, the same way. 0 = off')
+    ap.add_argument('--self-ghosts', type=float, default=0.0, metavar='SHARE',
+                    help='self-play leads: this share of each track\'s ghost leaders is re-recorded from the policy '
+                         'being trained every --self-ghost-every ticks (opponents from the learner\'s own past, '
+                         'Bansal et al. 2018, https://arxiv.org/abs/1710.03748; GT Sophy trained against itself '
+                         'among a mix, Wurman et al. 2022). Bots chase bots running this same policy (ChaseBots). '
+                         'Needs --chase. 0 = off')
+    ap.add_argument('--self-ghost-every', type=int, default=25_000_000, metavar='TICKS',
+                    help='ticks between --self-ghosts refreshes')
     args = ap.parse_args()
     if args.resume:
         # a continued run keeps the cars, skills and number of cars it was trained with (given again
@@ -507,6 +515,16 @@ def main():
               f"asked gap {args.chase_gap[0]:g} - {args.chase_gap[1]:g}", flush=True)
     if args.chase_scenarios and args.chase <= 0.0:
         sys.exit('--chase-scenarios needs --chase')
+    self_slots = {}
+    if args.self_ghosts > 0.0:
+        if args.chase <= 0.0:
+            sys.exit('--self-ghosts needs --chase')
+        _sg_rng = np.random.default_rng(args.seed + 77)
+        for t, w in zip(tracks, worlds):
+            k = max(1, int(round(args.self_ghosts * len(w.ghosts))))
+            self_slots[t] = np.sort(_sg_rng.choice(len(w.ghosts), size=k, replace=False))
+        print(f"self-play leads: {', '.join(f'{t} {len(v)}' for t, v in self_slots.items())} of the ghosts "
+              f"re-recorded from this policy every {args.self_ghost_every:,} ticks", flush=True)
     # --privileged-critic without --chase is allowed (its inputs are all 0 with no car ahead): a solo
     # first stage that is later resumed with --chase needs the same critic
     if args.skill:
@@ -893,6 +911,38 @@ def main():
         return Policy(m, obs_mean.cpu().numpy().copy(), obs_var.sqrt().cpu().numpy() + 1e-8,
                       dict(meta, trained_ticks=steps_done), r, gate_slot, 0.5)
 
+    def refresh_self_ghosts():
+        """--self-ghosts: re-record this run's share of each track's leads with the current policy and
+        put them in place, in the world and in every environment simulating it."""
+        import record_ghosts
+        policy = make_policy()
+        t0 = time.time()
+        lo, hi = (env_cfg.pace_low, env_cfg.pace_high) if pace_range != (0.0, 0.0) else (0.0, 0.0)
+        speeds = list(args.lead_speed) if args.lead_speed else [1.0]
+        report = []
+        for t, w in zip(tracks, worlds):
+            slots = self_slots[t]
+            n_ticks = w.ghosts.shape[1]
+            new = []
+            for c0 in range(0, len(slots), 8):
+                cars = min(8, len(slots) - c0)
+                pace = float(_sg_rng.uniform(lo, hi)) if hi > 0.0 else None
+                new.append(record_ghosts.record(w, policy, cars, n_ticks + 100, 100, pace, 1.0,
+                                                seed=int(_sg_rng.integers(1 << 30))))
+            g = np.concatenate(new)[:, :n_ticks, :w.ghosts.shape[2]]
+            for j in range(len(g)):
+                g[j] = de.scale_ghosts(g[j:j + 1], float(_sg_rng.choice(speeds)))[0]
+            w.ghosts[slots] = g
+            if multi:
+                envs = [e.env for e, wo in zip(env.groups, env.world_of) if wo is w]
+            else:
+                envs = [env.env]
+            for e in envs:
+                if e.gh is not w.ghosts:
+                    e.gh[slots, :n_ticks, :g.shape[2]] = g
+            report.append(f"{t} sliding {np.mean(np.abs(g[:, :, de.GH_SLIP]) > np.radians(20.0)):.0%}")
+        print(f"  self-play leads re-recorded at {steps_done:,} ticks in {time.time() - t0:.0f} s: {', '.join(report)}", flush=True)
+
     def save_checkpoint():
         torch.save({'pi': pi.state_dict(), 'vf': vf.state_dict(), 'log_std': log_std.detach(),
                     'res': res.state_dict() if res is not None else None,
@@ -1033,6 +1083,7 @@ def main():
             policy.save_json(os.path.join(out_dir, 'policy.json'))
         save_checkpoint()
 
+    next_self_ghosts = steps_done + args.self_ghost_every
     try:
         while steps_done < target_steps:
             if args.minutes is not None and (time.time() - t_start) / 60.0 >= args.minutes:
@@ -1221,6 +1272,9 @@ def main():
                 for k in TRAIN_KEYS:
                     row['train_' + k] = float(np.mean(np.concatenate([e[k] for e in recent])))
 
+            if self_slots and steps_done >= next_self_ghosts:
+                refresh_self_ghosts()
+                next_self_ghosts = steps_done + args.self_ghost_every
             if (now - t_last_eval) / 60.0 >= args.eval_minutes or steps_done >= target_steps:
                 evaluate_now()
                 t_last_eval = time.time()
