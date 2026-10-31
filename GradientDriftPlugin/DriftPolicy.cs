@@ -141,10 +141,12 @@ public sealed class DriftPolicy
     public bool ReadsSkill => InputCount > ObservationSizeV5;
     public float SkillLow { get; private set; } = 1f;
     public float SkillHigh { get; private set; } = 1f;
-    // A tandem policy: reads the car ahead and adds its residual network's actions while input
+    // A tandem policy: reads the car ahead, either as one network trained with chase episodes (a
+    // "chase" block in the file) or through a residual network added to the actions while input
     // _residualGate is above _residualGateAbove (lead_present). ChasePaceMin: the bottom of the
     // chase pace in training, a share of PaceLow ("chase.controller.chase_pace_min").
-    public bool ReadsChase => InputCount > ObservationSizeV6 && _residualWeights != null;
+    public bool ReadsChase => InputCount > ObservationSizeV6 && (_residualWeights != null || _trainedToChase);
+    private bool _trainedToChase;
     public float ChasePaceMin { get; private set; } = 1f;
     // How long the pace error averages over, seconds ("pace_average_s"; the reward's).
     public float PaceAverageSeconds { get; private set; } = 1f;
@@ -379,8 +381,11 @@ public sealed class DriftPolicy
                 }
                 policy._residualGate = residualGate;
                 policy._residualGateAbove = residualGateAbove;
-                if (root.TryGetProperty("chase", out JsonElement chaseElement) && chaseElement.ValueKind == JsonValueKind.Object
-                    && chaseElement.TryGetProperty("controller", out JsonElement controllerElement)
+            }
+            if (root.TryGetProperty("chase", out JsonElement chaseElement) && chaseElement.ValueKind == JsonValueKind.Object)
+            {
+                policy._trainedToChase = obsSize == ObservationSize;
+                if (chaseElement.TryGetProperty("controller", out JsonElement controllerElement)
                     && controllerElement.TryGetProperty("chase_pace_min", out JsonElement paceMinElement))
                 {
                     policy.ChasePaceMin = Math.Clamp((float)paceMinElement.GetDouble(), 0.1f, 1f);

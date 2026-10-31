@@ -60,6 +60,10 @@ The settings come in two kinds:
 | `ChaseTimeGapSeconds` | `0.2` | With `ChasePlayers`: the speed-dependent margin, in seconds of the bot's speed added to `ChaseGapMeters`. Lower sits closer at speed but leaves less room when the player slows. |
 | `ChaseResponseSeconds` | `0.6` | With `ChasePlayers`: how quickly the bot's pace answers the gap, in seconds. Lower closes up and backs off faster. |
 | `ChasePaceMaxPercent` | `110` | With `ChasePlayers`: the most pace the chasing bot may ask, as a percentage of the policy's top pace. Over 100 gives it some speed in hand to catch a player who drives at the bots' top pace. |
+| `ChaseBots` | `false` | With `ChasePlayers`: a bot also chases a bot that comes within `ChaseOptInMeters` ahead of it, so drift trains of bots form on their own. Whatever this is, every car (player or bot) has at most one bot chasing it: a second bot coming up behind a chaser waits at its usual pace, or with this on chases the chaser. |
+| `ChaseTrainMax` | `3` | With `ChaseBots`: the most bots chasing in one line, behind a player or a bot that is not chasing. Longer trains don't form. |
+| `ChaseBotRunSeconds` | `60` | With `ChaseBots`: how long a bot chases another bot before it drops back (0 = no limit). Chasing a player is never timed. |
+| `ChaseBotCooldownSeconds` | `30` | With `ChaseBots`: after a bot-on-bot chase ends, how long that bot takes up no other bot, so trains break up and form again. |
 
 ### How the bots look (cosmetic only)
 
