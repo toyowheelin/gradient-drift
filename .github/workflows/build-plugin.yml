@@ -9,9 +9,9 @@ name: build plugin
 on:
   push:
     branches: [main]
-    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', '.github/workflows/build-plugin.yml']
+    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', 'drift_rl/policy.py', 'tests/plugin/**', '.github/workflows/build-plugin.yml']
   pull_request:
-    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', '.github/workflows/build-plugin.yml']
+    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', 'drift_rl/policy.py', 'tests/plugin/**', '.github/workflows/build-plugin.yml']
   workflow_dispatch:
   workflow_call:       # from release.yml on a v* tag
     outputs:
@@ -53,6 +53,14 @@ jobs:
         run: |
           out=AssettoServer/GradientDriftPlugin/bin/Debug/net8.0
           ls -l $out/GradientDriftPlugin.dll $out/GradientDriftPlugin.deps.json $out/GradientDriftPlugin.policy.json
+      - name: the plugin runs policies as the trainer does, and refuses what it cannot run
+        # tests/plugin: the plugin's own loader and network on the shipped policy, made-up ones of
+        # every shape it runs (their actions against drift_rl/policy.py's) and broken ones
+        run: |
+          python3 -m pip install --quiet "numpy<2.5"
+          python3 gradient-drift/tests/plugin/make_cases.py plugin-cases
+          cp -r gradient-drift/tests/plugin AssettoServer/PluginChecks
+          dotnet run --project AssettoServer/PluginChecks/PluginChecks.csproj -- "$PWD/plugin-cases"
       - name: setup can tell what this build knows
         # setup reads the plugin's settings from the DLL's set_<Name> metadata strings (to take out
         # settings a newer plugin dropped), and replaces a server's policy only when a release shipped

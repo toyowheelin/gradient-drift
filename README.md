@@ -145,6 +145,7 @@ each policy drives in the car it learned in.
 | [`GradientDriftPlugin/`](GradientDriftPlugin/) | The server plugin (C#). `GradientDriftPlugin.policy.json` is the trained policy it runs; [`SETTINGS.md`](GradientDriftPlugin/SETTINGS.md) lists its settings; [`HISTORY.md`](GradientDriftPlugin/HISTORY.md) is how each part of it came about, and the server tests. |
 | [`setup/`](setup/README.md) | The setup program for server operators: reads a server, says what it needs for drift bots, and makes those changes on a yes, with backups and an undo. |
 | [`drift_rl/`](drift_rl/README.md) | The simulator, trainer and evaluation tools (Python), for training a policy of your own. |
+| [`tests/`](tests/README.md) | The regression tests CI runs on every change: golden physics traces, the C# plugin against the Python policy, short drive checks and setup on a made-up server. |
 | `tools/` | `track_triangles.py` writes a track layout's geometry as two triangle files (what its model shows, and what the game collides with) and each colliding surface's grip, using `kn5_reader.py` from KN5 Blender Tools. `ai_car_monitor.py` is an in-game app that logs what a client sees of every car on the server. |
 
 ## What the plugin does on a server
