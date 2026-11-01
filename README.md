@@ -161,6 +161,10 @@ each policy drives in the car it learned in.
   tick and, with `LogHumanCarForCalibration: true`, the first connected player's car (position,
   speed, inputs; no name, IP or Steam ID). About 110 MB an hour with six bots; it stops at
   `TelemetryMaxFileMegabytes` (500) or the first failed write.
+- **A scorecard, only if you turn it on** (`EnableScorecard: true`): a few KB a session in
+  `gradientdrift_scorecards/` in the server folder, a table and a .json of how the bots drove (slide,
+  walls, car hits, chase gap, how often the stock AI had them, stuck bots). Counts only, no player
+  names; touches with a player are counted under the bot.
 - **It cannot take the server down.** AssettoServer shuts down after 10 tick updates in a row
   fail; an error inside the plugin is logged instead, and after 5 in a row it stops and the stock
   AI drives.
