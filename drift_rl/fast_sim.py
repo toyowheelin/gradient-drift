@@ -174,6 +174,12 @@ for _n, _i in D.items():
     globals()['D_' + _n] = _i
 
 SURF_ROAD, SURF_WALL, SURF_GRASS, SURF_UNKNOWN, SURF_NONE = 0, 1, 2, 3, 4
+# The training grid's size limit (World): past this many 1 m cells the grid is trimmed to the line's
+# height range +- FINE_GRID_Y_MARGIN_M and its cells widened (~1.5 GB of cell tables at the limit).
+# The largest trained tracks have ~25M (Ridge, RiverSide), so their grids are unchanged.
+FINE_GRID_MAX_CELLS = 40_000_000
+FINE_GRID_Y_MARGIN_M = 30.0
+
 SURFACE_CODES = {'Road': SURF_ROAD, 'Wall': SURF_WALL, 'Grass': SURF_GRASS,
                  'Unknown': SURF_UNKNOWN, 'None': SURF_NONE}
 
@@ -356,9 +362,19 @@ class World:
             near = ((flat[:, 0] > lo[0]) & (flat[:, 0] < hi[0]) & (flat[:, 2] > lo[2]) & (flat[:, 2] < hi[2]))
             lo[1] = flat[near, 1].min() - 0.01
             hi[1] = flat[near, 1].max() + 0.01
+            cell = fine_cell_size
+            if np.prod((hi - lo) / cell) > FINE_GRID_MAX_CELLS:
+                # A big hilly track (Black Cat County: an 11 km line over 2.4 x 2.5 km, scenery
+                # 170 m tall beside it) makes ~1e9 cells of 1 m, 40 GB of cell tables before a
+                # triangle is bucketed. There, drop what is far above or below the line (the
+                # sensors cast from car height, the car stays near the line) and widen the cells
+                # until the grid fits. Small tracks never get here, so their grid is unchanged.
+                lo[1] = max(lo[1], self.sp_pos[:, 1].min() - FINE_GRID_Y_MARGIN_M)
+                hi[1] = min(hi[1], self.sp_pos[:, 1].max() + FINE_GRID_Y_MARGIN_M)
+                cell = max(cell, (np.prod(hi - lo) / FINE_GRID_MAX_CELLS) ** (1.0 / 3.0))
             (self.grid_min, self.cell_size, self.dims, self.cell_start, self.cell_items,
              self.skipped) = _build_grid(self.tri_v, target_per_cell, 1 << 30, bounds=(lo, hi),
-                                         cell_size=fine_cell_size)
+                                         cell_size=cell)
         else:
             (self.grid_min, self.cell_size, self.dims, self.cell_start,
              self.cell_items, self.skipped) = _build_grid(self.tri_v, target_per_cell, max_cell_span)
