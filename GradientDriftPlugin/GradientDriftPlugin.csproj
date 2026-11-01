@@ -24,6 +24,11 @@
     <None Update="GradientDriftPlugin.policy.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <!-- What policy files this build can run (tools/plugin_features.py makes it from the source); setup
+         checks a policy against it before installing the pair. -->
+    <None Update="GradientDriftPlugin.features.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
 
 </Project>

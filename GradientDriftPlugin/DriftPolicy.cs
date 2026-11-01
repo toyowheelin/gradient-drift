@@ -280,22 +280,22 @@ public sealed class DriftPolicy
     // Returns null, and logs why, on any problem. The caller then leaves the cars to the stock AI.
     public static DriftPolicy? TryLoad(string path, ReadOnlySpan<SplinePoint> points)
     {
-        if (!File.Exists(path))
+        if (!PluginData.Exists(path))
         {
-            Log.Warning("GradientDrift: no policy file at {Path}", Path.GetFullPath(path));
+            Log.Warning("GradientDrift: no policy file at {Path}", PluginData.Describe(path));
             return null;
         }
 
         try
         {
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+            using JsonDocument document = JsonDocument.Parse(PluginData.ReadAllText(path));
             JsonElement root = document.RootElement;
 
             string format = root.GetProperty("format").GetString() ?? "";
             if (format != "drift-policy-v1")
             {
                 Log.Warning("GradientDrift: policy file {Path} has format '{Format}', expected 'drift-policy-v1'",
-                    Path.GetFullPath(path), format);
+                    PluginData.Describe(path), format);
                 return null;
             }
 
@@ -318,7 +318,7 @@ public sealed class DriftPolicy
                     || Array.Exists(historySlots, j => j < 0 || j >= baseSize))
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a history block this build cannot run ({Frames} frames of {Slots} inputs every {Every} ticks after {Base} inputs; at most {Max} history inputs after {Size})",
-                        Path.GetFullPath(path), historyFrames, historySlots.Length, historyEvery, baseSize, MaxHistoryInputs, ObservationSize);
+                        PluginData.Describe(path), historyFrames, historySlots.Length, historyEvery, baseSize, MaxHistoryInputs, ObservationSize);
                     return null;
                 }
             }
@@ -328,7 +328,7 @@ public sealed class DriftPolicy
                 || (actionSize != ActionSize && actionSize != ActionSizeV1))
             {
                 Log.Warning("GradientDrift: policy file {Path} expects {ObsSize} observations / {ActionSize} actions, this build provides {BuildObs} (or {V6Obs}, {V5Obs}, {V4Obs}, {V3Obs}, {MidObs} or {OldObs}) / {BuildActions} (or {OldActions})",
-                    Path.GetFullPath(path), obsSize, actionSize, ObservationSize, ObservationSizeV6, ObservationSizeV5, ObservationSizeV4, ObservationSizeV3, ObservationSizeV2, ObservationSizeV1, ActionSize, ActionSizeV1);
+                    PluginData.Describe(path), obsSize, actionSize, ObservationSize, ObservationSizeV6, ObservationSizeV5, ObservationSizeV4, ObservationSizeV3, ObservationSizeV2, ObservationSizeV1, ActionSize, ActionSizeV1);
                 return null;
             }
 
@@ -344,14 +344,14 @@ public sealed class DriftPolicy
             if (controlMode != "direct")
             {
                 Log.Warning("GradientDrift: policy file {Path} is a '{Mode}' policy; this plugin runs 'direct' policies only (train a new one with drift_rl/train_ppo_gpu.py)",
-                    Path.GetFullPath(path), controlMode);
+                    PluginData.Describe(path), controlMode);
                 return null;
             }
 
             if (obsMean.Length != fileObsSize || obsStd.Length != fileObsSize || lookaheadMeters.Length != LookaheadCount)
             {
                 Log.Warning("GradientDrift: policy file {Path} has obs_mean/obs_std/lookahead_m of the wrong length",
-                    Path.GetFullPath(path));
+                    PluginData.Describe(path));
                 return null;
             }
             for (int i = 0; i < fileObsSize; i++)
@@ -359,7 +359,7 @@ public sealed class DriftPolicy
                 if (!float.IsFinite(obsMean[i]) || !float.IsFinite(obsStd[i]) || obsStd[i] <= 0f)
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a non-finite or non-positive normalisation value at observation {Index}",
-                        Path.GetFullPath(path), i);
+                        PluginData.Describe(path), i);
                     return null;
                 }
             }
@@ -374,7 +374,7 @@ public sealed class DriftPolicy
             if (layerCount == 0 || inputs != actionSize)
             {
                 Log.Warning("GradientDrift: policy file {Path} does not end in a {ActionSize}-unit layer",
-                    Path.GetFullPath(path), actionSize);
+                    PluginData.Describe(path), actionSize);
                 return null;
             }
             float[][]? residualWeights = null;
@@ -388,7 +388,7 @@ public sealed class DriftPolicy
                 if (residualGate != ChaseInputs.Slot || obsSize != ObservationSize || historyFrames > 0)
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a residual network gated by input {Gate} of {ObsSize}; this build runs one gated by the car ahead (input {Slot} of {BuildObs})",
-                        Path.GetFullPath(path), residualGate, obsSize, ChaseInputs.Slot, ObservationSize);
+                        PluginData.Describe(path), residualGate, obsSize, ChaseInputs.Slot, ObservationSize);
                     return null;
                 }
                 if (!TryReadLayers(path, residualElement.GetProperty("layers"), obsSize, "residual ", out residualWeights, out residualBiases))
@@ -398,12 +398,12 @@ public sealed class DriftPolicy
                 if (residualWeights.Length == 0 || residualBiases[^1].Length != actionSize)
                 {
                     Log.Warning("GradientDrift: policy file {Path} residual network does not end in a {ActionSize}-unit layer",
-                        Path.GetFullPath(path), actionSize);
+                        PluginData.Describe(path), actionSize);
                     return null;
                 }
             }
 
-            var policy = new DriftPolicy(Path.GetFullPath(path), track, trainedTicks, fileObsSize, actionSize, obsMean, obsStd, obsClip,
+            var policy = new DriftPolicy(PluginData.Describe(path), track, trainedTicks, fileObsSize, actionSize, obsMean, obsStd, obsClip,
                 weights, biases, lookaheadMeters, minRadiusWindowMeters, points);
             policy.HistoryFrames = historyFrames;
             policy._historySlots = historySlots;
@@ -439,7 +439,7 @@ public sealed class DriftPolicy
                     || (fractionPaces && !(paceRange[1] <= 1.5f)))
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a pace range that is not [low, high] with 0 < low <= high",
-                        Path.GetFullPath(path));
+                        PluginData.Describe(path));
                     return null;
                 }
                 policy.PaceLow = paceRange[0];
@@ -458,7 +458,7 @@ public sealed class DriftPolicy
                 float paceAverage = (float)paceAverageElement.GetDouble();
                 if (!(paceAverage > 0f))
                 {
-                    Log.Warning("GradientDrift: policy file {Path} has a pace_average_s that is not above 0", Path.GetFullPath(path));
+                    Log.Warning("GradientDrift: policy file {Path} has a pace_average_s that is not above 0", PluginData.Describe(path));
                     return null;
                 }
                 policy.PaceAverageSeconds = paceAverage;
@@ -466,7 +466,7 @@ public sealed class DriftPolicy
             if (obsSize > ObservationSizeV3 && policy.PaceHigh > 0f && !policy.PaceIsFraction)
             {
                 Log.Warning("GradientDrift: policy file {Path} reads the pace error but its paces are not fractions (pace_fraction_range)",
-                    Path.GetFullPath(path));
+                    PluginData.Describe(path));
                 return null;
             }
             if (obsSize > ObservationSizeV4)
@@ -477,7 +477,7 @@ public sealed class DriftPolicy
                     || !(lockElement.GetDouble() > 0.0))
                 {
                     Log.Warning("GradientDrift: policy file {Path} reads the car inputs but has no cars.drift_steer_lock_deg",
-                        Path.GetFullPath(path));
+                        PluginData.Describe(path));
                     return null;
                 }
                 policy.DriftSteerLockDeg = (float)lockElement.GetDouble();
@@ -487,7 +487,7 @@ public sealed class DriftPolicy
                 float[] skillRange = ReadFloatArray(skillElement);
                 if (skillRange.Length != 2 || !(skillRange[0] >= 0f) || !(skillRange[0] <= skillRange[1]) || !(skillRange[1] <= 1f))
                 {
-                    Log.Warning("GradientDrift: policy file {Path} has a skill_range that is not [low, high] within 0 - 1", Path.GetFullPath(path));
+                    Log.Warning("GradientDrift: policy file {Path} has a skill_range that is not [low, high] within 0 - 1", PluginData.Describe(path));
                     return null;
                 }
                 policy.SkillLow = skillRange[0];
@@ -499,7 +499,7 @@ public sealed class DriftPolicy
                 if (gripRange.Length != 2 || !(gripRange[0] > 0f) || !(gripRange[0] <= gripRange[1]) || !(gripRange[1] <= 1f))
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a rear_sliding_grip_range that is not [low, high] with 0 < low <= high <= 1",
-                        Path.GetFullPath(path));
+                        PluginData.Describe(path));
                     return null;
                 }
                 policy.RearSlidingGripLow = gripRange[0];
@@ -520,7 +520,7 @@ public sealed class DriftPolicy
         }
         catch (Exception ex)
         {
-            Log.Warning(ex, "GradientDrift: failed to read policy file {Path}", Path.GetFullPath(path));
+            Log.Warning(ex, "GradientDrift: failed to read policy file {Path}", PluginData.Describe(path));
             return null;
         }
     }
@@ -541,7 +541,7 @@ public sealed class DriftPolicy
             if (activation != expectedActivation)
             {
                 Log.Warning("GradientDrift: policy file {Path} {What}layer {Layer} has activation '{Activation}', expected '{Expected}'",
-                    Path.GetFullPath(path), what, layerIndex, activation, expectedActivation);
+                    PluginData.Describe(path), what, layerIndex, activation, expectedActivation);
                 return false;
             }
 
@@ -551,7 +551,7 @@ public sealed class DriftPolicy
             if (outputs == 0 || weightRows.GetArrayLength() != outputs)
             {
                 Log.Warning("GradientDrift: policy file {Path} {What}layer {Layer} has mismatched W/b sizes",
-                    Path.GetFullPath(path), what, layerIndex);
+                    PluginData.Describe(path), what, layerIndex);
                 return false;
             }
 
@@ -562,7 +562,7 @@ public sealed class DriftPolicy
                 if (rowElement.GetArrayLength() != inputs)
                 {
                     Log.Warning("GradientDrift: policy file {Path} {What}layer {Layer} row {Row} has {Got} weights, expected {Expected}",
-                        Path.GetFullPath(path), what, layerIndex, rowIndex, rowElement.GetArrayLength(), inputs);
+                        PluginData.Describe(path), what, layerIndex, rowIndex, rowElement.GetArrayLength(), inputs);
                     return false;
                 }
                 int column = 0;

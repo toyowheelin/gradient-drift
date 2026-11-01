@@ -46,10 +46,10 @@ public static class TrackGeometry
     public static TrackTriangle[] Load(string path, string? gripPath = null)
     {
         float[]? grips = gripPath != null ? LoadGrips(gripPath) : null;
-        if (!File.Exists(path))
+        if (!PluginData.Exists(path))
         {
             Log.Warning("GradientDrift: track triangle file not found at {Path} - geometry unavailable (tools/track_triangles.py writes it)",
-                Path.GetFullPath(path));
+                PluginData.Describe(path));
             return Array.Empty<TrackTriangle>();
         }
 
@@ -59,7 +59,7 @@ public static class TrackGeometry
 
         try
         {
-            using var file = File.OpenRead(path);
+            using var file = PluginData.Open(path);
             using var gzip = new GZipStream(file, CompressionMode.Decompress);
             using var reader = new StreamReader(gzip);
             reader.ReadLine();
@@ -106,7 +106,7 @@ public static class TrackGeometry
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException)
         {
-            Log.Warning(ex, "GradientDrift: could not read {Path} - geometry unavailable", Path.GetFullPath(path));
+            Log.Warning(ex, "GradientDrift: could not read {Path} - geometry unavailable", PluginData.Describe(path));
             return Array.Empty<TrackTriangle>();
         }
 
@@ -119,7 +119,7 @@ public static class TrackGeometry
         {
             var bySurface = triangles.GroupBy(t => t.Surface).ToDictionary(g => g.Key, g => g.Count());
             VerboseLog.Information("GradientDrift: loaded {Count} track triangles from {Path} - Road={Road}, Wall={Wall}, Grass={Grass}, Unknown={Unknown}",
-                triangles.Count, Path.GetFullPath(path),
+                triangles.Count, PluginData.Describe(path),
                 bySurface.GetValueOrDefault(SurfaceType.Road), bySurface.GetValueOrDefault(SurfaceType.Wall),
                 bySurface.GetValueOrDefault(SurfaceType.Grass), bySurface.GetValueOrDefault(SurfaceType.Unknown));
         }
@@ -129,14 +129,14 @@ public static class TrackGeometry
     // The Grip column of a <track>_collision_grip.csv.gz, null if the file is missing or unreadable.
     private static float[]? LoadGrips(string path)
     {
-        if (!File.Exists(path))
+        if (!PluginData.Exists(path))
         {
             return null;
         }
         var grips = new List<float>();
         try
         {
-            using var file = File.OpenRead(path);
+            using var file = PluginData.Open(path);
             using var gzip = new GZipStream(file, CompressionMode.Decompress);
             using var reader = new StreamReader(gzip);
             reader.ReadLine();
@@ -150,14 +150,14 @@ public static class TrackGeometry
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException)
         {
-            Log.Warning(ex, "GradientDrift: could not read {Path} - every surface grips 1", Path.GetFullPath(path));
+            Log.Warning(ex, "GradientDrift: could not read {Path} - every surface grips 1", PluginData.Describe(path));
             return null;
         }
         if (VerboseLog.On)
         {
             int low = grips.Count(g => g < 0.98f);
             VerboseLog.Information("GradientDrift: surface grip from {Path}: {Low} of {Count} collision triangles grip under 0.98, lowest {Min}",
-                Path.GetFullPath(path), low, grips.Count, grips.Count > 0 ? grips.Min() : 1f);
+                PluginData.Describe(path), low, grips.Count, grips.Count > 0 ? grips.Min() : 1f);
         }
         return grips.ToArray();
     }

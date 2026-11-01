@@ -75,14 +75,14 @@ public sealed class CarSpec
     public static CarSpec? Load(string path, float minSteerLockRadians, out string? problem)
     {
         problem = null;
-        if (!File.Exists(path))
+        if (!PluginData.Exists(path))
         {
             problem = "no file";
             return null;
         }
         try
         {
-            using var doc = JsonDocument.Parse(File.ReadAllText(path));
+            using var doc = JsonDocument.Parse(PluginData.ReadAllText(path));
             var v = new Dictionary<string, float>();
             foreach (var p in doc.RootElement.EnumerateObject())
             {

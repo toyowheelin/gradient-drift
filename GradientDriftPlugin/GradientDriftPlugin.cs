@@ -210,6 +210,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             Log.Warning("GradientDrift: the AI line is not one closed loop - HoldBotSpacing does nothing");
         }
 
+        // the data files below come from GradientDriftPlugin.bundle.zip beside the plugin where there is no loose copy
+        PluginData.Init(Path.GetDirectoryName(GetType().Assembly.Location) ?? "");
         string trackName = Path.GetFileName(serverConfiguration.Server.Track);
         _roadMeshPoints = LoadRoadMesh(trackName + RoadMeshFileSuffix);
         _roadMeshTree = _roadMeshPoints.Length > 0 ? new MeshKdTree(_roadMeshPoints) : null;
@@ -229,10 +231,10 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         {
             policy = null;
         }
-        if (_configuration.SurfaceGrip && !File.Exists(trackName + TrackGeometry.CollisionGripFileSuffix))
+        if (_configuration.SurfaceGrip && !PluginData.Exists(trackName + TrackGeometry.CollisionGripFileSuffix))
         {
             Log.Warning("GradientDrift: the policy drives with SurfaceGrip but {Path} is not there - every surface grips 1 (setup writes it with the track's other files)",
-                Path.GetFullPath(trackName + TrackGeometry.CollisionGripFileSuffix));
+                PluginData.Describe(trackName + TrackGeometry.CollisionGripFileSuffix));
         }
         // the sensors after the policy file's settings (it may set the pins' height)
         if (sensorGrid != null && _collisionGrid != null)
@@ -598,15 +600,15 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     // need it.
     private static Vector3[] LoadRoadMesh(string path)
     {
-        if (!File.Exists(path))
+        if (!PluginData.Exists(path))
         {
             VerboseLog.Information("GradientDrift: no road mesh file at {Path} (only used where the ground ray finds nothing)",
-                Path.GetFullPath(path));
+                PluginData.Describe(path));
             return Array.Empty<Vector3>();
         }
 
         var points = new List<Vector3>();
-        foreach (string line in File.ReadLines(path).Skip(1))
+        foreach (string line in PluginData.ReadLines(path).Skip(1))
         {
             string[] parts = line.Split(',');
             if (parts.Length == 3
@@ -618,7 +620,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             }
         }
 
-        VerboseLog.Information("GradientDrift: loaded road mesh ({Count} points) from {Path}", points.Count, Path.GetFullPath(path));
+        VerboseLog.Information("GradientDrift: loaded road mesh ({Count} points) from {Path}", points.Count, PluginData.Describe(path));
         return points.ToArray();
     }
 

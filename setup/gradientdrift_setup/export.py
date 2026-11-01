@@ -16,6 +16,7 @@ import shutil
 import tempfile
 import time
 
+from . import bundle
 from .apply import BACKUPS, OLD_BACKUPS, apply_plan
 from .identify import TESTED_VERSION
 from .plan import TRACK_FILES, plan_bot
@@ -65,6 +66,8 @@ def _label(rel):
     """What an uploaded file is, in a few words."""
     if rel.startswith('cfg/'):
         return "your config file with setup's edits (step 3)"
+    if rel == bundle.BUNDLE_REL:
+        return "the plugin's data in one file: its policy, the bots' car files and the track's data"
     if rel.startswith(f'plugins/{PLUGIN}/cars/'):
         return f"the numbers the bots in {rel.rsplit('/', 1)[1][:-5]} drive with"
     if rel.startswith(f'plugins/{PLUGIN}/'):
@@ -120,6 +123,12 @@ def instructions(plan, files, source):
     for rel in files:
         out.append(f"     {rel}")
         out.append(f"         {_label(rel)}")
+    if bundle.BUNDLE_REL in files:
+        out += ["",
+                f"   The plugin reads its policy, car files and track data from {bundle.BUNDLE}. If an older",
+                f"   setup put them on the server as loose files (plugins/{PLUGIN}/{bundle.POLICY},",
+                f"   plugins/{PLUGIN}/cars/*.json, {s.track}_*.csv / .csv.gz in the server's folder), delete",
+                "   those: a loose file is read instead of the bundle's copy, and the log names any it finds."]
     cfg = [c for c in plan.changes if c.file.startswith('cfg/') and c.op and c.op[0] != 'copy']
     if cfg:
         out += ["",
@@ -168,6 +177,8 @@ def export_server(folder, out, game, log=print, **plan_args):
             manifest = json.load(f)
         files = sorted(set(manifest['changed'] + manifest['added']))
         files = [f for f in files if not f.startswith((BACKUPS + '/', OLD_BACKUPS + '/'))]
+        # loose data files packed into the bundle are gone from the scratch copy
+        files = [f for f in files if os.path.exists(os.path.join(scratch, *f.split('/')))]
         for rel in files:
             dst = os.path.join(out, UPLOAD, *rel.split('/'))
             os.makedirs(os.path.dirname(dst), exist_ok=True)

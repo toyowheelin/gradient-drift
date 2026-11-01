@@ -88,7 +88,9 @@ reads the track and the cars from it).
 >
 > **Trying a policy of your own?** Copy it over
 > `plugins/GradientDriftPlugin/GradientDriftPlugin.policy.json` (keep the old one) and restart. No
-> rebuild is needed.
+> rebuild is needed. A loose policy there is read instead of the one in setup's
+> `GradientDriftPlugin.bundle.zip`, and the server log says so at start. Setup checks that the
+> plugin can run a policy (`GradientDriftPlugin.features.json`) before it installs either.
 
 ## How the bot drives
 
@@ -152,10 +154,12 @@ each policy drives in the car it learned in.
 - **Nothing reachable from outside.** It opens no ports and adds no web pages, chat commands or
   client messages; players cannot send it anything. It reads the other cars' positions only to
   keep bots away from them.
-- **Reads numbers, writes nothing.** At start it reads its policy
-  (`plugins/GradientDriftPlugin/GradientDriftPlugin.policy.json`), the bot cars' files
-  (`plugins/GradientDriftPlugin/cars/`) and the track's data files from the server folder: numbers
-  only, nothing in them is run. What it has to say goes to the server's own log and console.
+- **Reads numbers, writes nothing.** At start it reads its policy, the bot cars' files and the
+  track's data, all from one file setup writes
+  (`plugins/GradientDriftPlugin/GradientDriftPlugin.bundle.zip`), or loose
+  (`plugins/GradientDriftPlugin/GradientDriftPlugin.policy.json`, `plugins/GradientDriftPlugin/cars/`,
+  the track's data files in the server folder; a loose file is read instead of the bundle's copy):
+  numbers only, nothing in them is run. What it has to say goes to the server's own log and console.
 - **Telemetry, only if you turn it on** (`EnableTelemetryLogging: true`, for checking a policy with
   `drift_rl`): `drift_physics_telemetry_<date>_<time>.csv` in the server folder, every AI car every
   tick and, with `LogHumanCarForCalibration: true`, the first connected player's car (position,
@@ -226,17 +230,18 @@ dotnet build
 ```
 
 The first build also builds the AssettoServer projects it references, so it takes a minute. The
-result is in `bin/Debug/net8.0/`. The three files the server needs are:
+result is in `bin/Debug/net8.0/`. The files the server needs are:
 
 | file | what it is |
 |---|---|
 | `GradientDriftPlugin.dll` | the plugin |
 | `GradientDriftPlugin.deps.json` | what it depends on, for .NET to load it |
 | `GradientDriftPlugin.policy.json` | the trained policy, copied in from the source folder |
+| `GradientDriftPlugin.features.json` | what policies this build can run, for setup's check (the plugin itself does not read it) |
 
 **4. Install it on the server.** The [setup program](setup/README.md) does this for you: point its
 `--plugin` option (or the window's **Plugin build** field) at the `bin/Debug/net8.0/` folder. To do it by
-hand, stop the server first (Windows keeps the files locked while it runs), then copy the three
+hand, stop the server first (Windows keeps the files locked while it runs), then copy the
 files into the server's `plugins/GradientDriftPlugin/` folder, making the folder if it's new. On
 Windows, from the AssettoServer folder:
 
@@ -261,13 +266,19 @@ output: what it loaded, each bot car, spawns and timing.
 
 > [!TIP]
 > **Updating.** After pulling a newer version of this repository, copy its `GradientDriftPlugin/`
-> folder over the one inside AssettoServer again, rebuild, and copy the three files in again. A new
+> folder over the one inside AssettoServer again, rebuild, and copy the files in again. A new
 > policy on its own needs no rebuild: copying the `.policy.json` is enough. Keep the build folder's
 > copy of the policy in step with the server's, or the next copy from the build puts the old policy
 > back.
 
 `.github/workflows/build-plugin.yml` runs these same steps on every change to the plugin, so a
 build that breaks shows up there first.
+
+A release ships one policy, the same on every server. `python tools/ship_policy.py <policy.json>
+--release <tag>` puts a policy in place as `GradientDriftPlugin/GradientDriftPlugin.policy.json`
+after checking the plugin can run it, and adds it to setup's list of shipped policies; a `v*` tag
+then builds the one release zip (`release.yml`), which refuses a policy that is not on that list or
+does not fit the plugin.
 
 ## Training your own policy
 

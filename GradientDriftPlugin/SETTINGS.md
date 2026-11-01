@@ -31,7 +31,7 @@ The settings come in two kinds:
 | Setting | Default | What it does |
 |---|---|---|
 | `EnableLearnedPolicy` | `true` | Lets the plugin drive the AI cars. Off, or no usable policy file, and the server's own AI drives them as before. The shipped policy drives any track, but the plugin stands aside (and says why in the log) if the track's data files are missing from the server folder (setup puts them there: the track's geometry, course edges and pace reference, made for the server's AI line), or if the policy needs a feature this build of the plugin doesn't have. An older policy trained only on real tracks also stands aside on a track it wasn't trained on. |
-| `LearnedPolicyPath` | empty | The policy file to run. Empty means `GradientDriftPlugin.policy.json` beside the plugin's DLL, which is where the release puts it. |
+| `LearnedPolicyPath` | empty | The policy file to run. Empty means `GradientDriftPlugin.policy.json` beside the plugin's DLL, which is where the release puts it, or its copy in `GradientDriftPlugin.bundle.zip` there when there is no loose file. |
 
 ### How the bots drive
 
@@ -110,6 +110,11 @@ Many are replaced at start, without anything in the YAML:
   the rear thrust, brake and friction-circle models, tyre load sensitivity and its numbers, and the
   wrong-way recovery thresholds. The plugin switches on only the features a policy was trained with,
   so an older policy keeps driving the car it knew.
+
+  A new setting a policy file can carry goes in both switches of `ApplyPolicySettings`; then run
+  `python tools/plugin_features.py`, which writes `GradientDriftPlugin.features.json` (what policy
+  files this build can run) from the source. Setup checks a policy against that file before it
+  installs the pair, and CI fails while the file is out of date.
 - **By the car files** (`plugins/GradientDriftPlugin/cars/<model>.json`, written by setup) for a
   policy that drives any car (gen8 and later): each bot's weight, axle geometry, yaw inertia, tyre
   grip and load sensitivity, track width, CG height, steering lock and engine. A car without a file
