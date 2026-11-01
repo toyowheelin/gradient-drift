@@ -98,6 +98,9 @@ internal sealed class DriftCarState
     public float LineSpeedMs;
     public float PaceOneMs;
 
+    // This bot's own style (BotStyles): its pace middle, chase gap, skill and chase rules.
+    public BotStyle Style = new(0.5f, 0f, 2f, 1f, 7.5f, 1.1f);
+
     // The wandering noise of a driver below full skill (BotSkill): steering and pedal.
     public float SkillNoiseSteer;
     public float SkillNoisePedal;

@@ -180,6 +180,11 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private CarSpec _defaultCar;
     private readonly Dictionary<string, CarSpec> _carSpecs = new();
     private readonly float _skill = 1f;           // how good a driver the bots are (BotSkill), for a policy that reads it
+    // Each bot's own style (BotStyles.cs), by session id, worked out the first time it is taken over;
+    // each AI entry's place among the AI entries this tick, and the entry list's DRIVERNAMEs.
+    private readonly Dictionary<byte, BotStyle> _styles = new();
+    private readonly Dictionary<byte, int> _aiEntryOf = new();
+    private readonly string?[] _entryNames;
     private readonly Random _skillRandom = new();
     private int _failedUpdates;
     private readonly BotNames? _botNames;
@@ -210,6 +215,11 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             p => _spline.WorldToSpline(p).PointId);
         _sessionManager = sessionManager;
         _aiParams = serverConfiguration.Extra.AiParams;
+        _entryNames = new string?[serverConfiguration.EntryList.Cars.Count];
+        for (int i = 0; i < _entryNames.Length; i++)
+        {
+            _entryNames[i] = serverConfiguration.EntryList.Cars[i].DriverName?.Trim();
+        }
         (_lapArc, _lapOrder, _lapLength) = LapDistances(spline.Points);
         if (_configuration.HoldBotSpacing && _lapArc == null)
         {
@@ -881,6 +891,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             if (car.AiMode != AiMode.None)
             {
                 aiEntry++;         // counted whether a player has the slot or not, so trains keep their places
+                _aiEntryOf[car.SessionId] = aiEntry;
             }
             if (!car.AiControlled || car.Client != null)
             {
@@ -989,10 +1000,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             }
             _scorecard?.TakenOver(sessionId);
 
+            BotStyle style = StyleFor(sessionId);
             state = new DriftCarState(aiState.Status.Position, stockVelocity, spawnCounter)
             {
                 RearSlidingGrip = _rearSlidingGrip,
-                Pace = _basePace,
+                Pace = _basePace > 0f ? style.PaceMiddle : 0f,
+                Style = style,
             };
             PlaceInLargestGap(sessionId, state);
             _cars[aiState] = state;
@@ -1105,7 +1118,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 state.LateralVelocity, state.YawRate, crossTrackError, radius, nearestPointId, lineAngle,
                 aiState.MaxSpeed, state.Policy, heading, state.PreviousPins, dt, state.WrongWayRecovering,
                 _car.MaxSteerAngleRadians, state.RearSlidingGrip, _courseEdges, state.Pace, state.Policy.PaceOver,
-                _car, _configuration.EnableTireLoadSensitivity, _skill);
+                _car, _configuration.EnableTireLoadSensitivity, state.Style.Skill);
             if (policy.InputCount > DriftPolicy.ObservationSizeV6)
             {
                 // the car ahead: all 0 unless this bot is chasing a player (ChasePlayers)
@@ -1117,7 +1130,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     float leadAgeS = (_sessionManager.ServerTimeMilliseconds - _chaseEpochMs) / 1000f - lead.Latest.TimeS;
                     ChaseInputs.Fill(_observation, lead, position.X, position.Z, heading, arc, crossTrackError,
                         firstTick ? 0f : (state.OwnSpeed ?? 0f), _lapLength, dt, Math.Clamp(leadAgeS + ChaseLeadLatencyS, 0.04f, 0.2f),
-                        ChaseInputs.AskInput(_configuration.ChaseGapMeters), ref state.ChaseLastGap);
+                        ChaseInputs.AskInput(state.Style.ChaseGapMeters), ref state.ChaseLastGap);
                 }
                 else
                 {
@@ -1131,7 +1144,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             float steerAction = action.Valid ? action.Steer : state.Policy.PreviousSteerAction;
             float speedAction = action.Valid ? action.Speed : state.Policy.PreviousSpeedAction;
             float brakeAction = action.Valid ? action.Brake : state.Policy.PreviousBrakeAction;
-            if (policy.ReadsSkill && _skill < 1f)
+            if (policy.ReadsSkill && state.Style.Skill < 1f)
             {
                 (steerAction, speedAction, brakeAction) = HandicapBySkill(state, firstTick, steerAction, speedAction, brakeAction);
             }
@@ -1717,6 +1730,29 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         return MathF.Max(0f, previousOwnSpeed + (slideLoss + (rearAlongN + frontBrakeN + frontAlongN) / mass) * dt);
     }
 
+    // This bot's style (BotStyles.cs), worked out once per session id and kept through respawns.
+    private BotStyle StyleFor(byte sessionId)
+    {
+        if (_styles.TryGetValue(sessionId, out BotStyle style))
+        {
+            return style;
+        }
+        DriftPolicy? policy = _policy;
+        bool pace = policy != null && policy.ReadsPace && _basePace > 0f;
+        bool chase = policy != null && policy.ReadsChase;
+        bool skill = policy != null && policy.ReadsSkill;
+        string? name = sessionId < _entryNames.Length ? _entryNames[sessionId] : null;
+        style = BotStyles.For(_configuration, _aiEntryOf.TryGetValue(sessionId, out int aiEntry) ? aiEntry : -1, sessionId, name,
+            pace ? _paceFloor : 0f, pace ? _basePace : 0f, pace ? policy!.PaceHigh : 0f,
+            chase ? ChaseInputs.GapLowM : 0f, chase ? ChaseInputs.GapHighM : float.MaxValue,
+            skill ? policy!.SkillLow : 1f, skill ? policy!.SkillHigh : 1f);
+        _styles[sessionId] = style;
+        VerboseLog.Information("GradientDrift: bot {SessionId} ({Name}) drives with aggression {Aggression:F2}: pace {Pace:F2}, chases from {OptIn:F0} m at up to {Top:F0}%, gap {Gap:F1} m, skill {Skill:F2}",
+            sessionId, name ?? "", style.Aggression, style.PaceMiddle, style.OptInMeters, style.ChaseTopShare * 100f,
+            style.ChaseGapMeters, style.Skill);
+        return style;
+    }
+
     // A driver below full skill (drift_env SKILL_*, as the policy was trained), by d = 1 - skill:
     // a slower reaction - the action applied is the one asked SkillDelayTicks x d ticks earlier
     // (rounded) - then smooth noise on the steering and pedal.
@@ -1724,7 +1760,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float steer, float speed, float brake)
     {
         const float SteerNoise = 0.10f, PedalNoise = 0.20f, NoiseKeep = 0.9f, SkillDelayTicks = 1.5f;
-        float lack = 1f - Math.Clamp(_skill, 0f, 1f);
+        float lack = 1f - Math.Clamp(state.Style.Skill, 0f, 1f);
         float fresh = MathF.Sqrt(1f - NoiseKeep * NoiseKeep);
         // unit-variance uniform noise, as the trainer's
         state.SkillNoiseSteer = NoiseKeep * state.SkillNoiseSteer + fresh * ((float)_skillRandom.NextDouble() - 0.5f) * 3.4641016f;
@@ -2672,7 +2708,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         for (int i = 0; i < n; i++)
         {
             DriftCarState state = _spaced[i].State;
-            float target = middle;
+            // this bot's own pace (BotStyles); halfRange stays the server's so spacing pushes every bot alike
+            float own = byPace ? state.Style.PaceMiddle : middle;
+            float target = own;
             float ease = Math.Min(1f, dt / SpacingEaseSeconds);
             state.GapAheadM = -1f;
             if (spacing)
@@ -2680,7 +2718,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 float ahead = GapAhead(i);
                 float behind = GapAhead((i + n - 1) % n);
                 float imbalance = (ahead - behind) / MathF.Max(ahead + behind, 1f);
-                target = Math.Clamp(middle + SpacingGain * imbalance * halfRange, low, high);
+                target = Math.Clamp(own + SpacingGain * imbalance * halfRange, low, high);
                 state.GapAheadM = ahead;
             }
             float playerGap = byPace ? PlayerGapBehind(state, _spaced[i].Arc) : -1f;
@@ -2756,9 +2794,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             low = policy.PaceLow * policy.ChasePaceMin;
         }
         float v = MathF.Max(0f, state.LineSpeedMs);
-        float top = MathF.Max(low, high * _configuration.ChasePaceMaxPercent / 100f);
+        float top = MathF.Max(low, high * state.Style.ChaseTopShare);
         float v0 = MathF.Max(1f, IdmFreeSpeed * top * state.PaceOneMs);
-        float desired = MathF.Max(0f, _configuration.ChaseGapMeters + v * _configuration.ChaseTimeGapSeconds
+        float desired = MathF.Max(0f, state.Style.ChaseGapMeters + v * _configuration.ChaseTimeGapSeconds
             + v * (v - leadSpeed) / (2f * MathF.Sqrt(IdmAccel * IdmBrake)));
         float ratio = desired / MathF.Max(gap, 0.1f);
         float accel = MathF.Max(-3f * IdmBrake, IdmAccel * (1f - MathF.Pow(v / v0, 4) - ratio * ratio) + leadAccel);
@@ -2780,8 +2818,6 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _chaseClaimed.Clear();
         _chaseOffers.Clear();
         long nowMs = _sessionManager.ServerTimeMilliseconds;
-        float optIn = _configuration.ChaseOptInMeters;
-        float optOut = MathF.Max(_configuration.ChaseOptOutMeters, optIn);
         int n = _spaced.Count;
         for (int i = 0; i < n; i++)
         {
@@ -2820,6 +2856,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 continue;
             }
             bool kept = state.ChasingPlayer && state.ChaseLeadId == leadId && state.ChaseLeadIsBot == isBot;
+            // this bot's own pick-up range (BotStyles: aggression)
+            float optIn = state.Style.OptInMeters;
+            float optOut = MathF.Max(_configuration.ChaseOptOutMeters, optIn);
             if (best >= (kept ? optOut : optIn))
             {
                 continue;
