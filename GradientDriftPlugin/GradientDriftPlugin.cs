@@ -158,6 +158,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private readonly Dictionary<DriftCarState, byte> _spacedIds = new();
     private readonly Dictionary<DriftCarState, (byte LeadId, bool IsBot, float Gap, float LeadSpeed)> _chaseTargets = new();
     private readonly HashSet<byte> _chaseClaimed = new();
+    private bool _recordBotLeads;
+    private readonly List<(DriftCarState Chaser, int Depth)> _chaseDepths = new();
     private readonly List<(DriftCarState State, byte LeadId, bool IsBot, float Gap, float LeadSpeed, bool Kept)> _chaseOffers = new();
     private long _chaseEpochMs = -1;
     private int[] _gapOrder = new int[8];
@@ -784,6 +786,10 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         {
             UpdateCar(sessionId, aiState, dt, policy, collision, fan, pins, contactPins, in human);
             aiCarsUpdated++;
+            if (_recordBotLeads)
+            {
+                RecordBotLead(sessionId, aiState);
+            }
             if (_followers.Count > 0)
             {
                 RecordLead(aiState, nowMs);
@@ -2494,7 +2500,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     {
         _spaced.Clear();
         _spacedIds.Clear();
-        bool botLeads = policy.ReadsPace && policy.ReadsChase && _configuration.ChasePlayers && _configuration.ChaseBots;
+        _recordBotLeads = policy.ReadsPace && policy.ReadsChase && _configuration.ChasePlayers && _configuration.ChaseBots;
         foreach (var (sessionId, aiState) in _driven)
         {
             if (_cars.TryGetValue(aiState, out DriftCarState? state) && state.SpawnCounter == aiState.SpawnCounter)
@@ -2504,13 +2510,6 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 {
                     _spaced.Add((state, _lapArc[point]));
                     _spacedIds[state] = sessionId;
-                    if (botLeads)
-                    {
-                        // ChaseBots: what a bot chasing this one sees, from the status sent last tick
-                        var status = aiState.Status;
-                        RecordLeadTrack(sessionId, status.Position, status.Velocity, status.Rotation.X, status.WheelAngle,
-                            status.Gas, (status.StatusFlag & CarStatusFlags.BrakeLightsOn) != 0, point);
-                    }
                 }
             }
         }
@@ -2713,6 +2712,52 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 _chaseTargets[offer.State] = (offer.LeadId, offer.IsBot, offer.Gap, offer.LeadSpeed);
             }
         }
+        // ChaseTrainMax on this tick's chases: two bots joining a line in the same tick each saw
+        // room by last tick's. Front to back (fewest bots ahead first), drop a chaser that would
+        // be one too many; the bots behind it then follow a bot that is not chasing.
+        if (_configuration.ChaseBots && _chaseTargets.Count > 1)
+        {
+            int max = Math.Max(1, _configuration.ChaseTrainMax);
+            _chaseDepths.Clear();
+            foreach (var chaser in _chaseTargets.Keys)
+            {
+                _chaseDepths.Add((chaser, ChaseDepth(chaser)));
+            }
+            _chaseDepths.Sort((a, b) => a.Depth.CompareTo(b.Depth));
+            foreach (var (chaser, _) in _chaseDepths)
+            {
+                if (ChaseDepth(chaser) > max)
+                {
+                    _chaseTargets.Remove(chaser);
+                }
+            }
+        }
+    }
+
+    // How many bots chase in the line from this chaser forward, by this tick's _chaseTargets
+    // (itself included); a loop counts as too many.
+    private int ChaseDepth(DriftCarState chaser)
+    {
+        int depth = 0;
+        DriftCarState? at = chaser;
+        while (at != null && _chaseTargets.TryGetValue(at, out var t))
+        {
+            depth++;
+            if (!t.IsBot || depth > _spaced.Count)
+            {
+                break;
+            }
+            at = null;
+            foreach (var (s, sid) in _spacedIds)
+            {
+                if (sid == t.LeadId)
+                {
+                    at = s;
+                    break;
+                }
+            }
+        }
+        return depth > _spaced.Count ? int.MaxValue : depth;
     }
 
     // ChaseBots: whether a bot may take up the bot leadId: the bots chasing in a line ahead of it,
@@ -2864,6 +2909,26 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             Pedal = gas / 255f,
             Brake = brake ? 1f : 0f,
         });
+    }
+
+    // ChaseBots: a bot as a lead, what a bot chasing it sees, recorded right after this plugin moved
+    // it. (Before that, in HoldSpacing, its status still holds where the stock AI put it this tick,
+    // tens of metres away.)
+    private void RecordBotLead(byte sessionId, AiState aiState)
+    {
+        if (!_cars.TryGetValue(aiState, out DriftCarState? state) || state.SpawnCounter != aiState.SpawnCounter
+            || !_spacedIds.TryGetValue(state, out byte spacedId) || spacedId != sessionId)
+        {
+            return;
+        }
+        int point = state.PreviousNearestPointId ?? -1;
+        if (_lapArc == null || point < 0 || point >= _lapArc.Length)
+        {
+            return;
+        }
+        var status = aiState.Status;
+        RecordLeadTrack(sessionId, status.Position, status.Velocity, status.Rotation.X, status.WheelAngle,
+            status.Gas, (status.StatusFlag & CarStatusFlags.BrakeLightsOn) != 0, point);
     }
 
     private static float WrapPiF(float angle)
