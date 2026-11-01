@@ -53,7 +53,9 @@ S_REAR_SLIDE_GRIP = 46  # the plugin's RearSlidingGrip for this car: share of it
 S_LOAD_SHIFT = 48       # load moved onto the front axle by braking (- = onto the rear by thrust), N; EnableWeightTransfer
 S_PACE = 47             # the pace this car is asked to drive, a fraction of the course's reference speed (0 = none): the
                         # plugin's bot-spacing dial, drawn per episode in training (drift_env)
-STATE_SIZE = 49
+S_GRIP_F = 49           # SurfaceGrip: the grip of the ground under the front / rear axle (FRICTION over
+S_GRIP_R = 50           # the main road's), from the last tick's pose; 0 = not known (1)
+STATE_SIZE = 51
 
 # Bumped whenever the simulator changes in a way that makes policies trained before it unfit for
 # the server. Trainers write it into policy.json ("simulator_revision"); check_plugin_policy.py
@@ -161,6 +163,13 @@ _PNAMES = [
     # the game's tyres exactly; the policy learns to drive cars a little off what it is told.
     # 0 = 1 = off. Training only: the plugin has no such setting.
     'DR_FRONT_GRIP_SCALE', 'DR_REAR_GRIP_SCALE', 'DR_FRONT_PEAK_SLIP_SCALE', 'DR_REAR_PEAK_SLIP_SCALE',
+    # SurfaceGrip (a plugin setting a policy file may carry): each axle's peak friction times the
+    # grip of the ground under it, the surface's FRICTION in the track's surfaces.ini over the main
+    # road's (<track>_collision_grip.csv.gz, tools/track_triangles.py), as the game scales its tyres
+    # by the surface. Without the file every surface is 1. SURFACE_GRIP_DEV_SCALE (training only,
+    # --dr-surface-grip) stretches each surface's difference from the road: grip 1 + (g - 1) x it;
+    # 0 = 1 = as the file says.
+    'EXT_SURFACE_GRIP', 'SURFACE_GRIP_DEV_SCALE',
 ]
 P = {name: i for i, name in enumerate(_PNAMES)}
 
@@ -271,7 +280,7 @@ class World:
 
     def __init__(self, spline_points, tri_v, tri_surf, collision_v, collision_surf, target_per_cell=8, max_cell_span=64,
                  fine_grid=True, fine_cell_size=1.0, fine_margin_m=100.0, road_mesh=None, rm_cell=2.0,
-                 course_edges=None, course_markers=None, course_zones=None):
+                 course_edges=None, course_markers=None, course_zones=None, collision_grip=None):
         n = len(spline_points)
         self.sp_pos = np.array([p.position for p in spline_points], dtype=np.float64)
         self.sp_radius = np.array([p.radius for p in spline_points], dtype=np.float64)
@@ -361,6 +370,12 @@ class World:
         self.tri_v = np.ascontiguousarray(np.concatenate([np.asarray(tri_v, dtype=np.float64).reshape(-1, 3, 3),
                                                           np.asarray(collision_v, dtype=np.float64).reshape(-1, 3, 3)]))
         self.tri_surf = np.ascontiguousarray(np.concatenate([tri_surf, collision_surf]), dtype=np.int8)
+        # each triangle's grip (SurfaceGrip): the sensors' 1, the collision triangles' from
+        # <track>_collision_grip.csv.gz (1 without it)
+        grip = np.ones(len(self.tri_surf))
+        if collision_grip is not None and len(collision_grip) == len(collision_surf):
+            grip[self.n_sensor:] = collision_grip
+        self.tri_grip = np.ascontiguousarray(grip, dtype=np.float64)
         if fine_grid:
             # TRAINING GRID. The plugin's grids (fine_grid=False, roughly: the plugin sizes its
             # sensor and collision grids separately) size their cells from the whole mesh's
@@ -430,7 +445,7 @@ class World:
                 self.sp_cum, self.tri_v, self.tri_surf, self.grid_min, self.cell_size, self.dims,
                 self.cell_start, self.cell_items,
                 self.rm_pos, self.rm_min, self.rm_cell, self.rm_dims, self.rm_start, self.rm_items,
-                self.co, self.mk)
+                self.co, self.mk, self.tri_grip)
 
     def ray_arrays(self):
         """Just the triangle grid, as raycast() takes it."""
@@ -463,6 +478,15 @@ def load_world(tracks_dir, fine_grid=True, track=None, fine_margin_m=100.0, fine
         tris.append((df.iloc[:, :9].to_numpy(dtype=np.float64).reshape(-1, 3, 3),
                      df.iloc[:, 9].map(SURFACE_CODES).to_numpy(dtype=np.int8)))
     (v, surf), (collision_v, collision_surf) = tris
+    collision_grip = None
+    grip_path = tf.path(data, 'collision_grip', track or tf.TRACK)
+    if os.path.exists(grip_path):
+        collision_grip = pd.read_csv(grip_path)['Grip'].to_numpy(dtype=np.float64)
+        if len(collision_grip) != len(collision_surf):
+            print(f"WARNING: {grip_path} has {len(collision_grip)} rows, the collision file "
+                  f"{len(collision_surf)}: made from different track files, so every surface reads 1 "
+                  "(run setup_track.py again).", file=sys.stderr)
+            collision_grip = None
     road_mesh = None
     road_mesh_path = tf.path(data, 'road_mesh', track or tf.TRACK)
     if os.path.exists(road_mesh_path):
@@ -482,7 +506,8 @@ def load_world(tracks_dir, fine_grid=True, track=None, fine_margin_m=100.0, fine
         course_zones = pd.read_csv(zones_path)[['Side', 'FirstPointId', 'LastPointId']].to_numpy(dtype=np.float64)
     return World(points, v, surf, collision_v, collision_surf, fine_grid=fine_grid, fine_margin_m=fine_margin_m,
                  fine_cell_size=fine_cell_size, rm_cell=rm_cell, road_mesh=road_mesh,
-                 course_edges=course_edges, course_markers=course_markers, course_zones=course_zones)
+                 course_edges=course_edges, course_markers=course_markers, course_zones=course_zones,
+                 collision_grip=collision_grip)
 
 
 def require_course(world, tracks_dir, track=None):
@@ -714,6 +739,29 @@ def surface_below(x, oy, z, max_distance, tri_v, tri_surf, gmin, cell_size, dims
     return SURF_NONE
 
 
+@njit(cache=True)
+def ground_grip(x, oy, z, max_distance, tri_v, tri_surf, tri_grip, gmin, cell_size, dims, cell_start, cell_items):
+    """The grip (tri_grip) of the ground below (x, oy, z), found as ground_below finds it (walls
+    stepped through, cracks bridged as in surface_below); -1 when there is no ground."""
+    for k in range(5):
+        dx = CRACK_PROBE_M if k == 1 else (-CRACK_PROBE_M if k == 2 else 0.0)
+        dz = CRACK_PROBE_M if k == 3 else (-CRACK_PROBE_M if k == 4 else 0.0)
+        ray_y = oy
+        left = max_distance
+        for _ in range(12):
+            d, idx = raycast_index(x + dx, ray_y, z + dz, 0.0, -1.0, 0.0, left, tri_v, tri_surf, gmin, cell_size,
+                                   dims, cell_start, cell_items, 1)
+            if d < 0.0:
+                break
+            if tri_surf[idx] != SURF_WALL:
+                return tri_grip[idx]
+            ray_y -= d + 0.001
+            left -= d + 0.001
+            if left <= 0.0:
+                break
+    return -1.0
+
+
 N_OUTLINE = 8
 
 
@@ -740,9 +788,9 @@ def _outline_point(i, front, rear, half):
 
 
 @njit(cache=True)
-def raycast(ox, oy, oz, dx, dy, dz, max_distance, tri_v, tri_surf, gmin, cell_size, dims,
+def raycast_index(ox, oy, oz, dx, dy, dz, max_distance, tri_v, tri_surf, gmin, cell_size, dims,
             cell_start, cell_items, which):
-    """Returns (distance, surface_code); distance < 0 means no hit within max_distance. which:
+    """Returns (distance, triangle index); distance < 0 (and index -1) means no hit within max_distance. which:
     0 = the sensors' triangles, 1 = the collision triangles (what the game collides with), 2 = only
     the walls among the collision triangles (the contact pins: a rise in the road just ahead must
     not hide a low wall behind it)."""
@@ -793,7 +841,7 @@ def raycast(ox, oy, oz, dx, dy, dz, max_distance, tri_v, tri_surf, gmin, cell_si
     d2 = dims[2]
 
     best_t = -1.0
-    best_surface = SURF_NONE
+    best_idx = -1
     eps = 1e-6
     guard = 0
     while guard < 100000:
@@ -826,30 +874,41 @@ def raycast(ox, oy, oz, dx, dy, dz, max_distance, tri_v, tri_surf, gmin, cell_si
             t = f * (e2x * qx + e2y * qy + e2z * qz)
             if t > eps and t <= max_distance and (best_t < 0.0 or t < best_t):
                 best_t = t
-                best_surface = tri_surf[idx]
+                best_idx = idx
 
         next_boundary = min(tmx, tmy, tmz)
         if best_t >= 0.0 and best_t <= next_boundary:
-            return best_t, best_surface
+            return best_t, best_idx
         if next_boundary > max_distance:
-            return best_t, best_surface
+            return best_t, best_idx
         # first axis holding the minimum (x, then y, then z) - same tie-break as list.index(min)
         if tmx <= tmy and tmx <= tmz:
             cx += stx
             if not (0 <= cx < dims[0]):
-                return best_t, best_surface
+                return best_t, best_idx
             tmx += tdx
         elif tmy <= tmz:
             cy += sty
             if not (0 <= cy < dims[1]):
-                return best_t, best_surface
+                return best_t, best_idx
             tmy += tdy
         else:
             cz += stz
             if not (0 <= cz < dims[2]):
-                return best_t, best_surface
+                return best_t, best_idx
             tmz += tdz
-    return best_t, best_surface
+    return best_t, best_idx
+
+
+@njit(cache=True)
+def raycast(ox, oy, oz, dx, dy, dz, max_distance, tri_v, tri_surf, gmin, cell_size, dims,
+            cell_start, cell_items, which):
+    """Returns (distance, surface_code); distance < 0 means no hit within max_distance (raycast_index)."""
+    t, idx = raycast_index(ox, oy, oz, dx, dy, dz, max_distance, tri_v, tri_surf, gmin, cell_size, dims,
+                           cell_start, cell_items, which)
+    if idx < 0:
+        return t, SURF_NONE
+    return t, tri_surf[idx]
 
 
 @njit(cache=True)
@@ -1068,7 +1127,7 @@ def nearest_point_correct(raw_id, prev_id, prev_streak, own_speed, dt, px, py, p
 def step(s, act_steer, act_speed, act_brake, dt_s, p, diag, mid,
          sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
          tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-         rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk):
+         rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip):
     """One whole tick = step_pre + step_post. Advances state row `s` in place and fills `diag`.
     act_steer/act_speed are the policy's first two actions, in [-1, 1]; act_brake its third, in
     [0, 1] (0 for a policy with two)."""
@@ -1076,7 +1135,7 @@ def step(s, act_steer, act_speed, act_brake, dt_s, p, diag, mid,
     step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
               sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
               tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-              rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk)
+              rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip)
 
 
 @njit(cache=True)
@@ -1142,14 +1201,30 @@ def step_pre(s, dt_s, p, mid, sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp
 
 @njit(cache=True)
 def axle_friction(p, s):
-    """(front, rear) peak friction of each axle this tick (_axle_friction_model), times the hidden
-    domain randomisation scales (DR_*_GRIP_SCALE; 0 = 1)."""
+    """(front, rear) peak friction of each axle this tick (_axle_friction_model), times the grip of
+    the ground under each axle (SurfaceGrip) and the hidden domain randomisation scales
+    (DR_*_GRIP_SCALE; 0 = 1)."""
     mu_f, mu_r = _axle_friction_model(p, s)
+    if p[P_EXT_SURFACE_GRIP] > 0.5:
+        mu_f *= surface_grip_scale(p, s[S_GRIP_F])
+        mu_r *= surface_grip_scale(p, s[S_GRIP_R])
     if p[P_DR_FRONT_GRIP_SCALE] > 0.0:
         mu_f *= p[P_DR_FRONT_GRIP_SCALE]
     if p[P_DR_REAR_GRIP_SCALE] > 0.0:
         mu_r *= p[P_DR_REAR_GRIP_SCALE]
     return mu_f, mu_r
+
+
+@njit(cache=True)
+def surface_grip_scale(p, grip):
+    """What SurfaceGrip multiplies an axle's friction by on ground of this grip (0 = not known: 1),
+    its difference from the road stretched by SURFACE_GRIP_DEV_SCALE (0 = 1)."""
+    if grip <= 0.0:
+        return 1.0
+    k = p[P_SURFACE_GRIP_DEV_SCALE]
+    if k > 0.0:
+        grip = 1.0 + (grip - 1.0) * k
+    return max(grip, 0.05)
 
 
 @njit(cache=True)
@@ -1211,7 +1286,7 @@ def engine_force(p, speed_ms):
 def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
               sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
               tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-              rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk):
+              rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip):
     """The rest of the tick: forward speed, lateral dynamics, recovery, integration, sensing."""
     px, py, pz = s[S_X], s[S_Y], s[S_Z]
     heading = s[S_HEADING]
@@ -1633,6 +1708,18 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
     # the ground directly under the car (from 3 m above, walls stepped through, cracks bridged).
     surface_under = surface_below(new_x, new_y + 3.0, new_z, 12.0, tri_v, tri_surf, gmin, cell_size, dims,
                                   cell_start, cell_items)
+    if p[P_EXT_SURFACE_GRIP] > 0.5:
+        # SurfaceGrip: the ground under each axle at the new pose, for next tick's friction (the
+        # plugin's UpdateSurfaceGrip); no ground keeps the last
+        hx, hz = math.cos(new_heading), math.sin(new_heading)
+        g = ground_grip(new_x + hx * p[P_DIST_CG_FRONT_M], new_y + 3.0, new_z + hz * p[P_DIST_CG_FRONT_M], 12.0,
+                        tri_v, tri_surf, tri_grip, gmin, cell_size, dims, cell_start, cell_items)
+        if g >= 0.0:
+            s[S_GRIP_F] = g
+        g = ground_grip(new_x - hx * p[P_DIST_CG_REAR_M], new_y + 3.0, new_z - hz * p[P_DIST_CG_REAR_M], 12.0,
+                        tri_v, tri_surf, tri_grip, gmin, cell_size, dims, cell_start, cell_items)
+        if g >= 0.0:
+            s[S_GRIP_R] = g
 
     # --- write state back ---
     s[S_X], s[S_Y], s[S_Z] = new_x, new_y, new_z

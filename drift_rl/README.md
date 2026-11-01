@@ -72,6 +72,7 @@ tracks.
 |---|---|
 | `<track>_fast_lane.ai` | the track's AI line: `content/tracks/<track>/ai/fast_lane.ai` in the game, renamed |
 | `<track>_collision.csv.gz`, `<track>_visual.csv.gz` | the track's model files, read the game's way: what the game collides with (its ground and walls) and what the model shows. `python ../tools/track_triangles.py <game>/content/tracks/<track> tracks/<track>` writes the second as `<track>_triangles.csv.gz`; rename it |
+| `<track>_collision_grip.csv.gz` | written beside the collision file by `track_triangles.py`: each colliding triangle's surface and its grip, the surface's `FRICTION` in the game's and the track's `surfaces.ini` over the main road's. Read only with the `SurfaceGrip` setting; `surface_grip.py` shows where on the lap it differs |
 | `<track>_triangles.csv.gz` | what the bot's sensors see: the walls the game collides with plus the course's markers, `python sensor_view.py --track <track>` (after `build_course.py`). Things the model shows that the car cannot hit are left out. |
 | `<track>_road_mesh.csv` | the road-mesh points the plugin reads, from the AssettoServer folder |
 | `<track>_course_edges.csv`, `<track>_course_markers.csv` | `python build_course.py` (the course's edges, from its markers where it has them) |
@@ -80,8 +81,9 @@ tracks.
 
 The files keep the track's name in theirs inside the track's folder, because they are copied to
 the server folder as they are. The server folder needs `<track>_triangles.csv.gz`,
-`<track>_collision.csv.gz`, `<track>_road_mesh.csv`, `<track>_course_edges.csv` and, for a policy
-with paces, `<track>_pace_reference.csv`; and the AI line, as
+`<track>_collision.csv.gz`, `<track>_road_mesh.csv`, `<track>_course_edges.csv`, for a policy
+with paces `<track>_pace_reference.csv`, for one with `SurfaceGrip` `<track>_collision_grip.csv.gz`;
+and the AI line, as
 `content/tracks/<track>/ai/fast_lane.ai`.
 
 </details>
@@ -110,6 +112,7 @@ python train_ppo_gpu.py --sim cpu --resume runs/mine/checkpoint.pt --steps 40000
 | `--caps-temporal 0.05 --caps-spatial 0.05` | smoothness: a loss on the mean action changing from one tick to the next, and on it changing when the inputs are nudged by `--caps-sigma` standard deviations (CAPS) |
 | `--obs-noise 0.03` | sensor noise while training: every input gets that share of its standard deviation added at random; evaluation is clean |
 | `--dr-axle-grip 0.08 --dr-peak-slip 0.1` | hidden tyre randomisation: each episode the simulated tyres' true peak friction and peak slip angle are off the car's numbers by up to that share, front and rear drawn apart, while the car inputs still show the car's numbers (domain randomisation). Evaluation uses the car's numbers |
+| `--plugin-setting SurfaceGrip=1 --dr-surface-grip 0.3` | surface grip: each axle's peak friction times the grip of the ground under it (`<track>_collision_grip.csv.gz`), as the game scales its tyres by the surface's `FRICTION`, so a slippery stretch of road is slippery in training and on the server alike (the plugin has the same setting). `--dr-surface-grip` stretches each surface's difference from the road by up to that share per episode; evaluation uses the file's numbers. The training log shows each track's range of grip |
 | `--self-ghosts 0.3 --self-ghost-every 25000000` | (with `--chase`) self-play leads: that share of each track's ghost leaders is re-recorded from the policy being trained every that many ticks, so it also learns to chase itself (bots chasing bots run the same policy) |
 | `--amp amp_reference.npz --amp-weight 0.1` | Adversarial Motion Priors: `amp_reference.py` turns human telemetry into pairs of states (speed, body slip, yaw rate, tick to tick); a discriminator learns to tell them from the training cars' own, and the cars are paid up to `--amp-weight` a tick for moving as the human does. The log shows the style reward and the discriminator's scores |
 | `--history-frames 4 --history-every 2` | short-history input: the policy also reads its speed, slip, yaw rate, last actions and tyre saturation as they were 2, 4, 6 and 8 ticks ago, so it can tell from how the car answered what grip it has (RMA-style). The policy file carries a `history` block; a plugin build with `AppendHistory` runs it, an older one refuses the file |
@@ -316,6 +319,7 @@ was trained with.
 | `replay_live.py` | After a server run: replays its telemetry tick by tick through the simulator and reports every quantity that disagrees. |
 | `record_ghosts.py` | Records a policy's runs on a track as ghost leaders for chase training (`<track>_ghosts.npz`). |
 | `amp_reference.py` | Human telemetry (the telemetry app's CSV or an AI Car Monitor CSV) as the state pairs `--amp` learns the human's motion from. |
+| `surface_grip.py` | Where on a track's AI line the ground grips differently from the main road (SurfaceGrip), as lap progress. |
 | `pbt.py` | Population-based training: several trainer runs in turns, the weakest copying the best and moving their settings. |
 | `chase_report.py` | How policies chase a ghost leader in the simulator (gap, angle and line against it, hits) and how they drive alone. |
 | `telemetry_ghosts.py` | Adds a human's laps from the in-game telemetry app's CSV to a track's ghost leaders. |

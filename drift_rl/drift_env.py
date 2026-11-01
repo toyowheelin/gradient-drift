@@ -612,6 +612,10 @@ class EnvConfig:
     # front and rear; the car inputs still show the car's own numbers. 0 = off
     dr_axle_grip: float = 0.0
     dr_peak_slip: float = 0.0
+    # SurfaceGrip randomisation (fast_sim SURFACE_GRIP_DEV_SCALE): per episode, every surface's
+    # difference in grip from the main road stretched by 1 +- dr_surface_grip (the track's FRICTION
+    # numbers are the game's, but how the bots should feel them is a guess). 0 = off
+    dr_surface_grip: float = 0.0
     # Several cars (car_param_values() of each): every episode draws one, then varies it - its
     # weight by +-car_mass_randomisation (loads and yaw inertia together) and its engine's force by
     # +-car_power_randomisation - so a policy meets cars between and around the ones it was given.
@@ -1305,7 +1309,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
               sp_dir, la_idx, la_min_radius, pace_ref,
               sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
               tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, gh, gh_len):
+                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip, gh, gh_len):
     """One environment step for car i: finish the current tick with the given action
     (step_post), score it, then start the next tick (step_pre) and build the next observation.
     A finished episode is reset in place; its last observation is kept in final_obs[i] and its
@@ -1340,7 +1344,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     dt = mids[i, M_DT]
     fs.step_post(s, a0, a1, a2, p, d, mids[i], sp_pos, sp_radius, sp_length, sp_next, sp_prev,
                  sp_fwd, sp_cum, tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk)
+                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip)
 
     # ---- the car ahead (chase episodes) ----
     lap = sp_cum[sp_cum.shape[0] - 1] + sp_length[sp_length.shape[0] - 1]
@@ -1854,7 +1858,7 @@ def step_batch(states, mids, diags, actions, prev_act, counters, ep, params, rw,
                sp_dir, la_idx, la_min_radius, pace_ref,
                sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
                tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, gh, gh_len):
+                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip, gh, gh_len):
     """_step_one for every car. Cars are independent, so the loop runs across CPU cores."""
     for i in prange(states.shape[0]):
         _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, rw, obs, rewards,
@@ -1862,7 +1866,7 @@ def step_batch(states, mids, diags, actions, prev_act, counters, ep, params, rw,
                   sp_dir, la_idx, la_min_radius, pace_ref,
                   sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
                   tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, gh, gh_len)
+                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip, gh, gh_len)
 
 
 @njit(cache=True)
@@ -1896,7 +1900,7 @@ if _TARGET == 'cuda':
                     sp_dir, la_idx, la_min_radius, pace_ref,
                     sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
                     tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, gh, gh_len):
+                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip, gh, gh_len):
         i = _cuda.grid(1)
         if i < states.shape[0]:
             _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, rw, obs, rewards,
@@ -1904,7 +1908,7 @@ if _TARGET == 'cuda':
                       sp_dir, la_idx, la_min_radius, pace_ref,
                       sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
                       tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, gh, gh_len)
+                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip, gh, gh_len)
 
     @_cuda.jit
     def reset_kernel(states, mids, prev_act, counters, ep, params, obs, rnd, env_cfg, sp_dir, la_idx,
@@ -2133,6 +2137,9 @@ class DriftVecEnv:
             if share > 0.0:
                 for name in names:
                     self.params[idx, fs.P[name]] = 1.0 + self.rng.uniform(-share, share, size=len(idx))
+        if self.cfg.dr_surface_grip > 0.0:
+            self.params[idx, fs.P['SURFACE_GRIP_DEV_SCALE']] = \
+                1.0 + self.rng.uniform(-self.cfg.dr_surface_grip, self.cfg.dr_surface_grip, size=len(idx))
         g = self.cfg.grip_randomisation
         if g <= 0.0:
             return
@@ -2445,6 +2452,7 @@ PLUGIN_SETTING_PARAMS = {
     'CarOutlineContact': ('EXT_CAR_OUTLINE_CONTACT', float),        # 1 = walls touch the car's outline, not a circle
     'RoundTireCurve': ('EXT_ROUND_TIRE_CURVE', float),              # 1 = brush-curve tyres (fast_sim._tire_curve)
     'RearSpinGripShare': ('REAR_SPIN_GRIP_SHARE', float),          # rear circle while spinning, share of peak; 1 = off
+    'SurfaceGrip': ('EXT_SURFACE_GRIP', float),                     # 1 = tyre grip x the surface's (surfaces.ini FRICTION)
 }
 DEFAULT_MAX_STEER_DEG = 28.125      # the plugin's MaxSteerAngleRadians default
 

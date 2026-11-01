@@ -300,6 +300,10 @@ def main():
                          '(Tobin et al. 2017; Peng et al. 2018). Evaluation stays at the car\'s numbers. 0 = off')
     ap.add_argument('--dr-peak-slip', type=float, default=0.0, metavar='SHARE',
                     help='hidden tyre randomisation: each axle\'s peak slip angle x 1 +- SHARE, the same way. 0 = off')
+    ap.add_argument('--dr-surface-grip', type=float, default=0.0, metavar='SHARE',
+                    help='with --plugin-setting SurfaceGrip=1: per episode every surface\'s difference in grip '
+                         'from the main road x 1 +- SHARE (the FRICTION numbers are the game\'s; how much they '
+                         'matter to the bots\' simpler tyres is a guess). Evaluation stays at the file\'s. 0 = off')
     ap.add_argument('--self-ghosts', type=float, default=0.0, metavar='SHARE',
                     help='self-play leads: this share of each track\'s ghost leaders is re-recorded from the policy '
                          'being trained every --self-ghost-every ticks (opponents from the learner\'s own past, '
@@ -442,6 +446,7 @@ def main():
     if args.grip_randomisation is not None:
         env_cfg.grip_randomisation = args.grip_randomisation
     env_cfg.dr_axle_grip, env_cfg.dr_peak_slip = args.dr_axle_grip, args.dr_peak_slip
+    env_cfg.dr_surface_grip = args.dr_surface_grip
     if args.adr:
         env_cfg.dr_axle_grip = env_cfg.dr_peak_slip = 0.0      # ADR grows them from nothing
     if not 0.0 <= args.drift_starts <= 1.0 - env_cfg.recovery_start_fraction:
@@ -562,6 +567,14 @@ def main():
         w = fs.load_world(args.tracks, track=t)
         fs.require_road_mesh(w, args.tracks, t)
         fs.require_course(w, args.tracks, t)
+        if env_cfg.plugin_settings.get('SurfaceGrip', 0.0) == 1.0:
+            g = w.tri_grip[w.n_sensor:][w.tri_surf[w.n_sensor:] != fs.SURF_WALL]
+            if np.all(g == 1.0):
+                print(f"  {t}: SurfaceGrip is on but every surface reads 1 (no {tf.name('collision_grip', t)}, "
+                      "or the track has one grip): run setup_track.py again to make the file", flush=True)
+            else:
+                print(f"  {t}: surface grip {g.min():.3f} - {g.max():.3f}, under 0.98 on {np.mean(g < 0.98):.1%} of "
+                      "the ground triangles", flush=True)
         worlds.append(w)
     world = worlds[0]
     pool, pool_names, eval_worlds = [], [], list(zip(tracks, worlds))
@@ -1219,14 +1232,14 @@ def main():
         policy = make_policy()
         episodes = max(32, args.eval_episodes // len(eval_worlds))
         for name, w in eval_worlds:
-            ev = de.evaluate(w, policy, episodes, seed=999, env_config=replace(env_cfg, privileged=False, dr_axle_grip=0.0, dr_peak_slip=0.0),
+            ev = de.evaluate(w, policy, episodes, seed=999, env_config=replace(env_cfg, privileged=False, dr_axle_grip=0.0, dr_peak_slip=0.0, dr_surface_grip=0.0),
                              reward_config=rew_cfg)
             per_track[name] = {k: float(ev[k].mean()) for k in EVAL_KEYS}
         last_eval = {k: float(np.mean([v[k] for v in per_track.values()])) for k in EVAL_KEYS}
         if args.chase > 0.0:
             # chase episodes only, at the whole --chase-gap range (what chase_report.py shows)
             name, w = eval_worlds[0]
-            ev = de.evaluate(w, policy, episodes, seed=998, env_config=replace(env_cfg, chase_share=1.0, chase_scenarios=False, dr_axle_grip=0.0, dr_peak_slip=0.0,
+            ev = de.evaluate(w, policy, episodes, seed=998, env_config=replace(env_cfg, chase_share=1.0, chase_scenarios=False, dr_axle_grip=0.0, dr_peak_slip=0.0, dr_surface_grip=0.0,
                                                                                  privileged=False),
                              reward_config=rew_cfg)
             had = ev['chase_fraction'] > 0

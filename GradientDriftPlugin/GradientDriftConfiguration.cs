@@ -323,6 +323,12 @@ public class GradientDriftConfiguration
     // 1 = off. Set by the policy file.
     public float RearSpinGripShare { get; set; } = 1f;
 
+    // Each axle's peak friction times the grip of the ground under it: its surface's FRICTION in
+    // the track's surfaces.ini over the main road's, from <track>_collision_grip.csv.gz (setup
+    // writes it beside the other track files). The game scales its own tyres by the surface the
+    // same way, so a slippery stretch of road is slippery for the bots too. Set by the policy file.
+    public bool SurfaceGrip { get; set; } = false;
+
     // Floor on the speed in the slip-angle formula, which is singular at zero speed.
     public float MinSlipAngleSpeedMs { get; set; } = 3.0f;
 

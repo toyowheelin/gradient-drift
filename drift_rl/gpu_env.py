@@ -34,7 +34,7 @@ def kernel_arg_names():
 
 _WORLD_NAMES = ['sp_pos', 'sp_radius', 'sp_length', 'sp_next', 'sp_prev', 'sp_fwd', 'sp_cum', 'tri_v',
                 'tri_surf', 'gmin', 'cell_size', 'dims', 'cell_start', 'cell_items', 'rm_pos', 'rm_min', 'rm_cell',
-                'rm_dims', 'rm_start', 'rm_items', 'co', 'mk']
+                'rm_dims', 'rm_start', 'rm_items', 'co', 'mk', 'tri_grip']
 _RESET_NAMES = ['states', 'mids', 'prev_act', 'counters', 'ep', 'params', 'obs', 'rnd', 'env_cfg',
                 'sp_dir', 'la_idx', 'la_min_radius', 'sp_pos', 'sp_radius', 'sp_length', 'sp_next',
                 'sp_prev', 'sp_fwd', 'co']
@@ -137,6 +137,9 @@ class DriftGpuEnv:
                 for name in names:
                     self.t['params'][mask, fs_cpu.P[name]] = \
                         1.0 + (torch.rand(k, generator=self.gen, device=self.device, dtype=torch.float64) * 2 - 1) * share
+        if self.cfg.dr_surface_grip > 0.0:
+            self.t['params'][mask, fs_cpu.P['SURFACE_GRIP_DEV_SCALE']] = \
+                1.0 + (torch.rand(k, generator=self.gen, device=self.device, dtype=torch.float64) * 2 - 1) * self.cfg.dr_surface_grip
         g = self.cfg.grip_randomisation
         if g <= 0.0:
             return
@@ -170,7 +173,8 @@ class DriftGpuEnv:
             self.t['actions'].copy_(actions)
         self._fill_random()
         self.de.step_kernel[self._blocks, self._tpb](*self._step_args)
-        if self.cfg.grip_randomisation > 0.0 or self.cfg.dr_axle_grip > 0.0 or self.cfg.dr_peak_slip > 0.0:
+        if (self.cfg.grip_randomisation > 0.0 or self.cfg.dr_axle_grip > 0.0 or self.cfg.dr_peak_slip > 0.0
+                or self.cfg.dr_surface_grip > 0.0):
             self._randomise_grip(self.terminated | self.truncated)
         return self.obs, self.rewards, self.terminated, self.truncated
 

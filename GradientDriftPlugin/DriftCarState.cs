@@ -69,6 +69,10 @@ internal sealed class DriftCarState
     // This car's RearSlidingGrip (the setting, or what HoldBotSpacing has eased it to), and
     // the distance along the line to the next bot ahead (-1 = no other bot).
     public float RearSlidingGrip;
+    // SurfaceGrip: the grip of the ground under the front / rear axle from the last tick's pose
+    // (0 = not known yet: 1).
+    public float FrontSurfaceGrip;
+    public float RearSurfaceGrip;
     public float GapAheadM = -1f;
     // The pace this car is asked to drive, in the policy's units (a fraction of the course's
     // flat-out speed, or km/h for gen4): the setting, or what HoldBotSpacing has eased it to; 0 = none.
