@@ -166,6 +166,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private readonly float[] _observation = new float[DriftPolicy.ObservationSize + DriftPolicy.MaxHistoryInputs];
 
     private DriftTelemetry? _telemetry;
+    // EnableScorecard; when it was last written (server ms), and the cars touching this tick.
+    private BotScorecard? _scorecard;
+    private readonly string _trackName;
+    private long _scorecardWrittenMs;
+    private readonly List<(byte SessionId, float X, float Z, float Heading)> _touchBots = new();
+    private readonly List<(byte SessionId, float X, float Z, float Heading)> _touchPlayers = new();
     private long _tickCounter;
     private float _muFront, _muRear;     // each axle's peak friction this tick (AxleFriction)
     // The car being driven this tick, and every car seen so far by model: its own numbers for an
@@ -211,6 +217,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         }
 
         string trackName = Path.GetFileName(serverConfiguration.Server.Track);
+        _trackName = trackName;
         _roadMeshPoints = LoadRoadMesh(trackName + RoadMeshFileSuffix);
         _roadMeshTree = _roadMeshPoints.Length > 0 ? new MeshKdTree(_roadMeshPoints) : null;
 
@@ -624,8 +631,15 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        StartScorecard();
         if (_policy == null)
         {
+            if (_scorecard != null)
+            {
+                _scorecard.Note("no usable policy: the stock AI drove all session (the reason is at the top of the server log)");
+                _scorecard.Write(final: true);
+                _scorecard = null;
+            }
             return Task.CompletedTask;
         }
 
@@ -689,6 +703,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         {
             _acServer.Value.Update -= OnUpdate;
         }
+        _sessionManager.SessionChanged -= OnSessionChanged;
+        _scorecard?.Write(final: true);
 
         // Cleared before it is closed, so a tick still running writes nothing rather than to a
         // closed file.
@@ -696,6 +712,104 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _telemetry = null;
         telemetry?.Dispose();
         base.Dispose();
+    }
+
+    // EnableScorecard: a card for the session running now, and a new one each time it changes.
+    private void StartScorecard()
+    {
+        if (!_configuration.EnableScorecard)
+        {
+            return;
+        }
+        string policy = "none";
+        if (_policy != null)
+        {
+            string hash = "";
+            try
+            {
+                using var stream = File.OpenRead(_policy.SourcePath);
+                hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream)).ToLowerInvariant()[..12];
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                hash = "unreadable";
+            }
+            policy = $"{Path.GetFileName(_policy.SourcePath)}, {_policy.TrainedTicks} training ticks, sha256 {hash}";
+        }
+        string version = GetType().Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "?";
+        var scorecard = new BotScorecard(_configuration.ScorecardFolder, _trackName, $"{policy}; plugin {version}",
+            _configuration.ChaseGapMeters);
+        scorecard.Start(DescribeSession(_sessionManager.CurrentSession), _sessionManager.ServerTimeMilliseconds);
+        _scorecardWrittenMs = _sessionManager.ServerTimeMilliseconds;
+        _health.OnStuck = scorecard.Stuck;
+        _scorecard = scorecard;
+        _sessionManager.SessionChanged += OnSessionChanged;
+        Log.Information("GradientDrift: scorecards go to {Path}", scorecard.Folder);
+    }
+
+    private static string DescribeSession(SessionState? session) =>
+        session == null ? "session" : $"{session.Configuration.Type} {session.Configuration.Name}".Trim();
+
+    private void OnSessionChanged(SessionManager sender, SessionChangedEventArgs args)
+    {
+        BotScorecard? scorecard = _scorecard;
+        if (scorecard == null)
+        {
+            return;
+        }
+        scorecard.Write(final: true);
+        scorecard.Start(DescribeSession(args.NextSession), sender.ServerTimeMilliseconds);
+        _scorecardWrittenMs = sender.ServerTimeMilliseconds;
+    }
+
+    // EnableScorecard, once a tick: which bots the policy drives touch another car. Outlines as
+    // ChaseInputs has them (the tandem trainer's), every pair of bots and each bot with each
+    // player; pairs further apart than any two outlines can reach are skipped.
+    private void ScoreTouches(BotScorecard scorecard)
+    {
+        const float ReachM = 7f;
+        _touchBots.Clear();
+        _touchPlayers.Clear();
+        foreach (var (sessionId, aiState) in _driven)
+        {
+            if (_cars.TryGetValue(aiState, out DriftCarState? state) && !state.HeldByStock && state.Heading.HasValue)
+            {
+                _touchBots.Add((sessionId, state.Position.X, state.Position.Z, state.Heading.Value));
+            }
+        }
+        if (_touchBots.Count == 0)
+        {
+            return;
+        }
+        foreach (EntryCar car in _entryCarManager.EntryCars)
+        {
+            if (!car.AiControlled && car.Client?.HasSentFirstUpdate == true)
+            {
+                var status = car.Status;
+                _touchPlayers.Add((car.SessionId, status.Position.X, status.Position.Z, status.Rotation.X + MathF.PI / 2f));
+            }
+        }
+        for (int i = 0; i < _touchBots.Count; i++)
+        {
+            var a = _touchBots[i];
+            for (int j = i + 1; j < _touchBots.Count; j++)
+            {
+                var b = _touchBots[j];
+                if (a.SessionId != b.SessionId && MathF.Abs(a.X - b.X) < ReachM && MathF.Abs(a.Z - b.Z) < ReachM
+                    && ChaseInputs.CarsOverlap(a.X, a.Z, a.Heading, b.X, b.Z, b.Heading))
+                {
+                    scorecard.Touching(a.SessionId, b.SessionId, otherIsBot: true);
+                }
+            }
+            foreach (var p in _touchPlayers)
+            {
+                if (MathF.Abs(a.X - p.X) < ReachM && MathF.Abs(a.Z - p.Z) < ReachM
+                    && ChaseInputs.CarsOverlap(a.X, a.Z, a.Heading, p.X, p.Z, p.Heading))
+                {
+                    scorecard.Touching(a.SessionId, p.SessionId, otherIsBot: false);
+                }
+            }
+        }
     }
 
     // Runs on the server's update thread, after the stock AI has moved every car for this tick.
@@ -725,6 +839,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             {
                 _updatesStopped = true;
                 Log.Error("GradientDrift: {Count} tick updates in a row failed - stopped; the stock AI drives", _failedUpdates);
+                _scorecard?.Note($"the plugin stopped at {DateTime.Now:HH:mm:ss} after {_failedUpdates} failed tick updates in a row: the stock AI drove from then on");
+                _scorecard?.Write(final: false);
             }
         }
     }
@@ -755,8 +871,13 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _driven.Clear();
         _trainSlots.Clear();
         int aiEntry = -1;
+        int players = 0;
         foreach (EntryCar car in _entryCarManager.EntryCars)
         {
+            if (!car.AiControlled && car.Client?.HasSentFirstUpdate == true)
+            {
+                players++;
+            }
             if (car.AiMode != AiMode.None)
             {
                 aiEntry++;         // counted whether a player has the slot or not, so trains keep their places
@@ -778,6 +899,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             }
         }
 
+        _scorecard?.Tick(nowMs, players);
         FormTrains();
         HoldSpacing(policy, dt);
 
@@ -800,11 +922,22 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         long followStart = PluginTiming.Now();
         foreach (var (sessionId, aiState, lead, place) in _followers)
         {
+            _scorecard?.Following(sessionId, dt);
             Follow(sessionId, aiState, lead, place, nowMs, dt, collision, in human);
             aiCarsUpdated++;
         }
         _timing.Add(PluginTiming.Part.Followers, followStart);
         _health.Check(_driven, nowMs);
+        if (_scorecard != null)
+        {
+            ScoreTouches(_scorecard);
+            if (nowMs - _scorecardWrittenMs >= Math.Max(1f, _configuration.ScorecardWriteMinutes) * 60_000f)
+            {
+                _scorecardWrittenMs = nowMs;
+                BotScorecard scorecard = _scorecard;
+                Task.Run(() => scorecard.Write(final: false));
+            }
+        }
 
         // No AI car out (AssettoServer spawns them only once a player is on the racing line):
         // still log the human car, so a calibration drive near the pits is not lost. SessionId
@@ -851,8 +984,10 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             if (stockVelocity.Length() < 1.0f)
             {
                 _cars.Remove(aiState);
+                _scorecard?.Waiting(sessionId, dt);
                 return;
             }
+            _scorecard?.TakenOver(sessionId);
 
             state = new DriftCarState(aiState.Status.Position, stockVelocity, spawnCounter)
             {
@@ -1430,6 +1565,10 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         FanRay[] pinRays = pins.Cast(position, chassisAngle);
         state.PreviousPins = pinRays;
         _timing.Add(PluginTiming.Part.Sensors, sensorStart);
+
+        _scorecard?.Driven(sessionId, dt, state.HeldByStock, row.PolicyActive, new Vector2(velocity.X, velocity.Z).Length(),
+            row.SlipAngle, row.WallPushOutM, row.WrongWayRecovering, state.ScoreChaseGap, state.ChaseLeadIsBot);
+        state.ScoreChaseGap = float.NaN;
 
         if (_telemetry != null)
         {
@@ -2624,6 +2763,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float ratio = desired / MathF.Max(gap, 0.1f);
         float accel = MathF.Max(-3f * IdmBrake, IdmAccel * (1f - MathF.Pow(v / v0, 4) - ratio * ratio) + leadAccel);
         state.Pace = Math.Clamp((v + accel * _configuration.ChaseResponseSeconds) / state.PaceOneMs, low, top);
+        state.ScoreChaseGap = gap;
         return true;
     }
 

@@ -121,6 +121,18 @@ public class GradientDriftConfiguration
     // Adds the network's inputs to every row (about 330 bytes). Both tools need them.
     public bool LogLearnedPolicyObservations { get; set; } = true;
 
+    // A short report card of how the bots drove, one per server session: slide, walls, car hits,
+    // chase gap, how often the server's own AI had them, stuck bots (BotScorecard). Written as
+    // <start>_<track>_<session>.txt and .json into ScorecardFolder, rewritten every
+    // ScorecardWriteMinutes and when the session ends; drift_rl/scorecard_report.py reads them.
+    // A few KB a session. Off by default: the plugin writes no files unless asked.
+    public bool EnableScorecard { get; set; } = false;
+
+    // Relative to the server's working directory.
+    public string ScorecardFolder { get; set; } = "gradientdrift_scorecards";
+
+    public float ScorecardWriteMinutes { get; set; } = 10f;
+
     // The plugin's routine lines in the server log as well as its warnings: what it loaded, each
     // setting the policy file brings, each bot car's numbers, spawns and placements, and the timing
     // line every 60 s (unless LogTimingIntervalSeconds says otherwise). Off: warnings only.

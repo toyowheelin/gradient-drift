@@ -176,6 +176,15 @@ python replay_live.py drift_physics_telemetry_<date>_<time>.csv --policy runs/mi
 python drive_report.py --telemetry drift_physics_telemetry_<date>_<time>.csv --human <recording>.csv     # the bots against a human
 ```
 
+For a lighter check over many sessions, `EnableScorecard: true` writes a short card for every
+server session (slide, spin, walls, wall and car hits an hour, chase gap and share in band, the
+share of time the stock AI had the bots, stuck episodes) into `gradientdrift_scorecards/`, in the
+same terms as `drive_report.py` and `chase_report.py`. Side by side:
+
+```
+python scorecard_report.py <server>/gradientdrift_scorecards --bots
+```
+
 ## Polishing the shipped policy for one track
 
 The shipped policy is trained on several tracks and generated courses so that it drives tracks it

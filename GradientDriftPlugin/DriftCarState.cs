@@ -91,6 +91,8 @@ internal sealed class DriftCarState
     // closing speed input; NaN = none yet).
     public byte ChaseLeadId;
     public float ChaseLastGap = float.NaN;
+    // EnableScorecard: the gap ChasePlayer drove to this tick (NaN = not chasing); read and reset by UpdateCar.
+    public float ScoreChaseGap = float.NaN;
     // Its speed along the line last tick, and the speed a pace of 1 asks there (the course's
     // reference, held to the car's limit), m/s: the IDM works in speeds.
     public float LineSpeedMs;

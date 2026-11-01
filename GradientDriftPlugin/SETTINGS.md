@@ -91,6 +91,9 @@ stopped for 30 seconds, and a line when it moves again. Nothing while the bots d
 |---|---|---|
 | `EnableTelemetryLogging` | `false` | Writes `drift_physics_telemetry_<date>_<time>.csv` in the server folder: one row per bot per tick. For checking a policy on a server with `drift_rl/check_plugin_policy.py` and `drive_report.py --telemetry`. About 110 MB an hour with six bots. |
 | `TelemetryMaxFileMegabytes` | `500` | The telemetry file stops growing at this size. 0 = no limit. It also stops, with a line in the log, if a write fails. |
+| `EnableScorecard` | `false` | A short report card per server session of how the bots drove: slide and spin share, wall time and wall hits, car hits (bots and players), chase time and gap (p10/p50/p90, share within 2 m of `ChaseGapMeters`), how often the server's own AI had them, stuck episodes, wrong-way recoveries. Written as `<start>_<track>_<session>.txt` (a table) and `.json` into `ScorecardFolder`; `drift_rl/scorecard_report.py` puts several side by side. A few KB a session. |
+| `ScorecardFolder` | `gradientdrift_scorecards` | Where the scorecards go, relative to the server folder. |
+| `ScorecardWriteMinutes` | `10` | The scorecard is rewritten this often while a session runs (so a crash loses at most this much), and once more when the session ends or the server stops. |
 | `LogLearnedPolicyObservations` | `true` | Adds the network's inputs to every telemetry row (about 330 bytes a row). The check tools need them. |
 | `LogHumanCarForCalibration` | `false` | Adds the first connected player's car to the telemetry: position, steering, RPM, gear, throttle, wheel speeds. No name, IP or Steam ID. Used to compare the bots with a human driver. |
 | `VerboseLogging` | `false` | The plugin's routine lines as well: what it loaded, each setting the policy file brings, each bot car's numbers, spawns and placements, and the timing line every 60 s. Off, the log has warnings only. |
