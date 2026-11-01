@@ -77,6 +77,18 @@ public class GradientDriftConfiguration
     public float ChaseResponseSeconds { get; set; } = 0.6f;
     public float ChasePaceMaxPercent { get; set; } = 110f;
 
+    // With ChasePlayers, every car (player or bot) has at most one bot chasing it: a second bot
+    // that comes up behind waits at its usual pace or, with ChaseBots, chases the chaser. ChaseBots:
+    // a bot also chases another bot that comes within ChaseOptInMeters ahead of it, so drift trains
+    // form, at most ChaseTrainMax bots chasing in one line (behind a player or a bot that is not
+    // chasing). A bot-on-bot chase lasts at most ChaseBotRunSeconds; that bot then drops back and
+    // takes up no bot for ChaseBotCooldownSeconds, so trains break up and form again. Chasing a
+    // player is never timed.
+    public bool ChaseBots { get; set; } = false;
+    public int ChaseTrainMax { get; set; } = 3;
+    public float ChaseBotRunSeconds { get; set; } = 60f;
+    public float ChaseBotCooldownSeconds { get; set; } = 30f;
+
     // Tandem trains: bots in order of their entry, this many to a train. The first of each train is
     // driven by the policy; the others replay what it sent a moment earlier (TandemTrains.cs), so
     // they follow its line exactly. 1 = every bot drives alone. With HoldBotSpacing the trains are

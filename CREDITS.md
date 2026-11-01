@@ -94,4 +94,15 @@ AGPL-3.0 program carry the work, given the notices.
   Controller Framework for Autonomous Drifting: Design, Stability, and Experimental Validation",
   ASME Journal of Dynamic Systems, Measurement, and Control, 2014). Its full-sliding angle is
   the car's own tyres.ini `FRICTION_LIMIT_ANGLE` plus `FLEX` x the tire's load.
+* Zhou, Lu, Yang, Li and Mo, "Learning to Drift with Individual Wheel Drive: Maneuvering
+  Autonomous Vehicle at the Handling Limits", Tsinghua University, 2025,
+  <https://arxiv.org/abs/2507.23339> - randomised start states, sideways and at speed (the
+  trainer's `--drift-starts`).
+* Starting from states a demonstrator reached (the trainer's `--ghost-starts`): Nair et al.,
+  "Overcoming Exploration in Reinforcement Learning with Demonstrations", 2018,
+  <https://arxiv.org/abs/1709.10089>; Salimans and Chen, "Learning Montezuma's Revenge from a
+  Single Demonstration", 2018, <https://arxiv.org/abs/1812.03381>.
+* Schmitt et al., "Kickstarting Deep Reinforcement Learning", DeepMind, 2018,
+  <https://arxiv.org/abs/1803.03835> - a new network pulled toward a trained one's actions at
+  first, the pull fading away (the trainer's `--kickstart`).
 
