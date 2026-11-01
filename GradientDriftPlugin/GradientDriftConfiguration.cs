@@ -89,6 +89,34 @@ public class GradientDriftConfiguration
     public float ChaseBotRunSeconds { get; set; } = 60f;
     public float ChaseBotCooldownSeconds { get; set; } = 30f;
 
+    // ---- Each bot's own style ---------------------------------------------------------------
+
+    // So a server full of bots does not look like clones: each bot gets its own aggression (its
+    // pace around BotPacePercent, how far ahead it takes up a car to chase, how fast it may chase),
+    // its own chase gap and its own skill. All of these are inputs the policy was trained over, so
+    // no retraining; each is held inside the policy's trained range. A bot keeps its style through
+    // respawns and server restarts.
+    //
+    // BotStyleSpread, 0 - 1: how far the bots' styles are drawn apart. 0 = every bot drives with
+    // the settings above (as before); 1 = aggression anywhere from calm to pushy and chase gaps
+    // from half ChaseGapMeters to twice it. BotSkillSpread, 0 - 1: each bot's skill is BotSkill
+    // less up to this much (0 = all at BotSkill). BotStyleSeed: change it for a new set of draws.
+    public float BotStyleSpread { get; set; } = 0f;
+    public float BotSkillSpread { get; set; } = 0f;
+    public int BotStyleSeed { get; set; } = 0;
+
+    // Styles set by hand, over the draws. Each entry names a bot by its entry-list DRIVERNAME, or
+    // without a Name applies to the AI entries in order. Any of Aggression (0 - 1, 0.5 = the
+    // settings), ChaseGapMeters and Skill; a value left out is drawn or the server's. E.g.
+    //   BotStyles:
+    //     - Name: Kenji
+    //       Aggression: 0.9
+    //       ChaseGapMeters: 1
+    //     - Name: Mia
+    //       Aggression: 0.2
+    //       Skill: 0.6
+    public List<BotStyleEntry> BotStyles { get; set; } = new();
+
     // Tandem trains: bots in order of their entry, this many to a train. The first of each train is
     // driven by the policy; the others replay what it sent a moment earlier (TandemTrains.cs), so
     // they follow its line exactly. 1 = every bot drives alone. With HoldBotSpacing the trains are

@@ -65,6 +65,38 @@ The settings come in two kinds:
 | `ChaseBotRunSeconds` | `60` | With `ChaseBots`: how long a bot chases another bot before it drops back (0 = no limit). Chasing a player is never timed. |
 | `ChaseBotCooldownSeconds` | `30` | With `ChaseBots`: after a bot-on-bot chase ends, how long that bot takes up no other bot, so trains break up and form again. |
 
+### Each bot's own style
+
+So a server full of bots doesn't look like clones. Each bot can have its own **aggression**, **chase gap**
+and **skill**. These are all things the policy already reads (its pace, the gap it is asked to hold, its
+skill) or chase rules the plugin applies, so no retraining is needed, and every value stays inside the
+range the policy was trained for. A bot keeps its style through respawns and server restarts. With
+`VerboseLogging` on, the log shows each bot's style the first time it drives.
+
+Aggression runs from 0 to 1. **0.5** means the settings above, unchanged. Going up from there the bot asks for
+more pace (up to the policy's top), takes up a car to chase from further back (up to 1.6 × `ChaseOptInMeters`)
+and may chase up to 10% faster than `ChasePaceMaxPercent`. Going down it asks for less pace (down to
+`BotPaceMinPercent`), only takes up a car close ahead (down to 0.4 × `ChaseOptInMeters`) and chases up to
+10% slower.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `BotStyleSpread` | `0` | How far apart the bots' styles are drawn, 0 to 1. **0** means every bot drives with the settings above, as before. **1** means aggression anywhere from 0 to 1 and chase gaps from half `ChaseGapMeters` to twice it. |
+| `BotSkillSpread` | `0` | Each bot's skill is `BotSkill` minus a random amount up to this (0 to 1). **0** means every bot is at `BotSkill`. |
+| `BotStyleSeed` | `0` | Change it to draw a new set of styles. |
+| `BotStyles` | empty | Styles set by hand, which win over the draws. Each entry names a bot by its `DRIVERNAME` in `entry_list.ini`. An entry with no `Name` applies to the AI entries in order. Any of `Aggression` (0 to 1), `ChaseGapMeters` and `Skill` can be set; anything left out is drawn or taken from the settings. |
+
+```yaml
+BotStyleSpread: 0.6
+BotStyles:
+  - Name: Kenji
+    Aggression: 0.9
+    ChaseGapMeters: 1
+  - Name: Mia
+    Aggression: 0.2
+    Skill: 0.6
+```
+
 ### How the bots look (cosmetic only)
 
 None of these change how a bot drives; they change what players see and hear.
