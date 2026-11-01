@@ -73,8 +73,10 @@ public class GradientDriftConfiguration
     // The model's time gap (drift_env chase_time_gap_blind_s: a player's plan is unknown), how far
     // ahead its acceleration becomes the pace asked (chase_response_s), and the top of that pace as
     // a percentage of the policy's top pace (chase_pace_max): a chaser needs some speed over the
-    // player's to catch up.
-    public float ChaseTimeGapSeconds { get; set; } = 0.2f;
+    // player's to catch up. ChaseGapMeters and ChaseTimeGapSeconds are the gap public drivers settle
+    // at behind each other (drift_rl/crowd_fit.py on AI Car Monitor recordings of Drift Playground
+    // and Klutch Kickers: 2.0 m + 0.25 s x speed, 5.5 m at 50 km/h).
+    public float ChaseTimeGapSeconds { get; set; } = 0.25f;
     public float ChaseResponseSeconds { get; set; } = 0.6f;
     public float ChasePaceMaxPercent { get; set; } = 110f;
 

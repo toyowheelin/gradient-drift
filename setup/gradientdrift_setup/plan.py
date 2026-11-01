@@ -162,13 +162,14 @@ def walls_only(triangles):
         return all(row.get('SurfaceType') == 'Wall' for row in csv.DictReader(f))
 
 
-PACE_MODEL = 'pace_model 3'     # drift_rl/pace_model.py MODEL: what a current pace reference says it was made by
+PACE_MODEL = 'pace_model 4'     # drift_rl/pace_model.py MODEL: what a current pace reference says it was made by
 
 
 def current_pace_reference(path):
-    """Whether a <track>_pace_reference.csv was made by pace_model (its Source column), rather than
-    measured by a policy driving the track (gen3, before 2026-10-18), which can ask the impossible
-    where that policy cut a corner."""
+    """Whether a <track>_pace_reference.csv was made by the current pace_model (its Source column),
+    rather than an earlier one (pace_model 4 added the crowd's pace on tracks it was recorded on)
+    or measured by a policy driving the track (gen3, before 2026-10-18), which can ask the
+    impossible where that policy cut a corner."""
     import csv
     try:
         with open(path, newline='', encoding='utf-8') as f:
@@ -318,12 +319,13 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         source = os.path.join(track_data, server.track, name) if track_data else ''
         there = server.data_path(name)
         if name.endswith('_pace_reference.csv'):
-            # only pace_model's: an older one (measured by a policy) is made again below
+            # only the current pace_model's: an older one (an earlier model, or measured by a policy) is made again below
             source = source if source and current_pace_reference(source) else ''
             if os.path.exists(there) and not current_pace_reference(there):
                 if source:
-                    p.changes.append(Change(name, "replace the server's pace reference (measured by a policy driving "
-                                            "the track) with the one from the track's shape", op=('copy', source, name)))
+                    p.changes.append(Change(name, "replace the server's older pace reference (an earlier "
+                                            "model, or measured by a policy driving the track) with the current "
+                                            "one from the track's shape", op=('copy', source, name)))
                 else:
                     missing.append(name)
                 continue

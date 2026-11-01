@@ -28,6 +28,7 @@ import sys
 import time
 
 import numpy as np
+import pace_model
 import track_files as tf
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -186,7 +187,7 @@ def main():
     meta = {k: v for k, v in start.meta.items() if k not in ('eval', 'pace_kmh_range')}
     meta.update({'obs_names': list(de.OBS_NAMES), 'action_names': ['steer_angle', 'pedal', 'brake'],
                  'pace_fraction_range': [float(args.pace[0]), float(args.pace[1])],
-                 'pace_reference': 'pace_model 3', 'simulator_revision': fs.SIMULATOR_REVISION,
+                 'pace_reference': pace_model.MODEL, 'simulator_revision': fs.SIMULATOR_REVISION,
                  'pace_average_s': de.RewardConfig().pace_average_s,
                  'seeded_by': f"seed_pace.py from {args.policy} (GAIN {GAIN}, THROTTLE_HELD {THROTTLE_HELD})"})
     out = Policy(m, mean, std, meta)
