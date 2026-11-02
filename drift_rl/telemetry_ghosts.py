@@ -189,12 +189,15 @@ def main():
         shutil.copyfile(out, backup)
     # always added to the ghosts from before the first run of this, so running it again replaces
     # the telemetry runs rather than adding them twice (record_ghosts.py again: delete the backup)
-    old = np.load(backup)['ghosts']
+    before = np.load(backup)
+    old = before['ghosts']
+    old_kinds = list(before['kinds']) if 'kinds' in before.files else list(de.guess_ghost_kinds(old))
     if old.shape[2] < de.GH_COLS:
         old = np.concatenate([old, np.zeros(old.shape[:2] + (de.GH_COLS - old.shape[2],))], axis=2)
     length = old.shape[1]
     y = float(np.median(w.sp_pos[:, 1]))
     new = []
+    new_kinds = []
     leads = []
     for path in args.recordings:
         cars = None
@@ -202,11 +205,11 @@ def main():
         if head and tail.replace(',', '').isdigit():
             path, cars = head, {int(n) for n in tail.split(',')}
         if is_crowd(path):
-            leads += [(f'{os.path.basename(path)} car {car_id} ({model})', c) for car_id, model, c in
+            leads += [(f'public {os.path.basename(path)} car {car_id} ({model})', c) for car_id, model, c in
                       crowd_paths(path, args.steer_ratio, args.max_kmh, cars)]
         else:
-            leads.append((os.path.basename(path), car_path(path, args.wheelbase, args.front_share,
-                                                           args.steer_ratio)))
+            leads.append((f'telemetria {os.path.basename(path)}', car_path(path, args.wheelbase, args.front_share,
+                                                                           args.steer_ratio)))
     for name, c in leads:
         t = np.arange(0.0, c['t'][-1], args.tick)
         g = np.zeros((len(t), de.GH_COLS))
@@ -231,6 +234,7 @@ def main():
                 continue
             run[:, de.GH_T] -= run[0, de.GH_T]
             new.append(run)
+            new_kinds.append(name)
             kept += 1
         slide = np.mean(np.abs(g[:, de.GH_SLIP]) > np.radians(20.0))
         print(f'{name}: {c["t"][-1]:.0f} s, {np.mean(g[:, de.GH_SPEED]) * 3.6:.1f} km/h, '
@@ -238,7 +242,7 @@ def main():
               f'{kept} runs of {length * args.tick:.0f} s')
     if not new:
         raise SystemExit('no runs long enough: the recordings are shorter than the ghosts')
-    np.savez_compressed(out, ghosts=np.concatenate([old, np.stack(new)]))
+    np.savez_compressed(out, ghosts=np.concatenate([old, np.stack(new)]), kinds=np.array(old_kinds + new_kinds))
     print(f'{len(old)} + {len(new)} ghosts -> {out} (before: {backup})')
 
 

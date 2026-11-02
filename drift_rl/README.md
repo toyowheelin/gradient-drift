@@ -172,7 +172,7 @@ a new telemetry file:
 
 ```
 python check_plugin_policy.py drift_physics_telemetry_<date>_<time>.csv --policy runs/mine/policy.json   # same network, same inputs?
-python replay_live.py drift_physics_telemetry_<date>_<time>.csv --policy runs/mine/policy.json           # tick by tick against the simulator
+python replay_live.py drift_physics_telemetry_<date>_<time>.csv --policy runs/mine/policy.json --track <track> --cars-dir <plugin>/cars   # tick by tick, each bot with its own car
 python drive_report.py --telemetry drift_physics_telemetry_<date>_<time>.csv --human <recording>.csv     # the bots against a human
 ```
 
@@ -330,7 +330,8 @@ was trained with.
 | `amp_reference.py` | Human telemetry (the telemetry app's CSV or an AI Car Monitor CSV) as the state pairs `--amp` learns the human's motion from. |
 | `surface_grip.py` | Where on a track's AI line the ground grips differently from the main road (SurfaceGrip), as lap progress. |
 | `pbt.py` | Population-based training: several trainer runs in turns, the weakest copying the best and moving their settings. |
-| `chase_report.py` | How policies chase a ghost leader in the simulator (gap, angle and line against it, hits) and how they drive alone. |
+| `chase_report.py` | How policies chase a ghost leader in the simulator (gap, angle and line against it, hits) and how they drive alone; `--by-lead` splits the chase by who drove the lead and lists the leads touched most. |
+| `pick_policy.py` | Candidate policies (best-eval, final, the trainer's `--snapshot-every` snapshots) through one fixed set of scenarios on each track, ranked in one table, with the ones another beats on every column marked. |
 | `telemetry_ghosts.py` | Adds a human's laps from the in-game telemetry app's CSV to a track's ghost leaders. |
 | `chase_drops.py` | Why a chaser falls out of its drift: drops against throttle lifts, the front brake, the lead and the gap. |
 | `tandem_report.py` | How the tandem-train followers in a plugin telemetry file behaved (the replaying followers retired in v0.3.0; for older telemetry). |
