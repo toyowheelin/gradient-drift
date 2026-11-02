@@ -506,14 +506,16 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     }
 
     // The policy has only been asked for paces inside its training range: the setting is held
-    // there, and 0 (or anything not a number) means the top of it, the fastest it was trained
-    // for. In the policy's units: a fraction of the course's flat-out speed (BotPacePercent / 100),
-    // or km/h for gen4.
+    // there. 0 (or anything not a number) means 100% of the reference held inside that range for a
+    // policy whose paces are fractions (a policy trained up to 120% is not asked for its very top,
+    // where it has the least practice), and the top for a gen4 one (km/h). In the policy's units:
+    // a fraction of the course's flat-out speed (BotPacePercent / 100), or km/h for gen4.
     private static float PaceFor(DriftPolicy policy, float configured)
     {
+        float unset = policy.PaceIsFraction ? Math.Clamp(1f, policy.PaceLow, policy.PaceHigh) : policy.PaceHigh;
         float used = float.IsFinite(configured) && configured > 0f
             ? Math.Clamp(configured, policy.PaceLow, policy.PaceHigh)
-            : policy.PaceHigh;
+            : unset;
         float scale = policy.PaceIsFraction ? 100f : 1f;
         string unit = policy.PaceIsFraction ? "% of the course's flat-out speed" : " km/h";
         if (float.IsFinite(configured) && configured > 0f && used != configured)
@@ -2686,6 +2688,11 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             DriftCarState state = _spaced[i].State;
             // this bot's own pace (BotStyles); halfRange stays the server's so spacing pushes every bot alike
             float own = byPace ? state.Style.PaceMiddle : middle;
+            // spacing and leading a player only slow a bot from its own pace (BotPacePercent, or its
+            // BotStyles pace), never speed it past it: above that it nears the top of the policy's
+            // range, where it has had the least practice (on Drift Playground at 120% the bots ran
+            // wide into the rail at a hairpin exit every lap). Chasing a player keeps its own top.
+            float ceiling = byPace ? MathF.Max(own, low) : high;
             float target = own;
             float ease = Math.Min(1f, dt / SpacingEaseSeconds);
             state.GapAheadM = -1f;
@@ -2694,7 +2701,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 float ahead = GapAhead(i);
                 float behind = GapAhead((i + n - 1) % n);
                 float imbalance = (ahead - behind) / MathF.Max(ahead + behind, 1f);
-                target = Math.Clamp(own + SpacingGain * imbalance * halfRange, low, high);
+                target = Math.Clamp(own + SpacingGain * imbalance * halfRange, low, ceiling);
                 state.GapAheadM = ahead;
             }
             float playerGap = byPace ? PlayerGapBehind(state, _spaced[i].Arc) : -1f;
@@ -2702,7 +2709,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             if (leading)
             {
                 float behindShare = Math.Clamp((playerGap - LeadNearMeters) / (LeadFarMeters - LeadNearMeters), 0f, 1f);
-                target = high - behindShare * (high - low);
+                target = ceiling - behindShare * (ceiling - low);
                 ease = Math.Min(1f, dt / LeadEaseSeconds);
             }
             if (leading != state.LeadingPlayer)
