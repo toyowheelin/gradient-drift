@@ -22,6 +22,10 @@ namespace GradientDriftPlugin;
 //             over, while the server holds it stopped, or ticks the policy's output was unusable
 //   stuck     BotHealth's stuck episodes (30 s without getting anywhere)
 //
+// Only time with a player on the server counts: once the last one leaves, the bots still out are
+// on their way off (the server takes them away) and drive unlike they do with someone to drive
+// with, so those minutes are left out (no_player_minutes: how many bot-minutes that was).
+//
 // Everything here runs on the server's update thread except Write, which the server's shutdown
 // can call from another; one lock covers both.
 internal sealed class BotScorecard
@@ -59,6 +63,8 @@ internal sealed class BotScorecard
     private long _nowMs;
     private string _fileStem = "";
     private int _playersMax;
+    private bool _counting;
+    private double _noPlayerSeconds;
     private string _note = "";
 
     public BotScorecard(string folder, string track, string policy, float askedGapM)
@@ -83,6 +89,8 @@ internal sealed class BotScorecard
             _bots.Clear();
             _touches.Clear();
             _playersMax = 0;
+            _counting = false;
+            _noPlayerSeconds = 0;
             string safe = new string($"{_track}_{session}".Select(c => char.IsLetterOrDigit(c) || c is '-' or '_' ? c : '_').ToArray());
             _fileStem = $"{_startedLocal:yyyyMMdd_HHmmss}_{safe}";
         }
@@ -113,6 +121,7 @@ internal sealed class BotScorecard
         {
             _nowMs = nowMs;
             _playersMax = Math.Max(_playersMax, players);
+            _counting = players > 0;
         }
     }
 
@@ -121,6 +130,10 @@ internal sealed class BotScorecard
     {
         lock (_lock)
         {
+            if (!_counting)
+            {
+                return;
+            }
             Bot bot = For(sessionId);
             bot.Seconds += dt;
             bot.WaitingSeconds += dt;
@@ -131,6 +144,10 @@ internal sealed class BotScorecard
     {
         lock (_lock)
         {
+            if (!_counting)
+            {
+                return;
+            }
             For(sessionId).Takeovers++;
         }
     }
@@ -140,6 +157,10 @@ internal sealed class BotScorecard
     {
         lock (_lock)
         {
+            if (!_counting)
+            {
+                return;
+            }
             Bot bot = For(sessionId);
             bot.Seconds += dt;
             bot.FollowingSeconds += dt;
@@ -150,6 +171,10 @@ internal sealed class BotScorecard
     {
         lock (_lock)
         {
+            if (!_counting)
+            {
+                return;
+            }
             For(sessionId).Stuck++;
         }
     }
@@ -160,6 +185,11 @@ internal sealed class BotScorecard
     {
         lock (_lock)
         {
+            if (!_counting)
+            {
+                _noPlayerSeconds += dt;
+                return;
+            }
             Bot bot = For(sessionId);
             bot.Seconds += dt;
             if (heldByStock)
@@ -224,6 +254,10 @@ internal sealed class BotScorecard
     {
         lock (_lock)
         {
+            if (!_counting)
+            {
+                return;
+            }
             var key = otherIsBot && other < sessionId ? (other, sessionId) : (sessionId, other);
             bool fresh = !_touches.TryGetValue(key, out long last) || _nowMs - last > TouchGapMs;
             _touches[key] = _nowMs;
@@ -346,6 +380,7 @@ internal sealed class BotScorecard
                 ["policy"] = _policy,
                 ["asked_gap_m"] = _askedGapM,
                 ["players_max"] = _playersMax,
+                ["no_player_minutes"] = Math.Round(_noPlayerSeconds / 60, 1),
                 ["note"] = _note,
                 ["all"] = all,
                 ["bots"] = bots,
@@ -382,7 +417,8 @@ internal sealed class BotScorecard
         sb.AppendLine($"track    {card["track"]}");
         sb.AppendLine($"session  {card["session"]}, started {card["started"]}, {F(card["minutes"], "F0")} min{((bool)card["final"]! ? "" : " so far")}");
         sb.AppendLine($"policy   {card["policy"]}");
-        sb.AppendLine($"players  up to {card["players_max"]} on at once; asked chase gap {F(card["asked_gap_m"], "F1")} m");
+        sb.AppendLine($"players  up to {card["players_max"]} on at once; asked chase gap {F(card["asked_gap_m"], "F1")} m; " +
+                      $"{F(card["no_player_minutes"], "F0")} bot-min with nobody on, not counted");
         if ((string?)card["note"] != "")
         {
             sb.AppendLine($"NOTE     {card["note"]}");
