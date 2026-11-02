@@ -8,7 +8,8 @@ Each car drives one long server-like run (server_run_configs) at a pace from --p
 from --skills; its ticks after the first --skip become one ghost: per tick the time, position,
 heading, rear slip angle, yaw rate, speed, place along the line, offset from it, and its steering
 angle, pedal and brake. Written to
-the track's folder as <track>_ghosts.npz.
+the track's folder as <track>_ghosts.npz, with a label per ghost ('kinds': pace and skill) that
+chase_report.py --by-lead groups by.
 """
 import argparse
 import os
@@ -37,15 +38,17 @@ def main():
     w = fs.load_world(args.tracks, track=args.track)
     w.pace_ref = de.course_pace_reference(args.tracks, args.track, w)
     ghosts = []
+    kinds = []
     for pace in args.paces:
         for skill in args.skills:
             g = record(w, pol, args.cars, args.ticks, args.skip, pace, skill, seed=int(1000 * pace + 10 * skill))
             ghosts += list(g)
+            kinds += [f'bot pace {pace:.2f} skill {skill:.1f}'] * len(g)
             slide = np.mean(np.abs(g[:, :, de.GH_SLIP]) > np.radians(20.0))
             print(f'pace {pace:.2f} skill {skill:.1f}: {args.cars} ghosts, '
                   f'{np.mean(g[:, :, de.GH_SPEED]) * 3.6:.1f} km/h, sliding {100 * slide:.0f}%')
     out = os.path.join(tf.folder(args.tracks, args.track), f'{args.track}_ghosts.npz')
-    np.savez_compressed(out, ghosts=np.stack(ghosts))
+    np.savez_compressed(out, ghosts=np.stack(ghosts), kinds=np.array(kinds))
     print(f'{len(ghosts)} ghosts of {args.ticks - args.skip} ticks -> {out}')
 
 

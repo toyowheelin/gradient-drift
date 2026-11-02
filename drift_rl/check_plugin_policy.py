@@ -128,7 +128,10 @@ def parse_vectors(series, width):
     for i, s in enumerate(series):
         if isinstance(s, str) and s:
             parts = s.split(';')
-            if 0 < len(parts) <= width:          # a file from before inputs were added has fewer
+            # a file from before inputs were added has fewer; a policy with a history block logs more
+            # (its first `width` are the env's inputs)
+            parts = parts[:width]
+            if parts:
                 try:
                     out[i, :len(parts)] = [float(p) for p in parts]
                 except ValueError:
@@ -154,9 +157,37 @@ class Report:
               f"p99 {np.quantile(err, 0.99):8.4f}{unit}  within {tol:g}{unit}: {frac:6.1%}")
 
 
+def policy_actions(policy, obs, d):
+    """The policy's actions for logged observation rows, and (for a policy with a history block) the
+    largest difference between the logged history block and one rebuilt from the logged base inputs.
+    The plugin logs its whole input row, history block included (DriftPolicy.AppendHistory runs
+    before the row is formatted), so the network runs on the logged row as it is; the history is
+    then rebuilt here car by car, one tick at a time in tick order and afresh at each new car or
+    respawn, to check AppendHistory itself. A row logged without the block (an older build) gets it
+    from the rebuild."""
+    h = policy.meta.get('history')
+    if not h:
+        return policy(obs), None
+    width = len(policy.obs_mean)
+    n_base = width - int(h['frames']) * len(h['slots'])
+    rebuilt = np.full((len(obs), width), np.nan)
+    keys = d['SessionId'].astype(str) + '/' + d['SpawnCounter'].astype(str)
+    ticks = d['Tick'].to_numpy()
+    for _, idx in d.groupby(keys).groups.items():
+        idx = np.asarray(idx)[np.argsort(ticks[np.asarray(idx)], kind='stable')]
+        policy._hist = None
+        for i in idx:
+            rebuilt[i] = policy.history_step(obs[i:i + 1, :n_base])[0]
+    policy._hist = None
+    logged = np.isfinite(obs[:, n_base:width]).all(axis=1)
+    full = np.where(logged[:, None], obs[:, :width], rebuilt)
+    diff = np.abs(obs[logged, n_base:width] - rebuilt[logged, n_base:width])
+    return policy.network(full), (diff.max(axis=1) if logged.any() else None)
+
+
 def run_checks(df, policy, world, de, fs, simulate=True):
     rep = Report()
-    obs_all = parse_vectors(df['PolicyObs'], de.OBS_SIZE)
+    obs_all = parse_vectors(df['PolicyObs'], max(de.OBS_SIZE, len(policy.obs_mean)))
     # the inputs this policy reads (a build from before inputs were added logs fewer)
     has_obs = np.isfinite(obs_all[:, :len(policy.obs_mean)]).all(axis=1)
     active = df['PolicyActive'].to_numpy(dtype=bool) & has_obs
@@ -182,7 +213,9 @@ def run_checks(df, policy, world, de, fs, simulate=True):
         return np.where(has_prev, p[name].to_numpy(dtype=float), nan)
 
     print("\n1. Is it the same network?  (logged observation -> Python policy -> compare actions)")
-    act = policy(obs)
+    act, history_err = policy_actions(policy, obs, d)
+    if history_err is not None:
+        rep.line('history block (AppendHistory) vs rebuilt', history_err, np.zeros_like(history_err), 0.002)
     # Below full skill (input 66, the plugin's BotSkill) the plugin hands the car what the network
     # asked a tick or two earlier, plus a wandering noise on steering and pedal (HandicapBySkill,
     # drift_env._step_one): the brake must then match the delayed action exactly, and what is left
@@ -454,6 +487,7 @@ def synthetic_telemetry(world, policy, de, fs, path, n_ticks=1500, seed=3):
                                 rear_sliding_grip_low=grip, rear_sliding_grip_high=grip)
     env = de.DriftVecEnv(world, 1, env_cfg, seed=seed)
     obs = env.reset()
+    policy._hist = None
     cols = ['Tick', 'SessionId', 'PosX', 'PosY', 'PosZ', 'SpeedKmh', 'CeilingKmh', 'CorrectedSplineAngle', 'RayDistances',
             'FanCenterDeg', 'PinDistances', 'SpawnCounter', 'RealDtMs',
             'RealHeadingDeg', 'YawRateDegS', 'LateralVelocityMs', 'SteerCommandDeg', 'RealSlipAngleDeg', 'CrossTrackErrorM',
@@ -464,9 +498,10 @@ def synthetic_telemetry(world, policy, de, fs, path, n_ticks=1500, seed=3):
     with open(path, 'w') as f:
         f.write(','.join(cols) + '\n')
         for tick in range(1, n_ticks + 1):
-            o = obs[0].copy()
+            # the row the plugin logs: the env's inputs plus the history block, if the policy has one
+            o = policy.history_step(obs[:1].copy())[0] if policy.meta.get('history') else obs[0].copy()
             dt = env.mids[0, fs.M_DT]
-            a = policy(o)[0]
+            a = policy.network(o)[0]
             prev_latv = env.states[0, fs.S_LATV]
             pace = env.states[0, fs.S_PACE]         # the pace this tick is driven at (it may be redrawn after)
             obs, r, term, trunc, info = env.step(a[None, :])

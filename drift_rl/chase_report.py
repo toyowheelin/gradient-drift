@@ -25,6 +25,12 @@ without the chase inputs drives blind behind the ghost: the baseline.
   crash          share of touches followed within 3 s by a spin-out or the episode ending
                  (drift_env.TOUCH_CRASH_WINDOW_S)
 
+--by-lead also splits each policy's chase episodes by who drove the lead (the ghost file's labels:
+a bot at a pace and skill, a public driver, the owner's telemetria) and lists the leads with the
+most touches beside how each lead drives: GT Sophy and Sony AI found that the opponents a racer
+practises against decide both how often it collides and whether it learns to hang back. Use many
+episodes (e.g. 2048): each lead kind needs dozens.
+
 The lead is a replayed ghost: nothing pushes back, so by default a touch changes neither car and
 "crash" only shows what the chaser did next. --touch-push gives the chaser its half of an
 equal-mass collision at the contact point (drift_env._touch_push), which is what can turn a tap
@@ -45,6 +51,79 @@ def run(world, pol, cfg, episodes, seed, rcfg=None):
     return de.evaluate(world, pol, n_episodes=episodes, seed=seed, env_config=cfg, reward_config=rcfg)
 
 
+def lead_traits(g):
+    """How a ghost drives, from its own samples: mean km/h, share sliding over 20 deg, worst distance
+    from the AI line (m), share braking (brake input over 0.2), steering reversals a minute, and its
+    95th-percentile yaw acceleration (deg/s2) - the last two a measure of how jerky it is."""
+    t = g[:, de.GH_T]
+    ok = np.r_[True, np.diff(t) > 0]
+    g, t = g[ok], t[ok]
+    minutes = max((t[-1] - t[0]) / 60.0, 1e-9)
+    steer = g[:, de.GH_STEER]
+    s = np.sign(np.round(steer, 3))
+    s = s[s != 0]
+    reversals = int(np.sum(s[1:] != s[:-1])) / minutes
+    yaw_acc = np.abs(np.diff(g[:, de.GH_YAW]) / np.maximum(np.diff(t), 1e-3))
+    return (float(np.mean(g[:, de.GH_SPEED])) * 3.6, float(np.mean(np.abs(g[:, de.GH_SLIP]) > np.radians(20.0))),
+            float(np.max(np.abs(g[:, de.GH_CTE]))), float(np.mean(g[:, de.GH_BRAKE] > 0.2)), reversals,
+            float(np.degrees(np.quantile(yaw_acc, 0.95))) if len(yaw_acc) else 0.0)
+
+
+def kind_group(label):
+    """'bot pace 0.90 skill 0.5' -> 'bot skill 0.5'; 'public x.csv car 4 (m)' -> 'public x.csv'."""
+    base = label.replace(' ?', '')
+    speed = ''
+    if ' x' in base and base.rsplit(' x', 1)[1].replace('.', '').isdigit():
+        base, speed = base.rsplit(' x', 1)
+        speed = f' x{speed}'
+    if base.startswith('bot') and ' skill ' in base:
+        return 'bot skill ' + base.split(' skill ')[1] + speed
+    if base.startswith('public') and ' car ' in base:
+        return base.split(' car ')[0] + speed
+    return base + speed
+
+
+def by_lead(c, kinds, ghosts):
+    """c: the chase episodes (evaluate() dict, already only those that had a lead)."""
+    g = c['ghost']
+    hit = c['contacts'] > 0
+    weight = c['chase_fraction'] * c['length']
+    groups = np.array([kind_group(kinds[i]) if 0 <= i < len(kinds) else '?' for i in g])
+    print(f"  {'lead kind':<36} {'episodes':>8} {'gap':>6} {'in band':>8} {'drift':>6} {'hits':>6} {'km/h':>5}")
+    for name in sorted(set(groups)):
+        m = groups == name
+        w = weight[m]
+        wm = lambda k: float(np.sum(c[k][m] * w) / max(np.sum(w), 1e-9))
+        touches = max(float(np.sum(c['contacts'][m])), 1.0)
+        kmh = 3.6 * float(np.sum(c['contact_closing_ms'][m] * c['contacts'][m])) / touches
+        print(f"  {name[:36]:<36} {int(m.sum()):8d} {wm('chase_mean_gap_m'):6.1f} {wm('chase_in_band_fraction'):8.0%} "
+              f"{wm('chase_drift_fraction'):6.0%} {float(np.mean(hit[m])):6.1%} {kmh:5.1f}")
+    # single leads with the most touches, beside how each drives
+    rows = []
+    for i in np.unique(g[g >= 0]):
+        m = g == i
+        rows.append((int(np.sum(hit[m])), int(m.sum()), int(i)))
+    rows.sort(key=lambda r: (-r[0], -r[0] / max(r[1], 1)))
+    worst = [r for r in rows if r[0] > 0][:12]
+    if worst:
+        print(f"  leads touched most: {'hit/eps':>8} {'km/h':>5} {'slide':>6} {'off m':>6} {'brake':>6} {'rev/min':>8} "
+              f"{'yaw acc p95':>11}  lead")
+        for hits, eps, i in worst:
+            kmh, slide, off, brake, rev, yaw = lead_traits(ghosts[i])
+            print(f"  {'':18} {hits:3d}/{eps:<4d} {kmh:5.1f} {slide:6.0%} {off:6.1f} {brake:6.0%} {rev:8.1f} {yaw:11.0f}  "
+                  f"#{i} {kinds[i] if i < len(kinds) else '?'}")
+    # all leads: does how a lead drives go with how often it is touched?
+    if len(rows) >= 8:
+        traits = np.array([lead_traits(ghosts[i]) for _, _, i in rows])
+        rate = np.array([h / max(e, 1) for h, e, _ in rows])
+        names = ('km/h', 'slide', 'off line', 'brake', 'reversals', 'yaw acc')
+        corr = []
+        for k, name in enumerate(names):
+            x = traits[:, k]
+            corr.append(f"{name} {np.corrcoef(x, rate)[0, 1]:+.2f}" if np.std(x) > 0 and np.std(rate) > 0 else f"{name} -")
+        print("  hit rate per lead against how it drives (correlation over " f"{len(rows)} leads): " + ", ".join(corr))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('policies', nargs='+')
@@ -58,6 +137,8 @@ def main():
                     help='a touch does not end the chase episode (RewardConfig chase_contact_ends 0)')
     ap.add_argument('--touch-push', action='store_true',
                     help='a touch pushes the chaser off the lead (EnvConfig chase_touch_push)')
+    ap.add_argument('--by-lead', action='store_true',
+                    help='also split the chase episodes by who drove the lead, and list the leads touched most')
     de.add_chase_controller_args(ap)
     args = ap.parse_args()
     rcfg = de.RewardConfig(chase_contact_ends=0.0) if args.touches_continue else None
@@ -67,6 +148,7 @@ def main():
     w.ghosts = de.load_ghosts(args.tracks, args.track, args.lead_speed)
     if w.ghosts is None:
         raise SystemExit(f'no ghosts for {args.track}: record_ghosts.py --track {args.track}')
+    kinds = de.load_ghost_kinds(args.tracks, args.track, args.lead_speed) if args.by_lead else None
     print(f"{'policy':<28} {'return':>13} {'drift':>11} {'chase':>6} {'gap':>6} {'in band':>8} "
           f"{'slip':>6} {'line':>6} {'hits':>6} {'km/h':>5} {'taps':>5} {'rear':>5} {'door':>5} {'nose':>5} "
           f"{'held':>5} {'crash':>5}")
@@ -92,6 +174,8 @@ def main():
               f"{closing_kmh:5.1f} {share('contact_taps'):5.0%} {share('contact_rear_end'):5.0%} "
               f"{share('contact_door'):5.0%} {share('contact_nose_side'):5.0%} {share('contact_crashes'):5.0%} "
               f"{share('touch_then_crash'):5.0%}")
+        if kinds is not None and had.any():
+            by_lead(c, kinds, w.ghosts)
 
 
 if __name__ == '__main__':

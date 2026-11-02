@@ -7,7 +7,13 @@ exactly), step ONE tick with the real tick length and the real policy actions, a
 row t. Errors cannot compound, so any field that disagrees points at a specific mechanism where
 the simulator and the plugin differ.
 
-    python replay_live.py drift_physics_telemetry_<date>_<time>.csv
+    python replay_live.py drift_physics_telemetry_<date>_<time>.csv --track <track> --cars-dir <plugin>/cars
+
+The plugin logs every bot into one file (EnableTelemetry), rows interleaved; each bot is followed by
+its SessionId, replayed with the car file whose car inputs match the ones it logged, and with the
+state the telemetry does not log carried from its own previous tick. A policy with a history block
+logs a longer PolicyObs row; its first inputs are the ones read here. The table "along the lap"
+shows where on the line the two part, e.g. a surface the simulator gives the road's grip.
 """
 import math
 import os
@@ -22,37 +28,101 @@ import drift_env as de
 import check_plugin_policy as cp
 
 
-def replay(df, world, params_override=None, plugin_settings=None):
+def car_files(folder):
+    """{name: fast_sim parameter values} of the car files in a plugin's cars/ folder (setup writes
+    <car model>.json there; the plugin drives each bot with its model's)."""
+    import json
+    out = {}
+    for name in sorted(os.listdir(folder)) if folder else ():
+        if name.endswith('.json'):
+            with open(os.path.join(folder, name)) as f:
+                v = json.load(f)
+            out[name[:-5]] = {k: float(x) for k, x in v.items() if k in fs.P and isinstance(x, (int, float))}
+    return out
+
+
+def car_for(logged, cars, base, plugin_settings):
+    """(name, parameter vector, worst car-input error) of the car file whose car inputs (OBS 55-65,
+    drift_env.car_inputs) best match a bot's logged ones; ('default', base, error) without car files."""
+    best = ('default', base, np.inf)
+    for name, values in [('default', {})] + list(cars.items()):
+        p = base.copy()
+        for k, v in values.items():
+            p[fs.P[k]] = v
+        de.apply_plugin_settings(p, plugin_settings)
+        mine = np.zeros(de.N_CAR_OBS)
+        de.car_inputs(p, mine, 0)
+        err = float(np.nanmax(np.abs(mine - logged))) if np.isfinite(logged).any() else np.nan
+        if not np.isfinite(best[2]) or err < best[2]:
+            best = (name, p, err)
+    return best
+
+
+def replay(df, world, params_override=None, plugin_settings=None, cars=None, session=None):
+    """One-tick predictions for every row whose car's previous tick (same SessionId, same
+    SpawnCounter, Tick - 1) is in the file. The plugin logs every bot in one file, rows interleaved,
+    so each car is followed by its SessionId. State the telemetry does not log (load shift, line
+    counters, surface grip, pin surfaces ...) is carried over from the same car's previous replayed
+    tick; the rest is rebuilt from the log each tick, so errors cannot compound."""
     W = world.arrays()
-    p = fs.make_params()
-    de.apply_plugin_settings(p, plugin_settings)      # the steering lock etc. the policy file carries
+    base = fs.make_params()
+    de.apply_plugin_settings(base, plugin_settings)      # the steering lock etc. the policy file carries
     # the height model of the plugin build that wrote this file (ground ray or the older blend);
     # an explicit params_override still wins, for "what would the other one have done" replays
     for k, v in cp.plugin_overrides_for(df).items():
-        p[fs.P[k]] = v
+        base[fs.P[k]] = v
     if params_override:
         for k, v in params_override.items():
-            p[fs.P[k]] = v
+            base[fs.P[k]] = v
     obs = cp.parse_vectors(df['PolicyObs'], de.OBS_SIZE)
     rays = cp.parse_vectors(df['RayDistances'], fs.N_RAYS)
     pins = cp.parse_vectors(df['PinDistances'], fs.N_PINS)
     n = len(df)
     col = {c: df[c].to_numpy() for c in df.columns if df[c].dtype != object}
-    consecutive = np.r_[False, (np.diff(col['Tick']) == 1) & (np.diff(col['SpawnCounter']) == 0)]
+    sid = col['SessionId'] if 'SessionId' in col else np.zeros(n)
+    prev_row = np.full(n, -1)
+    last = {}
+    for t in range(n):
+        key = (sid[t], col['SpawnCounter'][t])
+        q = last.get(key)
+        if q is not None and col['Tick'][t] - col['Tick'][q] == 1:
+            prev_row[t] = q
+        last[key] = t
+    next_row = np.full(n, -1)
+    next_row[prev_row[prev_row >= 0]] = np.nonzero(prev_row >= 0)[0]
 
     out = {k: np.full(n, np.nan) for k in (
         'heading_deg', 'yaw_degs', 'latv', 'x', 'z', 'speed_kmh', 'steer_deg', 'cte', 'spin', 'pushout',
         'accel', 'front_slip', 'rear_slip', 'nearest', 'np_glitch', 'glitch', 'y', 'ray_err', 'pin_err', 'own_kmh',
         'own_real_kmh')}
-    carry, carry_t = None, -1
+    out['session'] = sid
+    params = {}
+    car_names = {}
+    carry = {}
     diag = np.zeros(fs.DIAG_SIZE)
     mid = np.zeros(fs.MID_SIZE)
+    first_obs = de.CAR_OBS_SLOT + de.N_CAR_OBS <= obs.shape[1]
     for t in range(1, n):
-        if not consecutive[t] or not np.isfinite(obs[t, :de.OBS_SIZE_V1]).all() or obs[t, 45] > 0.5:
+        if session is not None and sid[t] != session:
             continue
-        q = t - 1
-        s = fs.initial_state((col['PosX'][q], col['PosY'][q], col['PosZ'][q]), math.radians(col['RealHeadingDeg'][q]),
-                             col['CeilingKmh'][t] / 3.6)
+        q = prev_row[t]
+        if q < 0 or not np.isfinite(obs[t, :de.OBS_SIZE_V1]).all() or obs[t, 45] > 0.5:
+            continue
+        if sid[t] not in params:
+            logged = (np.nanmedian(obs[sid == sid[t], de.CAR_OBS_SLOT:de.CAR_OBS_SLOT + de.N_CAR_OBS], axis=0)
+                      if first_obs else np.full(de.N_CAR_OBS, np.nan))
+            name, params[sid[t]], err = car_for(logged, cars or {}, base, plugin_settings)
+            car_names[sid[t]] = (name, err)
+        p = params[sid[t]]
+        c = carry.get(sid[t])
+        if c is not None and c[0] == q:
+            s = c[1].copy()
+            s[fs.S_X], s[fs.S_Y], s[fs.S_Z] = col['PosX'][q], col['PosY'][q], col['PosZ'][q]
+            s[fs.S_HEADING] = math.radians(col['RealHeadingDeg'][q])
+            s[fs.S_MAX_SPEED] = col['CeilingKmh'][t] / 3.6
+        else:
+            s = fs.initial_state((col['PosX'][q], col['PosY'][q], col['PosZ'][q]),
+                                 math.radians(col['RealHeadingDeg'][q]), col['CeilingKmh'][t] / 3.6)
         s[fs.S_YAW] = obs[t, 2] * 2.0
         s[fs.S_LATV] = obs[t, 1] * 10.0
         s[fs.S_OWN_SPEED] = obs[t, 0] * 25.0
@@ -62,27 +132,23 @@ def replay(df, world, params_override=None, plugin_settings=None):
         s[fs.S_SPIN_RECOVERING] = obs[t, 40]
         s[fs.S_SMOOTH_H] = col['PosY'][q]       # _smoothedHeight is what the plugin wrote into position.Y
         s[fs.S_REAR_SLIDE_GRIP] = 1.0 - 0.5 * obs[t, 35]    # the plugin's RearSlidingGrip, as the policy was shown it
+        if 'Pace' in col and np.isfinite(col['Pace'][t]):
+            s[fs.S_PACE] = col['Pace'][t]
         # last tick's steering command is model state once the rear thrust limit is on (it sets
         # the front tires' pull along the car); the policy was shown it as a fraction of lock
         s[fs.S_LAST_STEER] = obs[t, 41] * p[fs.P_MAX_STEER_RAD]
-        # Counters the telemetry does not log (nearest-point history, recovery streak) are carried
-        # over from the previous replayed tick - the only chained state here.
-        if carry is not None and carry_t == q:
-            s[fs.S_PREV_NEAREST] = carry[fs.S_PREV_NEAREST]
-            s[fs.S_NP_STREAK] = carry[fs.S_NP_STREAK]
-            s[fs.S_SPIN_STREAK] = carry[fs.S_SPIN_STREAK]
-        else:
-            s[fs.S_PREV_NEAREST] = -1
         brake = col['PolicyBrakeAction'][t] if 'PolicyBrakeAction' in col else 0.0   # older builds: none
         fs.step(s, col['PolicySteerAction'][t], col['PolicySpeedAction'][t], brake, col['RealDtMs'][t] / 1000.0,
                 p, diag, mid, *W)
-        carry, carry_t = s.copy(), t
+        carry[sid[t]] = (t, s.copy())
         out['y'][t] = s[fs.S_Y]
         out['own_kmh'][t] = s[fs.S_OWN_SPEED] * 3.6
         if 'OwnSpeedKmh' in col:
             out['own_real_kmh'][t] = col['OwnSpeedKmh'][t]          # the direct-only plugin logs it
-        elif t + 1 < n and consecutive[t + 1] and np.isfinite(obs[t + 1, 0]):
-            out['own_real_kmh'][t] = obs[t + 1, 0] * 25.0 * 3.6     # the NEXT row's observation carries it
+        else:
+            nxt = next_row[t]
+            if nxt >= 0 and np.isfinite(obs[nxt, 0]):
+                out['own_real_kmh'][t] = obs[nxt, 0] * 25.0 * 3.6     # the NEXT row's observation carries it
         out['ray_err'][t] = np.abs(s[fs.S_RAY0:fs.S_RAY0 + fs.N_RAYS] - rays[t]).max()
         out['pin_err'][t] = np.abs(s[fs.S_PIN0:fs.S_PIN0 + fs.N_PINS] - pins[t]).max()
         out['nearest'][t] = diag[fs.D_NearestPointId]
@@ -100,6 +166,7 @@ def replay(df, world, params_override=None, plugin_settings=None):
         out['accel'][t] = diag[fs.D_RealizedLongitudinalAccelMs2]
         out['front_slip'][t] = diag[fs.D_FrontSlipAngleDeg]
         out['rear_slip'][t] = diag[fs.D_RearSlipAngleDeg]
+    out['cars'] = car_names
     return out
 
 
@@ -142,12 +209,44 @@ def report(df, out):
     print(f"ticks with a fan ray off by more than 0.6 m: {np.mean(out['ray_err'][ok] > 0.6):.1%}; "
           f"with a pin off by more than 0.3 m: {np.mean(out['pin_err'][ok] > 0.3):.1%}")
     ok = np.isfinite(out['spin'])
-    for name, pred, real in (('angle-glitch flag', out['glitch'], df['AngleGlitchCorrected']),
-                             ('nearest-point-glitch flag', out['np_glitch'], df['NearestPointGlitchCorrected'])):
+    for name, pred, real in (('angle-glitch flag', out['glitch'], col('AngleGlitchCorrected')),
+                             ('nearest-point-glitch flag', out['np_glitch'], col('NearestPointGlitchCorrected'))):
+        if real is None:
+            continue
         real = np.asarray(real, dtype=float)
         print(f"{name}: real {int(real[ok].sum())}, simulator {int(pred[ok].sum())}, disagree on {int((pred[ok] != real[ok]).sum())} ticks")
     real_spin = np.asarray(df['UncontrolledSpinRecovering'], dtype=float)
     print(f"spin-recovery flag mismatches: {int((out['spin'][ok] != real_spin[ok]).sum())} of {ok.sum()}")
+    sessions = out.get('session')
+    if sessions is not None and len(out.get('cars') or {}) > 1:
+        print(f"\nper car (SessionId, car file matched by its car inputs, worst car-input error; "
+              f"median one-tick error of yaw rate deg/s, lateral velocity m/s, position m)")
+        for s, (name, err) in sorted(out['cars'].items()):
+            m = (sessions == s) & np.isfinite(out['yaw_degs'])
+            def med(pred, real):
+                e = np.abs(pred[m] - np.asarray(real, dtype=float)[m])
+                return float(np.median(e)) if len(e) else np.nan
+            pos = np.hypot(out['x'][m] - df['PosX'].to_numpy()[m], out['z'][m] - df['PosZ'].to_numpy()[m])
+            print(f"  {int(s):4d} {name:28s} {err:7.4f}  ticks {int(m.sum()):6d}  yaw {med(out['yaw_degs'], df['YawRateDegS']):7.3f}"
+                  f"  latv {med(out['latv'], df['LateralVelocityMs']):6.3f}  pos {float(np.median(pos)) if len(pos) else np.nan:6.3f}")
+    if 'NearestPointId' in df.columns:
+        # where along the line the model and the server part: a stretch whose errors stand out is a
+        # place (a surface, a kerb, a wall) the simulator does not see as the server does
+        point = np.asarray(df['NearestPointId'], dtype=float)
+        ok = np.isfinite(out['yaw_degs']) & np.isfinite(point)
+        if ok.sum() > 200:
+            n_points = max(int(np.nanmax(point)) + 1, 1)
+            share = point[ok] / n_points
+            e_yaw = np.abs(out['yaw_degs'][ok] - np.asarray(df['YawRateDegS'], dtype=float)[ok])
+            e_lat = np.abs(out['latv'][ok] - np.asarray(df['LateralVelocityMs'], dtype=float)[ok])
+            print("\nalong the lap (share of the AI line; median one-tick error, then the worst tenth's)")
+            print(f"  {'lap':>11s}{'ticks':>7s}{'yaw deg/s':>11s}{'p90':>8s}{'latv m/s':>10s}{'p90':>8s}")
+            for b in range(20):
+                m = (share >= b / 20) & (share < (b + 1) / 20)
+                if m.sum() < 20:
+                    continue
+                print(f"  {b / 20:5.2f}-{(b + 1) / 20:4.2f}{int(m.sum()):7d}{np.median(e_yaw[m]):11.3f}{np.quantile(e_yaw[m], 0.9):8.3f}"
+                      f"{np.median(e_lat[m]):10.4f}{np.quantile(e_lat[m], 0.9):8.4f}")
     print("* SpeedKmh is the velocity the plugin reports to clients, not state: on wall-contact ticks the plugin\n"
           "  removes the into-the-wall part of it first (GradientDriftPlugin.cs, collision response), so p99/max are\n"
           "  large here by construction. The state behind it (own speed, lateral velocity, position, heading)\n"
@@ -173,13 +272,27 @@ if __name__ == '__main__':
     ap.add_argument('--policy', default=None,
                     help='the policy file the server ran (for the plugin settings it carries). Default: the one '
                          'in the plugin source folder')
+    import track_files as tf
+    tf.tracks_arg(ap)
+    ap.add_argument('--track', default=None, help="the track the server ran (default: the policy's own)")
+    ap.add_argument('--cars-dir', default=None,
+                    help="the plugin's cars/ folder (setup's car files): each bot is replayed with the file whose "
+                         "car inputs match its logged ones; without it, the default car")
+    ap.add_argument('--session', type=int, default=None, help='replay only this SessionId')
     args = ap.parse_args()
     used, plugin_settings = policy_settings(args.policy)
     print(f"policy: {used}")
     if plugin_settings:
         print("plugin settings from the policy file: " + ", ".join(f"{k}={v:g}" for k, v in plugin_settings.items()))
     df = cp.load_telemetry(args.telemetry)
-    import track_files as tf
-    world = fs.load_world(tf.TRACKS_DIR)
+    from policy import Policy
+    track = args.track or Policy.load_json(used).meta.get('track') or tf.TRACK
+    print(f"track: {track}")
+    world = fs.load_world(args.tracks, track=track)
     print(f"car height in this run: {'ground ray' if cp.plugin_overrides_for(df)['EXT_GROUND_RAY_HEIGHT'] else 'spline / road-mesh blend'}")
-    report(df, replay(df, world, plugin_settings=plugin_settings))
+    out = replay(df, world, plugin_settings=plugin_settings, cars=car_files(args.cars_dir), session=args.session)
+    for s, (name, err) in sorted(out['cars'].items()):
+        if np.isfinite(err) and err > 0.01:
+            print(f"WARNING: SessionId {int(s)}: no car file matches its logged car inputs (closest {name}, off by "
+                  f"{err:.3f}); its replay uses the wrong car. Give --cars-dir the server's plugin cars/ folder.")
+    report(df, out)

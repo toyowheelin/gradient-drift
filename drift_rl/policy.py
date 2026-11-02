@@ -74,6 +74,11 @@ class Policy:
         h = self.meta.get('history')
         if h:
             obs = self.history_step(np.atleast_2d(obs))
+        return self.network(obs)
+
+    def network(self, obs):
+        """The actions for inputs that already carry the history block (what the plugin's PolicyObs
+        telemetry column logs): no history is added or kept."""
         raw = np.atleast_2d(obs)[:, :len(self.obs_mean)]
         x = np.clip((raw - self.obs_mean) / self.obs_std, -10.0, 10.0)
         a = self.mlp.forward(x)

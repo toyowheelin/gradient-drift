@@ -2061,6 +2061,39 @@ def load_ghosts(tracks_dir, track, speeds=(1.0,)):
     return np.concatenate([scale_ghosts(g, r) for r in speeds]) if tuple(speeds) != (1.0,) else g
 
 
+def load_ghost_kinds(tracks_dir, track, speeds=(1.0,)):
+    """A label per ghost of load_ghosts(tracks_dir, track, speeds): what drove it ('bot pace 0.90
+    skill 0.5', 'public <recording> car 4 (<model>)', 'telemetria <recording>'), with ' x<speed>'
+    when replayed at another share of its speed. Files from before the labels were saved get
+    guess_ghost_kinds()."""
+    import track_files as tf
+    path = os.path.join(tf.folder(tracks_dir, track), f'{track}_ghosts.npz')
+    if not os.path.exists(path):
+        return None
+    f = np.load(path)
+    kinds = [str(k) for k in f['kinds']] if 'kinds' in f.files else guess_ghost_kinds(f['ghosts'])
+    if tuple(speeds) == (1.0,):
+        return kinds
+    return [k + (f' x{r:g}' if r != 1.0 else '') for r in speeds for k in kinds]
+
+
+def guess_ghost_kinds(g):
+    """Labels for a ghost file saved without them. A recorded human (telemetry_ghosts.py) is sampled
+    on an even clock (its --tick); a bot (record_ghosts.py) on the simulator's uneven server-like
+    ticks. Bots in record_ghosts.py's default layout (paces 0.85 / 0.9 / 0.95 x skills 1.0 / 0.5 x 16
+    cars, in that order, first in the file) get their pace and skill, marked '?' as inferred."""
+    g = np.asarray(g)
+    n = len(g)
+    dt = np.diff(g[:, :50, GH_T], axis=1)
+    even = (np.ptp(dt, axis=1) < 1e-6) & (dt[:, 0] > 0)
+    kinds = ['recorded human ?' if e else 'bot ?' for e in even]
+    bots = int(np.argmax(even)) if even.any() else n
+    if bots == 96 and not even[:96].any():
+        kinds[:96] = [f'bot pace {p:.2f} skill {s:.1f} ?' for p in (0.85, 0.9, 0.95) for s in (1.0, 0.5)
+                      for _ in range(16)]
+    return kinds
+
+
 def scale_ghosts(g, r):
     """Ghosts driving the same path at r times their speed: their clock runs 1 / r as long, speeds and
     yaw rates are r times as large. A tandem lead drives under the chaser's limit, so a chaser has
@@ -2107,6 +2140,10 @@ class DriftVecEnv:
         self.pace_ref = np.ascontiguousarray(ref if ref is not None else np.zeros(len(world.sp_pos)), dtype=np.float64)
         self.gh, self.gh_len = ghost_arrays(world)
         self.chase_join = np.full(n_envs, -1.0)
+        # which ghost each car chases this episode (-1: none yet), and at an episode's end the one it
+        # chased (evaluate()'s 'ghost', for reports by lead)
+        self.chase_ghost = np.full(n_envs, -1, dtype=np.int64)
+        self.ghost_out = np.full(n_envs, -1, dtype=np.int64)
         self.lap = float(world.sp_cum[-1] + world.sp_length[-1])
         self.base_params = fs.make_params()
         apply_plugin_settings(self.base_params, self.cfg.plugin_settings)
@@ -2180,6 +2217,7 @@ class DriftVecEnv:
         """EnvConfig.chase_share of these cars, just reset, get a ghost leader: it pulls in ahead
         of the car CHASE_JOIN_S into the episode (_join_chases)."""
         self.chase_join[idx] = -1.0
+        self.chase_ghost[idx] = -1
         if self.cfg.chase_share <= 0.0 or len(self.gh_len) == 0:
             return
         idx = idx[self.rng.random(len(idx)) < self.cfg.chase_share]
@@ -2238,6 +2276,7 @@ class DriftVecEnv:
             j = int(hit[self.rng.integers(len(hit))])
             c = self.counters[i]
             c[C_GHOST] = g + 1
+            self.chase_ghost[i] = g
             c[C_GHOST_T] = ghost[j, GH_T]
             c[C_GHOST_K] = j
             c[C_CHASE_ASK] = self.rng.uniform(self.cfg.chase_gap_low, self.cfg.chase_gap_high)
@@ -2294,6 +2333,7 @@ class DriftVecEnv:
         if len(done_idx):
             info['episodes'] = finalize_episode_stats(self.ep_out[done_idx])
             info['episode_cars'] = done_idx
+            self.ghost_out[done_idx] = self.chase_ghost[done_idx]
             self._draw_skill(done_idx)
             self._draw_cars(done_idx)
             self._randomise_grip(done_idx)
@@ -2360,13 +2400,17 @@ def evaluate(world, policy_fn, n_episodes=64, seed=12345, env_config=None, rewar
     obs = env.reset()
     finished = np.zeros(n_episodes, dtype=bool)
     stats = np.zeros((n_episodes, EP_SIZE))
+    ghosts = np.full(n_episodes, -1, dtype=np.int64)
     while not finished.all():
         act = policy_fn(obs)
         obs, r, term, trunc, info = env.step(act)
         done = (term | trunc) & ~finished      # only each car's FIRST episode counts
         stats[done] = env.ep_out[done]
+        ghosts[done] = env.ghost_out[done]
         finished |= done
-    return finalize_episode_stats(stats)
+    out = finalize_episode_stats(stats)
+    out['ghost'] = ghosts                      # the ghost each episode chased (world.ghosts row), -1 none
+    return out
 
 
 def env_config_for(policy_meta=None, **overrides):

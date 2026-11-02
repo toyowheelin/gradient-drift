@@ -310,6 +310,10 @@ def main():
                          'Bansal et al. 2018, https://arxiv.org/abs/1710.03748; GT Sophy trained against itself '
                          'among a mix, Wurman et al. 2022). Bots chase bots running this same policy (ChaseBots). '
                          'Needs --chase. 0 = off')
+    ap.add_argument('--snapshot-every', type=int, default=0, metavar='TICKS',
+                    help='also save the policy every this many ticks as snapshots/policy_<ticks>.json, to choose '
+                         'from afterwards with pick_policy.py (GT Sophy kept policies at regular intervals and '
+                         'chose by a fixed set of scenarios: later ones trade one skill for another); 0 = off')
     ap.add_argument('--self-ghost-every', type=int, default=25_000_000, metavar='TICKS',
                     help='ticks between --self-ghosts refreshes')
     ap.add_argument('--amp', default=None, metavar='NPZ',
@@ -1256,6 +1260,7 @@ def main():
         save_checkpoint()
 
     next_self_ghosts = steps_done + args.self_ghost_every
+    next_snapshot = steps_done + args.snapshot_every if args.snapshot_every > 0 else None
     try:
         while steps_done < target_steps:
             if args.minutes is not None and (time.time() - t_start) / 60.0 >= args.minutes:
@@ -1503,6 +1508,10 @@ def main():
             if self_slots and steps_done >= next_self_ghosts:
                 refresh_self_ghosts()
                 next_self_ghosts = steps_done + args.self_ghost_every
+            if next_snapshot is not None and steps_done >= next_snapshot:
+                os.makedirs(os.path.join(out_dir, 'snapshots'), exist_ok=True)
+                make_policy().save_json(os.path.join(out_dir, 'snapshots', f'policy_{steps_done}.json'))
+                next_snapshot = steps_done + args.snapshot_every
             if (now - t_last_eval) / 60.0 >= args.eval_minutes or steps_done >= target_steps:
                 evaluate_now()
                 if adr is not None:
