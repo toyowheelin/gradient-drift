@@ -317,6 +317,18 @@ public class GradientDriftConfiguration
     // can scrub speed and keep the rear loose. Set by the policy file.
     public bool FrontBrakeOnly { get; set; } = false;
 
+    // With EnableRearFrictionCircle: the rear tires' friction circle while the throttle spins
+    // them, as a share of their peak. It shrinks toward this with the share of full-throttle
+    // thrust they are driven with: a spinning tire grips less every way than at its peak.
+    // 1 = off. Set by the policy file.
+    public float RearSpinGripShare { get; set; } = 1f;
+
+    // Each axle's peak friction times the grip of the ground under it: its surface's FRICTION in
+    // the track's surfaces.ini over the main road's, from <track>_collision_grip.csv.gz (setup
+    // writes it beside the other track files). The game scales its own tyres by the surface the
+    // same way, so a slippery stretch of road is slippery for the bots too. Set by the policy file.
+    public bool SurfaceGrip { get; set; } = false;
+
     // Floor on the speed in the slip-angle formula, which is singular at zero speed.
     public float MinSlipAngleSpeedMs { get; set; } = 3.0f;
 

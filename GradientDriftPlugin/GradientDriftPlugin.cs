@@ -163,7 +163,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private readonly List<(DriftCarState State, byte LeadId, bool IsBot, float Gap, float LeadSpeed, bool Kept)> _chaseOffers = new();
     private long _chaseEpochMs = -1;
     private int[] _gapOrder = new int[8];
-    private readonly float[] _observation = new float[DriftPolicy.ObservationSize];
+    private readonly float[] _observation = new float[DriftPolicy.ObservationSize + DriftPolicy.MaxHistoryInputs];
 
     private DriftTelemetry? _telemetry;
     private long _tickCounter;
@@ -215,7 +215,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _roadMeshTree = _roadMeshPoints.Length > 0 ? new MeshKdTree(_roadMeshPoints) : null;
 
         TrackTriangle[] sensorTriangles = TrackGeometry.Load(trackName + TrackGeometry.SensorFileSuffix);
-        TrackTriangle[] collisionTriangles = TrackGeometry.Load(trackName + TrackGeometry.CollisionFileSuffix);
+        TrackTriangle[] collisionTriangles = TrackGeometry.Load(trackName + TrackGeometry.CollisionFileSuffix,
+            trackName + TrackGeometry.CollisionGripFileSuffix);
         TriangleGrid? sensorGrid = null;
         if (sensorTriangles.Length > 0 && collisionTriangles.Length > 0)
         {
@@ -227,6 +228,11 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         if (policy != null && !ApplyPolicySettings(policy))
         {
             policy = null;
+        }
+        if (_configuration.SurfaceGrip && !File.Exists(trackName + TrackGeometry.CollisionGripFileSuffix))
+        {
+            Log.Warning("GradientDrift: the policy drives with SurfaceGrip but {Path} is not there - every surface grips 1 (setup writes it with the track's other files)",
+                Path.GetFullPath(trackName + TrackGeometry.CollisionGripFileSuffix));
         }
         // the sensors after the policy file's settings (it may set the pins' height)
         if (sensorGrid != null && _collisionGrid != null)
@@ -348,6 +354,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 "FrontBrakeOnly" => value == 0f || value == 1f,
                 "CarOutlineContact" => value == 0f || value == 1f,
                 "RoundTireCurve" => value == 0f || value == 1f,
+                "RearSpinGripShare" => value > 0f && value <= 1f,
+                "SurfaceGrip" => value == 0f || value == 1f,
                 _ => false,
             };
             if (!usable)
@@ -369,6 +377,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _configuration.FrontBrakeOnly = false;
         _configuration.CarOutlineContact = false;
         _configuration.RoundTireCurve = false;
+        _configuration.RearSpinGripShare = 1f;
+        _configuration.SurfaceGrip = false;
 
         foreach ((string name, float value) in policy.PluginSettings)
         {
@@ -436,6 +446,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     break;
                 case "RoundTireCurve":
                     _configuration.RoundTireCurve = value == 1f;
+                    break;
+                case "RearSpinGripShare":
+                    _configuration.RearSpinGripShare = value;
+                    break;
+                case "SurfaceGrip":
+                    _configuration.SurfaceGrip = value == 1f;
                     break;
             }
             VerboseLog.Information("GradientDrift: {Name} = {Value}, from the policy file", name, value);
@@ -974,6 +990,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 }
             }
 
+            policy.AppendHistory(_observation, state.Policy);
             DriftPolicyAction action = policy.Evaluate(_observation);
             _timing.Add(PluginTiming.Part.Network, networkStart);
             float steerAction = action.Valid ? action.Steer : state.Policy.PreviousSteerAction;
@@ -1000,6 +1017,11 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
             float previousOwnSpeed = state.OwnSpeed ?? desiredSpeed;
             (_muFront, _muRear) = AxleFriction(state.OwnSpeed ?? 0f, state.YawRate);
+            if (_configuration.SurfaceGrip)
+            {
+                _muFront *= state.FrontSurfaceGrip > 0f ? state.FrontSurfaceGrip : 1f;
+                _muRear *= state.RearSurfaceGrip > 0f ? state.RearSurfaceGrip : 1f;
+            }
             bool pedal = _configuration.EnableRearFrictionCircle;
             if (pedal && _configuration.DisableBrakes)
             {
@@ -1310,6 +1332,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
         state.Position = position;
         state.Velocity = velocity;
+        if (_configuration.SurfaceGrip)
+        {
+            long gripStart = PluginTiming.Now();
+            UpdateSurfaceGrip(collision, state, position);
+            _timing.Add(PluginTiming.Part.Sensors, gripStart);
+        }
         // Clients draw the car with its body at the height they are sent, so each car model is
         // sent at its own CG height above the ground (its car file's CG_HEIGHT_M) rather than the
         // one ride height the bot drives and senses at: a low car no longer floats, a tall one
@@ -1503,6 +1531,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
         float rearAlongN;
         float frontBrakeN;
+        float rearCircleN = rearPeakForceN;     // the rear friction circle's radius (RearSpinGripShare)
         if (pedal >= 0f)
         {
             rearAlongN = pedal * rearPeakForceN * MathF.Sqrt(MathF.Max(0f, 1f - state.RearSlidingGrip * state.RearSlidingGrip));
@@ -1513,6 +1542,16 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             float toLimitN = mass * ((maxSpeed - previousOwnSpeed) / dt - slideLoss) - frontAlongN - leftFootBrakeN;
             rearAlongN = MathF.Max(0f, MathF.Min(rearAlongN, toLimitN));
             frontBrakeN = leftFootBrakeN;
+            // RearSpinGripShare: the circle shrinks with the share of full-throttle thrust used
+            // (not for thrust the engine or the speed limit holds back: those tires aren't spinning)
+            float spinShare = _configuration.RearSpinGripShare;
+            float fullAlongN = rearPeakForceN * MathF.Sqrt(MathF.Max(0f, 1f - state.RearSlidingGrip * state.RearSlidingGrip));
+            if (spinShare > 0f && spinShare < 1f && fullAlongN > 1e-6f)
+            {
+                float spun = 1f - (1f - spinShare) * MathF.Min(1f, rearAlongN / fullAlongN);
+                rearCircleN *= spun;
+                rearAlongN *= spun;
+            }
         }
         else
         {
@@ -1526,7 +1565,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             frontBrakeN = MathF.Max(frontBrakeN, -frontPeakForceN);
             frontCapacityN = MathF.Sqrt(MathF.Max(0f, frontPeakForceN * frontPeakForceN - frontBrakeN * frontBrakeN));
         }
-        rearCapacityN = MathF.Sqrt(MathF.Max(0f, rearPeakForceN * rearPeakForceN - rearAlongN * rearAlongN));
+        rearCapacityN = MathF.Sqrt(MathF.Max(0f, rearCircleN * rearCircleN - rearAlongN * rearAlongN));
 
         // A rear axle at the edge of its circle slips lengthwise by (thrust / sideways force)
         // times its sideways slip.
@@ -1842,6 +1881,58 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         }
 
         groundY = 0f;
+        return false;
+    }
+
+    // SurfaceGrip: the grip of the ground under each axle at this tick's pose, for the next tick's
+    // friction (fast_sim.step_post); where no ground is found the last value stays.
+    private void UpdateSurfaceGrip(TriangleGrid collision, DriftCarState state, Vector3 position)
+    {
+        float heading = state.Heading ?? 0f;
+        var forward = new Vector3(MathF.Cos(heading), 0f, MathF.Sin(heading));
+        if (TryFindGroundGrip(collision, position + forward * _car.DistanceCgToFrontAxleM, out float front))
+        {
+            state.FrontSurfaceGrip = front;
+        }
+        if (TryFindGroundGrip(collision, position - forward * _car.DistanceCgToRearAxleM, out float rear))
+        {
+            state.RearSurfaceGrip = rear;
+        }
+    }
+
+    // The grip of the first collision triangle below a point that is not a Wall, cast from 3 m
+    // above it over 12 m (fast_sim.ground_grip). A miss is tried again CrackProbeM to each side:
+    // collision meshes have cracks a few cm wide between triangles.
+    private const float CrackProbeM = 0.15f;
+
+    private static bool TryFindGroundGrip(TriangleGrid collision, Vector3 position, out float grip)
+    {
+        for (int k = 0; k < 5; k++)
+        {
+            float dx = k == 1 ? CrackProbeM : k == 2 ? -CrackProbeM : 0f;
+            float dz = k == 3 ? CrackProbeM : k == 4 ? -CrackProbeM : 0f;
+            float originY = position.Y + 3f;
+            float remaining = 12f;
+            for (int layer = 0; layer < GroundRayMaxWallLayers; layer++)
+            {
+                if (!collision.Raycast(new Vector3(position.X + dx, originY, position.Z + dz), -Vector3.UnitY, remaining, out RaycastHit hit))
+                {
+                    break;
+                }
+                if (hit.Surface != SurfaceType.Wall)
+                {
+                    grip = hit.Grip;
+                    return true;
+                }
+                originY -= hit.Distance + 0.001f;
+                remaining -= hit.Distance + 0.001f;
+                if (remaining <= 0f)
+                {
+                    break;
+                }
+            }
+        }
+        grip = 1f;
         return false;
     }
 

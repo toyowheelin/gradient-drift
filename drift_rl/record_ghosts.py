@@ -39,39 +39,46 @@ def main():
     ghosts = []
     for pace in args.paces:
         for skill in args.skills:
-            cfg, rw = de.server_run_configs(pol.meta, ticks=args.ticks + 1, pace=pace, skill=skill)
-            env = de.DriftVecEnv(w, n_envs=args.cars, env_config=cfg, reward_config=rw,
-                                 seed=int(1000 * pace + 10 * skill))
-            obs = env.reset()
-            rows = np.zeros((args.ticks, args.cars, de.GH_COLS))
-            t = np.zeros(args.cars)
-            for k in range(args.ticks):
-                dt = env.mids[:, de.M_DT].copy()
-                obs, _, _, _, _ = env.step(np.asarray(pol(obs)))
-                s, d = env.states, env.diags
-                t += dt
-                rows[k, :, de.GH_T] = t
-                rows[k, :, de.GH_X] = s[:, fs.S_X]
-                rows[k, :, de.GH_Z] = s[:, fs.S_Z]
-                rows[k, :, de.GH_HEADING] = s[:, fs.S_HEADING]
-                rows[k, :, de.GH_SLIP] = d[:, fs.D_RealSlipAngleRad]
-                rows[k, :, de.GH_YAW] = s[:, fs.S_YAW]
-                rows[k, :, de.GH_SPEED] = d[:, fs.D_SpeedKmh] / 3.6
-                rows[k, :, de.GH_ARC] = s[:, fs.S_ARC]
-                rows[k, :, de.GH_CTE] = d[:, fs.D_CrossTrackErrorM]
-                rows[k, :, de.GH_STEER] = s[:, fs.S_LAST_STEER]
-                rows[k, :, de.GH_PEDAL] = env.prev_act[:, 1]
-                rows[k, :, de.GH_BRAKE] = env.prev_act[:, 2]
-            for c in range(args.cars):
-                g = rows[args.skip:, c].copy()
-                g[:, de.GH_T] -= g[0, de.GH_T]
-                ghosts.append(g)
-            slide = np.mean(np.abs(rows[args.skip:, :, de.GH_SLIP]) > np.radians(20.0))
+            g = record(w, pol, args.cars, args.ticks, args.skip, pace, skill, seed=int(1000 * pace + 10 * skill))
+            ghosts += list(g)
+            slide = np.mean(np.abs(g[:, :, de.GH_SLIP]) > np.radians(20.0))
             print(f'pace {pace:.2f} skill {skill:.1f}: {args.cars} ghosts, '
-                  f'{np.mean(rows[args.skip:, :, de.GH_SPEED]) * 3.6:.1f} km/h, sliding {100 * slide:.0f}%')
+                  f'{np.mean(g[:, :, de.GH_SPEED]) * 3.6:.1f} km/h, sliding {100 * slide:.0f}%')
     out = os.path.join(tf.folder(args.tracks, args.track), f'{args.track}_ghosts.npz')
     np.savez_compressed(out, ghosts=np.stack(ghosts))
     print(f'{len(ghosts)} ghosts of {args.ticks - args.skip} ticks -> {out}')
+
+
+def record(w, pol, cars, ticks, skip, pace, skill, seed=0, meta=None):
+    """cars ghosts of (ticks - skip) ticks each, (cars, ticks - skip, GH_COLS): pol driving w
+    server-like (server_run_configs of meta, default the policy's own) at this pace and skill.
+    Also used by train_ppo_gpu.py --self-ghosts to refresh a share of the leads with the policy
+    being trained."""
+    cfg, rw = de.server_run_configs(meta if meta is not None else pol.meta, ticks=ticks + 1, pace=pace, skill=skill)
+    env = de.DriftVecEnv(w, n_envs=cars, env_config=cfg, reward_config=rw, seed=seed)
+    obs = env.reset()
+    rows = np.zeros((ticks, cars, de.GH_COLS))
+    t = np.zeros(cars)
+    for k in range(ticks):
+        dt = env.mids[:, de.M_DT].copy()
+        obs, _, _, _, _ = env.step(np.asarray(pol(obs)))
+        s, d = env.states, env.diags
+        t += dt
+        rows[k, :, de.GH_T] = t
+        rows[k, :, de.GH_X] = s[:, fs.S_X]
+        rows[k, :, de.GH_Z] = s[:, fs.S_Z]
+        rows[k, :, de.GH_HEADING] = s[:, fs.S_HEADING]
+        rows[k, :, de.GH_SLIP] = d[:, fs.D_RealSlipAngleRad]
+        rows[k, :, de.GH_YAW] = s[:, fs.S_YAW]
+        rows[k, :, de.GH_SPEED] = d[:, fs.D_SpeedKmh] / 3.6
+        rows[k, :, de.GH_ARC] = s[:, fs.S_ARC]
+        rows[k, :, de.GH_CTE] = d[:, fs.D_CrossTrackErrorM]
+        rows[k, :, de.GH_STEER] = s[:, fs.S_LAST_STEER]
+        rows[k, :, de.GH_PEDAL] = env.prev_act[:, 1]
+        rows[k, :, de.GH_BRAKE] = env.prev_act[:, 2]
+    g = np.ascontiguousarray(rows[skip:].transpose(1, 0, 2))
+    g[:, :, de.GH_T] -= g[:, :1, de.GH_T]
+    return g
 
 
 if __name__ == '__main__':

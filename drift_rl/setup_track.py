@@ -8,7 +8,8 @@ setup_track.py - everything the trainer and the plugin need for one track, in on
 own folder, tracks/<track>/ (track_files.py), all named after the track folder:
 
 1. <track>_collision.csv.gz and <track>_visual.csv.gz, the track's geometry: what the game collides
-   with and what its model shows (tools/track_triangles.py)
+   with and what its model shows, and <track>_collision_grip.csv.gz, each colliding surface's grip
+   from its FRICTION in surfaces.ini (tools/track_triangles.py)
 2. <track>_road_mesh.csv (build_road_mesh.py)
 3. <track>_fast_lane.ai, the AI line: the track's own (its ai/fast_lane.ai, or the recorded
    fast_lane.ai.candidate when that is all there is), checked and, if it needs it, rebuilt down the
@@ -170,8 +171,9 @@ def main(argv=None):
     if args.server:
         print(f'7. into the server at {args.server}')
         kinds = ['triangles', 'collision', 'road_mesh', 'course_edges']
-        if os.path.exists(tf.path(data, 'pace_reference', name)):
-            kinds.append('pace_reference')
+        for kind in ('pace_reference', 'collision_grip'):
+            if os.path.exists(tf.path(data, kind, name)):
+                kinds.append(kind)
         for kind in kinds:
             shutil.copyfile(tf.path(data, kind, name), os.path.join(args.server, tf.name(kind, name)))
             print(f'  {tf.name(kind, name)}')

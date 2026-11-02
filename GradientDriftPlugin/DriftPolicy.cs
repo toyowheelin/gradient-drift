@@ -53,6 +53,10 @@ public sealed class DriftPolicyCarState
     public float PaceAskedAverageMs;
     public int PaceTicks;
     public float PaceOver;
+    // The history block (DriftPolicy.AppendHistory): past frames of the history inputs, a ring with
+    // HistoryHead at the latest. Null until the first tick.
+    public float[]? History;
+    public int HistoryHead;
 }
 
 // Valid is false when the network produced a non-finite value (the actions are then 0). Brake is
@@ -145,7 +149,17 @@ public sealed class DriftPolicy
     // "chase" block in the file) or through a residual network added to the actions while input
     // _residualGate is above _residualGateAbove (lead_present). ChasePaceMin: the bottom of the
     // chase pace in training, a share of PaceLow ("chase.controller.chase_pace_min").
-    public bool ReadsChase => InputCount > ObservationSizeV6 && (_residualWeights != null || _trainedToChase);
+    public bool ReadsChase => BaseInputCount > ObservationSizeV6 && (_residualWeights != null || _trainedToChase);
+    // A policy that also reads a short history of some of its inputs (a "history" block in the file;
+    // drift_rl/policy.py): after the BaseInputCount inputs come, for f = 1 .. HistoryFrames, the inputs
+    // _historySlots as they were f x _historyEvery ticks ago. The largest block a file may ask for is
+    // MaxHistoryInputs.
+    public const int MaxHistoryInputs = 256;
+    public int HistoryFrames { get; private set; }
+    public int BaseInputCount => InputCount - HistoryFrames * _historySlots.Length;
+    private int[] _historySlots = Array.Empty<int>();
+    private int _historyEvery = 1;
+    private int _historyResetSlot;
     private bool _trainedToChase;
     public float ChasePaceMin { get; private set; } = 1f;
     // How long the pace error averages over, seconds ("pace_average_s"; the reward's).
@@ -285,8 +299,30 @@ public sealed class DriftPolicy
                 return null;
             }
 
-            int obsSize = root.GetProperty("obs_size").GetInt32();
+            int fileObsSize = root.GetProperty("obs_size").GetInt32();
             int actionSize = root.GetProperty("action_size").GetInt32();
+            // a history block: the inputs after the env's own (validated with the block below)
+            int[] historySlots = Array.Empty<int>();
+            int historyFrames = 0, historyEvery = 1, historyResetSlot = 0;
+            if (root.TryGetProperty("history", out JsonElement historyElement) && historyElement.ValueKind == JsonValueKind.Object)
+            {
+                float[] slotValues = ReadFloatArray(historyElement.GetProperty("slots"));
+                historySlots = Array.ConvertAll(slotValues, v => (int)v);
+                historyFrames = historyElement.GetProperty("frames").GetInt32();
+                historyEvery = historyElement.GetProperty("every").GetInt32();
+                historyResetSlot = historyElement.GetProperty("reset_slot").GetInt32();
+                int count = historyFrames * historySlots.Length;
+                int baseSize = fileObsSize - count;
+                if (historyFrames < 1 || historyEvery < 1 || historySlots.Length == 0 || count > MaxHistoryInputs
+                    || baseSize != ObservationSize || historyResetSlot < 0 || historyResetSlot >= baseSize
+                    || Array.Exists(historySlots, j => j < 0 || j >= baseSize))
+                {
+                    Log.Warning("GradientDrift: policy file {Path} has a history block this build cannot run ({Frames} frames of {Slots} inputs every {Every} ticks after {Base} inputs; at most {Max} history inputs after {Size})",
+                        Path.GetFullPath(path), historyFrames, historySlots.Length, historyEvery, baseSize, MaxHistoryInputs, ObservationSize);
+                    return null;
+                }
+            }
+            int obsSize = fileObsSize - historyFrames * historySlots.Length;
             if ((obsSize != ObservationSize && obsSize != ObservationSizeV6 && obsSize != ObservationSizeV5 && obsSize != ObservationSizeV4
                  && obsSize != ObservationSizeV3 && obsSize != ObservationSizeV2 && obsSize != ObservationSizeV1)
                 || (actionSize != ActionSize && actionSize != ActionSizeV1))
@@ -312,13 +348,13 @@ public sealed class DriftPolicy
                 return null;
             }
 
-            if (obsMean.Length != obsSize || obsStd.Length != obsSize || lookaheadMeters.Length != LookaheadCount)
+            if (obsMean.Length != fileObsSize || obsStd.Length != fileObsSize || lookaheadMeters.Length != LookaheadCount)
             {
                 Log.Warning("GradientDrift: policy file {Path} has obs_mean/obs_std/lookahead_m of the wrong length",
                     Path.GetFullPath(path));
                 return null;
             }
-            for (int i = 0; i < obsSize; i++)
+            for (int i = 0; i < fileObsSize; i++)
             {
                 if (!float.IsFinite(obsMean[i]) || !float.IsFinite(obsStd[i]) || obsStd[i] <= 0f)
                 {
@@ -328,7 +364,7 @@ public sealed class DriftPolicy
                 }
             }
 
-            if (!TryReadLayers(path, root.GetProperty("layers"), obsSize, "", out float[][] weights, out float[][] biases))
+            if (!TryReadLayers(path, root.GetProperty("layers"), fileObsSize, "", out float[][] weights, out float[][] biases))
             {
                 return null;
             }
@@ -349,7 +385,7 @@ public sealed class DriftPolicy
             {
                 residualGate = residualElement.GetProperty("gate_input").GetInt32();
                 residualGateAbove = (float)residualElement.GetProperty("gate_above").GetDouble();
-                if (residualGate != ChaseInputs.Slot || obsSize != ObservationSize)
+                if (residualGate != ChaseInputs.Slot || obsSize != ObservationSize || historyFrames > 0)
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a residual network gated by input {Gate} of {ObsSize}; this build runs one gated by the car ahead (input {Slot} of {BuildObs})",
                         Path.GetFullPath(path), residualGate, obsSize, ChaseInputs.Slot, ObservationSize);
@@ -367,8 +403,12 @@ public sealed class DriftPolicy
                 }
             }
 
-            var policy = new DriftPolicy(Path.GetFullPath(path), track, trainedTicks, obsSize, actionSize, obsMean, obsStd, obsClip,
+            var policy = new DriftPolicy(Path.GetFullPath(path), track, trainedTicks, fileObsSize, actionSize, obsMean, obsStd, obsClip,
                 weights, biases, lookaheadMeters, minRadiusWindowMeters, points);
+            policy.HistoryFrames = historyFrames;
+            policy._historySlots = historySlots;
+            policy._historyEvery = historyEvery;
+            policy._historyResetSlot = historyResetSlot;
             if (residualWeights != null && residualBiases != null)
             {
                 policy._residualWeights = residualWeights;
@@ -636,6 +676,54 @@ public sealed class DriftPolicy
         obs[PaceOverSlot] = Math.Clamp(paceOver, -PaceOverClip, PaceOverClip);
         car.CarInputs(obs, CarSlot, loadSensitivity);
         obs[SkillSlot] = skill;
+    }
+
+    // The history block into obs after the BaseInputCount inputs BuildObservation (and the chase
+    // inputs) wrote, then this tick's frame kept for later ticks: exactly drift_rl/policy.py's
+    // Policy.history_step. On a car's first tick (or its first since a re-teleport) every past
+    // frame is the present one. Call once per tick per car, just before Evaluate.
+    public void AppendHistory(float[] obs, DriftPolicyCarState carState)
+    {
+        if (HistoryFrames == 0)
+        {
+            return;
+        }
+        int n = _historySlots.Length;
+        int length = HistoryFrames * _historyEvery;
+        float[]? history = carState.History;
+        bool fresh = history == null || history.Length != length * n || obs[_historyResetSlot] > 0.5f;
+        if (history == null || history.Length != length * n)
+        {
+            history = new float[length * n];
+            carState.History = history;
+        }
+        if (fresh)
+        {
+            for (int j = 0; j < length; j++)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    history[j * n + i] = obs[_historySlots[i]];
+                }
+            }
+            carState.HistoryHead = 0;
+        }
+        int head = carState.HistoryHead;
+        int at = BaseInputCount;
+        for (int f = 1; f <= HistoryFrames; f++)
+        {
+            int frame = (head + f * _historyEvery - 1) % length;
+            for (int i = 0; i < n; i++)
+            {
+                obs[at++] = history[frame * n + i];
+            }
+        }
+        head = (head - 1 + length) % length;
+        for (int i = 0; i < n; i++)
+        {
+            history[head * n + i] = obs[_historySlots[i]];
+        }
+        carState.HistoryHead = head;
     }
 
     // A non-finite input would otherwise propagate through Math.Clamp into the car's state.

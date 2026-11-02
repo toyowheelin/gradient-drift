@@ -142,6 +142,8 @@ Many are replaced at start, without anything in the YAML:
 | `EnableRearFrictionCircle` | `false` | Policy file |
 | `DisableBrakes` | `false` | Policy file. With `EnableRearFrictionCircle`: no pedal braking and no brake action, so the car slows only by lifting and with its angle (gen18 on) |
 | `FrontBrakeOnly` | `false` | Policy file. With `EnableRearFrictionCircle`: no pedal braking, but the brake action (the front axle, with the throttle) still works, so the car can scrub speed and keep its angle |
+| `SurfaceGrip` | `false` | Policy file. Each axle's peak friction times the grip of the ground under it: its surface's `FRICTION` in the track's `surfaces.ini` over the main road's, from `<track>_collision_grip.csv.gz` (setup writes it beside the other track files; without it every surface grips 1, with a warning) |
+| `RearSpinGripShare` | `1` (off) | Policy file. With `EnableRearFrictionCircle`: the rear friction circle while the throttle spins the tires, as a share of their peak; it shrinks toward this with the share of full-throttle thrust used |
 | `MaxLongitudinalDecelMs2` | `5.6` | Hardest braking, m/s² |
 | `MinSlipAngleSpeedMs` | `3.0` | Speed floor in the slip-angle formula |
 | `MaxLateralDynamicsSubStepSeconds` | `0.05` | Longest physics sub-step |

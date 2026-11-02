@@ -27,10 +27,11 @@ SHIPPED_POLICIES = {
 RENAMED_SETTINGS = {}
 # the files the plugin reads from the server's folder for its track (drift_rl/setup_track.py makes them)
 TRACK_FILES = ['{track}_triangles.csv.gz', '{track}_collision.csv.gz', '{track}_road_mesh.csv',
-               '{track}_course_edges.csv', '{track}_pace_reference.csv']
+               '{track}_course_edges.csv', '{track}_pace_reference.csv', '{track}_collision_grip.csv.gz']
 # the road mesh is optional; the course edges are needed by a policy that reads the room to them,
-# the pace reference by one that reads its pace error
-OPTIONAL_TRACK_FILES = ('_road_mesh.csv', '_course_edges.csv', '_pace_reference.csv')
+# the pace reference by one that reads its pace error, the surface grip by one with SurfaceGrip
+# (track data made before it had none: it is made again only for such a policy)
+OPTIONAL_TRACK_FILES = ('_road_mesh.csv', '_course_edges.csv', '_pace_reference.csv', '_collision_grip.csv.gz')
 
 # AiParams the bots need (the six-bot test): AssettoServer spawns AI only for a player
 # within MaxPlayerDistanceToAiSplineMeters of the AI line who has not been idle for
@@ -138,6 +139,15 @@ def policy_facts(path):
         return [t for t in tracks if t], int(doc.get('obs_size', 46)), (tuple(paces) if paces else None)
     except (OSError, ValueError):
         return None, 0, None
+
+
+def policy_setting(path, name):
+    """A plugin setting the policy file carries (0 if it carries none, or cannot be read)."""
+    try:
+        with open(path, encoding='utf-8') as f:
+            return float((json.load(f).get('plugin_settings') or {}).get(name, 0.0))
+    except (OSError, ValueError, TypeError):
+        return 0.0
 
 
 def walls_only(triangles):
@@ -316,7 +326,9 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
 
     # the track's data, made from the game install when it is not there yet (drift_rl/setup_track.py)
     home = track_data or track_data_home()
-    to_make = [m for m in missing if not m.endswith('_pace_reference.csv')]    # training makes that one
+    surface_grip = os.path.exists(policy) and policy_setting(policy, 'SurfaceGrip') == 1.0
+    to_make = [m for m in missing if not m.endswith('_pace_reference.csv')     # training makes that one
+               and (surface_grip or not m.endswith('_collision_grip.csv.gz'))]
     needs_line = (t is not None and t.exists and t.ai_points < 2 and bool(t.recorded)
                   and not os.path.exists(os.path.join(server.folder, rel_ai)))
     if t is not None and t.exists and (t.ai_points >= 2 or t.recorded) and (to_make or needs_line):

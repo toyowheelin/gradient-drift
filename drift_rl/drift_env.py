@@ -79,6 +79,31 @@ OBS_NAMES = (
     + ['lead_plan'] + [f'lead_{n}_{h:g}s' for h in (0.5, 1.0, 2.0) for n in ('gap/20', 'line/5', 'slip/(pi/2)')]
     + ['lead_steer/(pi/4)', 'lead_pedal', 'lead_brake', 'lead_accel/5']
 )
+def mirror_obs_map():
+    """(perm, sign) with obs_mirrored = obs[perm] * sign: the same moment seen left-right mirrored (the
+    course, the car and the lead reflected across the car's own axis). Steering, slip, yaw rate, line
+    offsets and turn angles change sign; the fan rays, the side pins and the course room left and
+    right swap. Used by train_ppo_gpu.py --mirror (Yu, Turk and Liu 2018; Mittal et al. 2024)."""
+    n = len(OBS_NAMES)
+    perm = np.arange(n)
+    sign = np.ones(n)
+    idx = {name: i for i, name in enumerate(OBS_NAMES)}
+    flip = ['lateral_velocity/10', 'yaw_rate/2', 'body_slip/(pi/2)', 'angle_diff/pi', 'cross_track_error/15',
+            'fan_center_minus_heading/pi', 'prev_action_steer', 'last_steer/max_steer',
+            'lead_left/20', 'lead_rel_heading/pi', 'lead_slip/(pi/2)', 'lead_yaw/2', 'lead_line/5',
+            'lead_line_here/5', 'lead_slip_here/(pi/2)', 'lead_steer/(pi/4)']
+    flip += [f'spline_turn_ahead_{int(d)}m/pi' for d in LOOKAHEAD_M]
+    flip += [f'lead_{nm}_{h:g}s' for h in (0.5, 1.0, 2.0) for nm in ('line/5', 'slip/(pi/2)')]
+    for name in flip:
+        sign[idx[name]] = -1.0
+    swaps = [(f'fan_ray_{i}/60', f'fan_ray_{N_RAYS - 1 - i}/60') for i in range(N_RAYS // 2)]
+    swaps += [(f'pin_{i}/12', f'pin_{N_PINS - 1 - i}/12') for i in range(N_PINS // 2)]
+    swaps += [(f'course_room_pos_{int(d)}m/10', f'course_room_neg_{int(d)}m/10') for d in EDGE_AHEAD_M]
+    for a, b in swaps:
+        perm[idx[a]], perm[idx[b]] = idx[b], idx[a]
+    return perm, sign
+
+
 OBS_SIZE_V1 = 46                 # policies from before the course-room inputs read only the first 46
 OBS_SIZE_V2 = 52                 # ... and from before the pace and brake inputs, the first 52
 OBS_SIZE_V3 = 54                 # ... and from before the pace error input, the first 54
@@ -582,6 +607,15 @@ class EnvConfig:
     max_speed_kmh_high: float = 88.0
     # optional +-fraction on both axles' peak friction, per episode (0 = the plugin's own values)
     grip_randomisation: float = 0.0
+    # hidden domain randomisation (fast_sim DR_*_SCALE): per episode, each axle's true peak friction
+    # times 1 +- dr_axle_grip and its peak slip angle times 1 +- dr_peak_slip, drawn separately for
+    # front and rear; the car inputs still show the car's own numbers. 0 = off
+    dr_axle_grip: float = 0.0
+    dr_peak_slip: float = 0.0
+    # SurfaceGrip randomisation (fast_sim SURFACE_GRIP_DEV_SCALE): per episode, every surface's
+    # difference in grip from the main road stretched by 1 +- dr_surface_grip (the track's FRICTION
+    # numbers are the game's, but how the bots should feel them is a guess). 0 = off
+    dr_surface_grip: float = 0.0
     # Several cars (car_param_values() of each): every episode draws one, then varies it - its
     # weight by +-car_mass_randomisation (loads and yaw inertia together) and its engine's force by
     # +-car_power_randomisation - so a policy meets cars between and around the ones it was given.
@@ -1275,7 +1309,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
               sp_dir, la_idx, la_min_radius, pace_ref,
               sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
               tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, gh, gh_len):
+                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip, gh, gh_len):
     """One environment step for car i: finish the current tick with the given action
     (step_post), score it, then start the next tick (step_pre) and build the next observation.
     A finished episode is reset in place; its last observation is kept in final_obs[i] and its
@@ -1310,7 +1344,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     dt = mids[i, M_DT]
     fs.step_post(s, a0, a1, a2, p, d, mids[i], sp_pos, sp_radius, sp_length, sp_next, sp_prev,
                  sp_fwd, sp_cum, tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk)
+                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip)
 
     # ---- the car ahead (chase episodes) ----
     lap = sp_cum[sp_cum.shape[0] - 1] + sp_length[sp_length.shape[0] - 1]
@@ -1824,7 +1858,7 @@ def step_batch(states, mids, diags, actions, prev_act, counters, ep, params, rw,
                sp_dir, la_idx, la_min_radius, pace_ref,
                sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
                tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, gh, gh_len):
+                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip, gh, gh_len):
     """_step_one for every car. Cars are independent, so the loop runs across CPU cores."""
     for i in prange(states.shape[0]):
         _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, rw, obs, rewards,
@@ -1832,7 +1866,7 @@ def step_batch(states, mids, diags, actions, prev_act, counters, ep, params, rw,
                   sp_dir, la_idx, la_min_radius, pace_ref,
                   sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
                   tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, gh, gh_len)
+                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip, gh, gh_len)
 
 
 @njit(cache=True)
@@ -1866,7 +1900,7 @@ if _TARGET == 'cuda':
                     sp_dir, la_idx, la_min_radius, pace_ref,
                     sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
                     tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, gh, gh_len):
+                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip, gh, gh_len):
         i = _cuda.grid(1)
         if i < states.shape[0]:
             _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, rw, obs, rewards,
@@ -1874,7 +1908,7 @@ if _TARGET == 'cuda':
                       sp_dir, la_idx, la_min_radius, pace_ref,
                       sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
                       tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, gh, gh_len)
+                   rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip, gh, gh_len)
 
     @_cuda.jit
     def reset_kernel(states, mids, prev_act, counters, ep, params, obs, rnd, env_cfg, sp_dir, la_idx,
@@ -2098,6 +2132,14 @@ class DriftVecEnv:
         self.final_priv = np.zeros((n_envs, N_PRIV))
 
     def _randomise_grip(self, idx):
+        for share, names in ((self.cfg.dr_axle_grip, ('DR_FRONT_GRIP_SCALE', 'DR_REAR_GRIP_SCALE')),
+                             (self.cfg.dr_peak_slip, ('DR_FRONT_PEAK_SLIP_SCALE', 'DR_REAR_PEAK_SLIP_SCALE'))):
+            if share > 0.0:
+                for name in names:
+                    self.params[idx, fs.P[name]] = 1.0 + self.rng.uniform(-share, share, size=len(idx))
+        if self.cfg.dr_surface_grip > 0.0:
+            self.params[idx, fs.P['SURFACE_GRIP_DEV_SCALE']] = \
+                1.0 + self.rng.uniform(-self.cfg.dr_surface_grip, self.cfg.dr_surface_grip, size=len(idx))
         g = self.cfg.grip_randomisation
         if g <= 0.0:
             return
@@ -2409,6 +2451,8 @@ PLUGIN_SETTING_PARAMS = {
     'FrontBrakeOnly': ('EXT_FRONT_BRAKE_ONLY', float),              # 1 = no pedal brake; the brake action stays
     'CarOutlineContact': ('EXT_CAR_OUTLINE_CONTACT', float),        # 1 = walls touch the car's outline, not a circle
     'RoundTireCurve': ('EXT_ROUND_TIRE_CURVE', float),              # 1 = brush-curve tyres (fast_sim._tire_curve)
+    'RearSpinGripShare': ('REAR_SPIN_GRIP_SHARE', float),          # rear circle while spinning, share of peak; 1 = off
+    'SurfaceGrip': ('EXT_SURFACE_GRIP', float),                     # 1 = tyre grip x the surface's (surfaces.ini FRICTION)
 }
 DEFAULT_MAX_STEER_DEG = 28.125      # the plugin's MaxSteerAngleRadians default
 
