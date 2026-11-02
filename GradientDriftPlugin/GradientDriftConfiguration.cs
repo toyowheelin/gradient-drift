@@ -28,9 +28,9 @@ public class GradientDriftConfiguration
 
     // With more than one bot out: a car the plugin takes over is moved to the middle of the
     // largest gap between the others (if that is within the server's PlayerRadiusMeters of a
-    // player), and each car is then sped up or slowed down a little so the gaps stay even. A
-    // policy that reads the pace (input 52) is asked for a faster or slower pace,
-    // inside the range it was trained for, around BotPacePercent; it slows by braking with the
+    // player), and each car is then slowed down a little so the gaps stay even. A
+    // policy that reads the pace (input 52) is asked for a slower pace, never faster than
+    // BotPacePercent (or its BotStyles pace) and never below BotPaceMinPercent; it slows by braking with the
     // throttle, keeping its angle, and every car keeps the same RearSlidingGrip. An older policy
     // has its RearSlidingGrip eased up or down inside its trained range instead (RearSlidingGrip
     // below is then the middle). The bots do not see each other: one that spins can still be
@@ -41,7 +41,8 @@ public class GradientDriftConfiguration
     // course's reference speed (<track>_pace_reference.csv: a quick human's speed at each point,
     // a little faster; drift_rl/pace_model.py): 90 = 90% of that speed at every point of the lap,
     // on any track. Held inside the range the policy was trained for
-    // ("pace_fraction_range" in the policy file); 0 = the top of that range. Lower = calmer
+    // ("pace_fraction_range" in the policy file); 0 = 100, held inside that range (the top
+    // for a gen4 policy in km/h). Lower = calmer
     // bots that brake more through the corners. A policy that also reads how far over its asked
     // speed it is needs <track>_pace_reference.csv (the trainer or setup writes it) in the
     // server's folder, beside the course edges.
@@ -56,7 +57,7 @@ public class GradientDriftConfiguration
     public float BotPaceKmh { get; set; } = 0f;
 
     // Tandem with a player chasing: a bot (or train) with a player close behind waits for them -
-    // full pace with the player right on its tail, slowing to BotPaceMinPercent as they drop back
+    // its own pace with the player right on its tail, slowing to BotPaceMinPercent as they drop back
     // 40 m; further back, spacing as usual. A policy that reads its pace only.
     public bool LeadPlayers { get; set; } = false;
 
