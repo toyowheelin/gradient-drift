@@ -277,6 +277,40 @@ public sealed class DriftPolicy
         }
     }
 
+    // Whether this build can apply a plugin setting a policy file carries (its "plugin_settings"), at that
+    // value. GradientDriftPlugin.ApplyPolicySettings refuses a policy carrying any it cannot: the policy has
+    // never driven a car without it. tests/plugin checks it against the trainer's settings.
+    public static bool CanApplySetting(string name, float value)
+    {
+        return float.IsFinite(value) && name switch
+        {
+            "MaxSteerAngleDeg" => value > 0f && value <= 90f,
+            "WrongWayEntryThresholdDeg" => value > 0f && value <= 180f,
+            "WrongWayEntryTicks" => value >= 1f && value <= 1000f && value == MathF.Round(value),
+            "WrongWayExitSlipDeg" => value > 0f && value <= 180f,
+            "WrongWayExitYawRateDegS" => value > 0f,
+            "EnableRearThrustLimit" => value == 0f || value == 1f,
+            "EnableRearBrakeLimit" => value == 0f || value == 1f,
+            "EnableRearFrictionCircle" => value == 0f || value == 1f,
+            "MaxSteerRateDegS" => value >= 0f,
+            "EnableTireLoadSensitivity" => value == 0f || value == 1f,
+            "FrontTireLoadSensitivityPerKn" => value <= 0f && value > -1f,
+            "RearTireLoadSensitivityPerKn" => value <= 0f && value > -1f,
+            "FrontTrackMeters" => value > 0.5f && value < 3f,
+            "RearTrackMeters" => value > 0.5f && value < 3f,
+            "RollStiffnessFrontShare" => value > 0f && value < 1f,
+            "CgHeightMeters" => value > 0.1f && value < 2f,
+            "ProximityPinHeightOffsetMeters" => value > -0.4f && value < 1f,
+            "DisableBrakes" => value == 0f || value == 1f,
+            "FrontBrakeOnly" => value == 0f || value == 1f,
+            "CarOutlineContact" => value == 0f || value == 1f,
+            "RoundTireCurve" => value == 0f || value == 1f,
+            "RearSpinGripShare" => value > 0f && value <= 1f,
+            "SurfaceGrip" => value == 0f || value == 1f,
+            _ => false,
+        };
+    }
+
     // Returns null, and logs why, on any problem. The caller then leaves the cars to the stock AI.
     public static DriftPolicy? TryLoad(string path, ReadOnlySpan<SplinePoint> points)
     {

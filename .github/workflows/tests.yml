@@ -1,0 +1,43 @@
+# The regression tests (tests/, pytest) on every pull request and every push to main: golden
+# physics traces, short drive checks of the shipped policy, setup on a made-up server, and the
+# trainer and plugin agreeing on policy settings. No game data: the tracks are generated courses
+# and the car is made-up numbers. The C# side of the policy checks runs in build-plugin.yml, which
+# has the AssettoServer checkout it needs. About two minutes, most of it compiling the simulator.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    env:
+      NUMBA_CACHE_DIR: ${{ github.workspace }}/.numba-cache
+      GD_TEST_TRACKS: ${{ github.workspace }}/.test-tracks
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            drift_rl/requirements.txt
+            setup/requirements.txt
+      - run: python -m pip install "numpy<2.5" numba pandas scipy ruamel.yaml pytest
+      # the generated courses depend only on the generator; the compiled simulator on its code
+      - uses: actions/cache@v4
+        with:
+          path: .test-tracks
+          key: test-tracks-${{ hashFiles('drift_rl/generate_track.py', 'drift_rl/sensor_view.py', 'tests/conftest.py') }}
+      - uses: actions/cache@v4
+        with:
+          path: .numba-cache
+          key: numba-${{ runner.os }}-${{ hashFiles('drift_rl/*.py') }}
+      - name: tests
+        run: python -m pytest tests -v --durations=8

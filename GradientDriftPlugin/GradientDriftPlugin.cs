@@ -166,6 +166,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private readonly float[] _observation = new float[DriftPolicy.ObservationSize + DriftPolicy.MaxHistoryInputs];
 
     private DriftTelemetry? _telemetry;
+    // EnableScorecard; when it was last written (server ms), and the cars touching this tick.
+    private BotScorecard? _scorecard;
+    private readonly string _trackName;
+    private long _scorecardWrittenMs;
+    private readonly List<(byte SessionId, float X, float Z, float Heading)> _touchBots = new();
+    private readonly List<(byte SessionId, float X, float Z, float Heading)> _touchPlayers = new();
     private long _tickCounter;
     private float _muFront, _muRear;     // each axle's peak friction this tick (AxleFriction)
     // The car being driven this tick, and every car seen so far by model: its own numbers for an
@@ -174,6 +180,11 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private CarSpec _defaultCar;
     private readonly Dictionary<string, CarSpec> _carSpecs = new();
     private readonly float _skill = 1f;           // how good a driver the bots are (BotSkill), for a policy that reads it
+    // Each bot's own style (BotStyles.cs), by session id, worked out the first time it is taken over;
+    // each AI entry's place among the AI entries this tick, and the entry list's DRIVERNAMEs.
+    private readonly Dictionary<byte, BotStyle> _styles = new();
+    private readonly Dictionary<byte, int> _aiEntryOf = new();
+    private readonly string?[] _entryNames;
     private readonly Random _skillRandom = new();
     private int _failedUpdates;
     private readonly BotNames? _botNames;
@@ -204,6 +215,11 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             p => _spline.WorldToSpline(p).PointId);
         _sessionManager = sessionManager;
         _aiParams = serverConfiguration.Extra.AiParams;
+        _entryNames = new string?[serverConfiguration.EntryList.Cars.Count];
+        for (int i = 0; i < _entryNames.Length; i++)
+        {
+            _entryNames[i] = serverConfiguration.EntryList.Cars[i].DriverName?.Trim();
+        }
         (_lapArc, _lapOrder, _lapLength) = LapDistances(spline.Points);
         if (_configuration.HoldBotSpacing && _lapArc == null)
         {
@@ -213,6 +229,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         // the data files below come from GradientDriftPlugin.bundle.zip beside the plugin where there is no loose copy
         PluginData.Init(Path.GetDirectoryName(GetType().Assembly.Location) ?? "");
         string trackName = Path.GetFileName(serverConfiguration.Server.Track);
+        _trackName = trackName;
         _roadMeshPoints = LoadRoadMesh(trackName + RoadMeshFileSuffix);
         _roadMeshTree = _roadMeshPoints.Length > 0 ? new MeshKdTree(_roadMeshPoints) : null;
 
@@ -333,33 +350,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     {
         foreach ((string name, float value) in policy.PluginSettings)
         {
-            bool usable = float.IsFinite(value) && name switch
-            {
-                "MaxSteerAngleDeg" => value > 0f && value <= 90f,
-                "WrongWayEntryThresholdDeg" => value > 0f && value <= 180f,
-                "WrongWayEntryTicks" => value >= 1f && value <= 1000f && value == MathF.Round(value),
-                "WrongWayExitSlipDeg" => value > 0f && value <= 180f,
-                "WrongWayExitYawRateDegS" => value > 0f,
-                "EnableRearThrustLimit" => value == 0f || value == 1f,
-                "EnableRearBrakeLimit" => value == 0f || value == 1f,
-                "EnableRearFrictionCircle" => value == 0f || value == 1f,
-                "MaxSteerRateDegS" => value >= 0f,
-                "EnableTireLoadSensitivity" => value == 0f || value == 1f,
-                "FrontTireLoadSensitivityPerKn" => value <= 0f && value > -1f,
-                "RearTireLoadSensitivityPerKn" => value <= 0f && value > -1f,
-                "FrontTrackMeters" => value > 0.5f && value < 3f,
-                "RearTrackMeters" => value > 0.5f && value < 3f,
-                "RollStiffnessFrontShare" => value > 0f && value < 1f,
-                "CgHeightMeters" => value > 0.1f && value < 2f,
-                "ProximityPinHeightOffsetMeters" => value > -0.4f && value < 1f,
-                "DisableBrakes" => value == 0f || value == 1f,
-                "FrontBrakeOnly" => value == 0f || value == 1f,
-                "CarOutlineContact" => value == 0f || value == 1f,
-                "RoundTireCurve" => value == 0f || value == 1f,
-                "RearSpinGripShare" => value > 0f && value <= 1f,
-                "SurfaceGrip" => value == 0f || value == 1f,
-                _ => false,
-            };
+            bool usable = DriftPolicy.CanApplySetting(name, value);
             if (!usable)
             {
                 Log.Warning("GradientDrift: the policy was trained with a setting this build cannot apply ({Name} = {Value}) - the stock AI drives",
@@ -626,8 +617,15 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        StartScorecard();
         if (_policy == null)
         {
+            if (_scorecard != null)
+            {
+                _scorecard.Note("no usable policy: the stock AI drove all session (the reason is at the top of the server log)");
+                _scorecard.Write(final: true);
+                _scorecard = null;
+            }
             return Task.CompletedTask;
         }
 
@@ -691,6 +689,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         {
             _acServer.Value.Update -= OnUpdate;
         }
+        _sessionManager.SessionChanged -= OnSessionChanged;
+        _scorecard?.Write(final: true);
 
         // Cleared before it is closed, so a tick still running writes nothing rather than to a
         // closed file.
@@ -698,6 +698,104 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _telemetry = null;
         telemetry?.Dispose();
         base.Dispose();
+    }
+
+    // EnableScorecard: a card for the session running now, and a new one each time it changes.
+    private void StartScorecard()
+    {
+        if (!_configuration.EnableScorecard)
+        {
+            return;
+        }
+        string policy = "none";
+        if (_policy != null)
+        {
+            string hash = "";
+            try
+            {
+                using var stream = File.OpenRead(_policy.SourcePath);
+                hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream)).ToLowerInvariant()[..12];
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                hash = "unreadable";
+            }
+            policy = $"{Path.GetFileName(_policy.SourcePath)}, {_policy.TrainedTicks} training ticks, sha256 {hash}";
+        }
+        string version = GetType().Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "?";
+        var scorecard = new BotScorecard(_configuration.ScorecardFolder, _trackName, $"{policy}; plugin {version}",
+            _configuration.ChaseGapMeters);
+        scorecard.Start(DescribeSession(_sessionManager.CurrentSession), _sessionManager.ServerTimeMilliseconds);
+        _scorecardWrittenMs = _sessionManager.ServerTimeMilliseconds;
+        _health.OnStuck = scorecard.Stuck;
+        _scorecard = scorecard;
+        _sessionManager.SessionChanged += OnSessionChanged;
+        Log.Information("GradientDrift: scorecards go to {Path}", scorecard.Folder);
+    }
+
+    private static string DescribeSession(SessionState? session) =>
+        session == null ? "session" : $"{session.Configuration.Type} {session.Configuration.Name}".Trim();
+
+    private void OnSessionChanged(SessionManager sender, SessionChangedEventArgs args)
+    {
+        BotScorecard? scorecard = _scorecard;
+        if (scorecard == null)
+        {
+            return;
+        }
+        scorecard.Write(final: true);
+        scorecard.Start(DescribeSession(args.NextSession), sender.ServerTimeMilliseconds);
+        _scorecardWrittenMs = sender.ServerTimeMilliseconds;
+    }
+
+    // EnableScorecard, once a tick: which bots the policy drives touch another car. Outlines as
+    // ChaseInputs has them (the tandem trainer's), every pair of bots and each bot with each
+    // player; pairs further apart than any two outlines can reach are skipped.
+    private void ScoreTouches(BotScorecard scorecard)
+    {
+        const float ReachM = 7f;
+        _touchBots.Clear();
+        _touchPlayers.Clear();
+        foreach (var (sessionId, aiState) in _driven)
+        {
+            if (_cars.TryGetValue(aiState, out DriftCarState? state) && !state.HeldByStock && state.Heading.HasValue)
+            {
+                _touchBots.Add((sessionId, state.Position.X, state.Position.Z, state.Heading.Value));
+            }
+        }
+        if (_touchBots.Count == 0)
+        {
+            return;
+        }
+        foreach (EntryCar car in _entryCarManager.EntryCars)
+        {
+            if (!car.AiControlled && car.Client?.HasSentFirstUpdate == true)
+            {
+                var status = car.Status;
+                _touchPlayers.Add((car.SessionId, status.Position.X, status.Position.Z, status.Rotation.X + MathF.PI / 2f));
+            }
+        }
+        for (int i = 0; i < _touchBots.Count; i++)
+        {
+            var a = _touchBots[i];
+            for (int j = i + 1; j < _touchBots.Count; j++)
+            {
+                var b = _touchBots[j];
+                if (a.SessionId != b.SessionId && MathF.Abs(a.X - b.X) < ReachM && MathF.Abs(a.Z - b.Z) < ReachM
+                    && ChaseInputs.CarsOverlap(a.X, a.Z, a.Heading, b.X, b.Z, b.Heading))
+                {
+                    scorecard.Touching(a.SessionId, b.SessionId, otherIsBot: true);
+                }
+            }
+            foreach (var p in _touchPlayers)
+            {
+                if (MathF.Abs(a.X - p.X) < ReachM && MathF.Abs(a.Z - p.Z) < ReachM
+                    && ChaseInputs.CarsOverlap(a.X, a.Z, a.Heading, p.X, p.Z, p.Heading))
+                {
+                    scorecard.Touching(a.SessionId, p.SessionId, otherIsBot: false);
+                }
+            }
+        }
     }
 
     // Runs on the server's update thread, after the stock AI has moved every car for this tick.
@@ -727,6 +825,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             {
                 _updatesStopped = true;
                 Log.Error("GradientDrift: {Count} tick updates in a row failed - stopped; the stock AI drives", _failedUpdates);
+                _scorecard?.Note($"the plugin stopped at {DateTime.Now:HH:mm:ss} after {_failedUpdates} failed tick updates in a row: the stock AI drove from then on");
+                _scorecard?.Write(final: false);
             }
         }
     }
@@ -757,11 +857,17 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _driven.Clear();
         _trainSlots.Clear();
         int aiEntry = -1;
+        int players = 0;
         foreach (EntryCar car in _entryCarManager.EntryCars)
         {
+            if (!car.AiControlled && car.Client?.HasSentFirstUpdate == true)
+            {
+                players++;
+            }
             if (car.AiMode != AiMode.None)
             {
                 aiEntry++;         // counted whether a player has the slot or not, so trains keep their places
+                _aiEntryOf[car.SessionId] = aiEntry;
             }
             if (!car.AiControlled || car.Client != null)
             {
@@ -780,6 +886,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             }
         }
 
+        _scorecard?.Tick(nowMs, players);
         FormTrains();
         HoldSpacing(policy, dt);
 
@@ -802,11 +909,22 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         long followStart = PluginTiming.Now();
         foreach (var (sessionId, aiState, lead, place) in _followers)
         {
+            _scorecard?.Following(sessionId, dt);
             Follow(sessionId, aiState, lead, place, nowMs, dt, collision, in human);
             aiCarsUpdated++;
         }
         _timing.Add(PluginTiming.Part.Followers, followStart);
         _health.Check(_driven, nowMs);
+        if (_scorecard != null)
+        {
+            ScoreTouches(_scorecard);
+            if (nowMs - _scorecardWrittenMs >= Math.Max(1f, _configuration.ScorecardWriteMinutes) * 60_000f)
+            {
+                _scorecardWrittenMs = nowMs;
+                BotScorecard scorecard = _scorecard;
+                Task.Run(() => scorecard.Write(final: false));
+            }
+        }
 
         // No AI car out (AssettoServer spawns them only once a player is on the racing line):
         // still log the human car, so a calibration drive near the pits is not lost. SessionId
@@ -853,13 +971,17 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             if (stockVelocity.Length() < 1.0f)
             {
                 _cars.Remove(aiState);
+                _scorecard?.Waiting(sessionId, dt);
                 return;
             }
+            _scorecard?.TakenOver(sessionId);
 
+            BotStyle style = StyleFor(sessionId);
             state = new DriftCarState(aiState.Status.Position, stockVelocity, spawnCounter)
             {
                 RearSlidingGrip = _rearSlidingGrip,
-                Pace = _basePace,
+                Pace = _basePace > 0f ? style.PaceMiddle : 0f,
+                Style = style,
             };
             PlaceInLargestGap(sessionId, state);
             _cars[aiState] = state;
@@ -972,7 +1094,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 state.LateralVelocity, state.YawRate, crossTrackError, radius, nearestPointId, lineAngle,
                 aiState.MaxSpeed, state.Policy, heading, state.PreviousPins, dt, state.WrongWayRecovering,
                 _car.MaxSteerAngleRadians, state.RearSlidingGrip, _courseEdges, state.Pace, state.Policy.PaceOver,
-                _car, _configuration.EnableTireLoadSensitivity, _skill);
+                _car, _configuration.EnableTireLoadSensitivity, state.Style.Skill);
             if (policy.InputCount > DriftPolicy.ObservationSizeV6)
             {
                 // the car ahead: all 0 unless this bot is chasing a player (ChasePlayers)
@@ -984,7 +1106,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     float leadAgeS = (_sessionManager.ServerTimeMilliseconds - _chaseEpochMs) / 1000f - lead.Latest.TimeS;
                     ChaseInputs.Fill(_observation, lead, position.X, position.Z, heading, arc, crossTrackError,
                         firstTick ? 0f : (state.OwnSpeed ?? 0f), _lapLength, dt, Math.Clamp(leadAgeS + ChaseLeadLatencyS, 0.04f, 0.2f),
-                        ChaseInputs.AskInput(_configuration.ChaseGapMeters), ref state.ChaseLastGap);
+                        ChaseInputs.AskInput(state.Style.ChaseGapMeters), ref state.ChaseLastGap);
                 }
                 else
                 {
@@ -998,7 +1120,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             float steerAction = action.Valid ? action.Steer : state.Policy.PreviousSteerAction;
             float speedAction = action.Valid ? action.Speed : state.Policy.PreviousSpeedAction;
             float brakeAction = action.Valid ? action.Brake : state.Policy.PreviousBrakeAction;
-            if (policy.ReadsSkill && _skill < 1f)
+            if (policy.ReadsSkill && state.Style.Skill < 1f)
             {
                 (steerAction, speedAction, brakeAction) = HandicapBySkill(state, firstTick, steerAction, speedAction, brakeAction);
             }
@@ -1433,6 +1555,10 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         state.PreviousPins = pinRays;
         _timing.Add(PluginTiming.Part.Sensors, sensorStart);
 
+        _scorecard?.Driven(sessionId, dt, state.HeldByStock, row.PolicyActive, new Vector2(velocity.X, velocity.Z).Length(),
+            row.SlipAngle, row.WallPushOutM, row.WrongWayRecovering, state.ScoreChaseGap, state.ChaseLeadIsBot);
+        state.ScoreChaseGap = float.NaN;
+
         if (_telemetry != null)
         {
             row.PosX = position.X;
@@ -1580,6 +1706,29 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         return MathF.Max(0f, previousOwnSpeed + (slideLoss + (rearAlongN + frontBrakeN + frontAlongN) / mass) * dt);
     }
 
+    // This bot's style (BotStyles.cs), worked out once per session id and kept through respawns.
+    private BotStyle StyleFor(byte sessionId)
+    {
+        if (_styles.TryGetValue(sessionId, out BotStyle style))
+        {
+            return style;
+        }
+        DriftPolicy? policy = _policy;
+        bool pace = policy != null && policy.ReadsPace && _basePace > 0f;
+        bool chase = policy != null && policy.ReadsChase;
+        bool skill = policy != null && policy.ReadsSkill;
+        string? name = sessionId < _entryNames.Length ? _entryNames[sessionId] : null;
+        style = BotStyles.For(_configuration, _aiEntryOf.TryGetValue(sessionId, out int aiEntry) ? aiEntry : -1, sessionId, name,
+            pace ? _paceFloor : 0f, pace ? _basePace : 0f, pace ? policy!.PaceHigh : 0f,
+            chase ? ChaseInputs.GapLowM : 0f, chase ? ChaseInputs.GapHighM : float.MaxValue,
+            skill ? policy!.SkillLow : 1f, skill ? policy!.SkillHigh : 1f);
+        _styles[sessionId] = style;
+        VerboseLog.Information("GradientDrift: bot {SessionId} ({Name}) drives with aggression {Aggression:F2}: pace {Pace:F2}, chases from {OptIn:F0} m at up to {Top:F0}%, gap {Gap:F1} m, skill {Skill:F2}",
+            sessionId, name ?? "", style.Aggression, style.PaceMiddle, style.OptInMeters, style.ChaseTopShare * 100f,
+            style.ChaseGapMeters, style.Skill);
+        return style;
+    }
+
     // A driver below full skill (drift_env SKILL_*, as the policy was trained), by d = 1 - skill:
     // a slower reaction - the action applied is the one asked SkillDelayTicks x d ticks earlier
     // (rounded) - then smooth noise on the steering and pedal.
@@ -1587,7 +1736,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float steer, float speed, float brake)
     {
         const float SteerNoise = 0.10f, PedalNoise = 0.20f, NoiseKeep = 0.9f, SkillDelayTicks = 1.5f;
-        float lack = 1f - Math.Clamp(_skill, 0f, 1f);
+        float lack = 1f - Math.Clamp(state.Style.Skill, 0f, 1f);
         float fresh = MathF.Sqrt(1f - NoiseKeep * NoiseKeep);
         // unit-variance uniform noise, as the trainer's
         state.SkillNoiseSteer = NoiseKeep * state.SkillNoiseSteer + fresh * ((float)_skillRandom.NextDouble() - 0.5f) * 3.4641016f;
@@ -2535,7 +2684,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         for (int i = 0; i < n; i++)
         {
             DriftCarState state = _spaced[i].State;
-            float target = middle;
+            // this bot's own pace (BotStyles); halfRange stays the server's so spacing pushes every bot alike
+            float own = byPace ? state.Style.PaceMiddle : middle;
+            float target = own;
             float ease = Math.Min(1f, dt / SpacingEaseSeconds);
             state.GapAheadM = -1f;
             if (spacing)
@@ -2543,7 +2694,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 float ahead = GapAhead(i);
                 float behind = GapAhead((i + n - 1) % n);
                 float imbalance = (ahead - behind) / MathF.Max(ahead + behind, 1f);
-                target = Math.Clamp(middle + SpacingGain * imbalance * halfRange, low, high);
+                target = Math.Clamp(own + SpacingGain * imbalance * halfRange, low, high);
                 state.GapAheadM = ahead;
             }
             float playerGap = byPace ? PlayerGapBehind(state, _spaced[i].Arc) : -1f;
@@ -2619,13 +2770,14 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             low = policy.PaceLow * policy.ChasePaceMin;
         }
         float v = MathF.Max(0f, state.LineSpeedMs);
-        float top = MathF.Max(low, high * _configuration.ChasePaceMaxPercent / 100f);
+        float top = MathF.Max(low, high * state.Style.ChaseTopShare);
         float v0 = MathF.Max(1f, IdmFreeSpeed * top * state.PaceOneMs);
-        float desired = MathF.Max(0f, _configuration.ChaseGapMeters + v * _configuration.ChaseTimeGapSeconds
+        float desired = MathF.Max(0f, state.Style.ChaseGapMeters + v * _configuration.ChaseTimeGapSeconds
             + v * (v - leadSpeed) / (2f * MathF.Sqrt(IdmAccel * IdmBrake)));
         float ratio = desired / MathF.Max(gap, 0.1f);
         float accel = MathF.Max(-3f * IdmBrake, IdmAccel * (1f - MathF.Pow(v / v0, 4) - ratio * ratio) + leadAccel);
         state.Pace = Math.Clamp((v + accel * _configuration.ChaseResponseSeconds) / state.PaceOneMs, low, top);
+        state.ScoreChaseGap = gap;
         return true;
     }
 
@@ -2642,8 +2794,6 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _chaseClaimed.Clear();
         _chaseOffers.Clear();
         long nowMs = _sessionManager.ServerTimeMilliseconds;
-        float optIn = _configuration.ChaseOptInMeters;
-        float optOut = MathF.Max(_configuration.ChaseOptOutMeters, optIn);
         int n = _spaced.Count;
         for (int i = 0; i < n; i++)
         {
@@ -2682,6 +2832,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 continue;
             }
             bool kept = state.ChasingPlayer && state.ChaseLeadId == leadId && state.ChaseLeadIsBot == isBot;
+            // this bot's own pick-up range (BotStyles: aggression)
+            float optIn = state.Style.OptInMeters;
+            float optOut = MathF.Max(_configuration.ChaseOptOutMeters, optIn);
             if (best >= (kept ? optOut : optIn))
             {
                 continue;

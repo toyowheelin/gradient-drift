@@ -89,6 +89,34 @@ public class GradientDriftConfiguration
     public float ChaseBotRunSeconds { get; set; } = 60f;
     public float ChaseBotCooldownSeconds { get; set; } = 30f;
 
+    // ---- Each bot's own style ---------------------------------------------------------------
+
+    // So a server full of bots does not look like clones: each bot gets its own aggression (its
+    // pace around BotPacePercent, how far ahead it takes up a car to chase, how fast it may chase),
+    // its own chase gap and its own skill. All of these are inputs the policy was trained over, so
+    // no retraining; each is held inside the policy's trained range. A bot keeps its style through
+    // respawns and server restarts.
+    //
+    // BotStyleSpread, 0 - 1: how far the bots' styles are drawn apart. 0 = every bot drives with
+    // the settings above (as before); 1 = aggression anywhere from calm to pushy and chase gaps
+    // from half ChaseGapMeters to twice it. BotSkillSpread, 0 - 1: each bot's skill is BotSkill
+    // less up to this much (0 = all at BotSkill). BotStyleSeed: change it for a new set of draws.
+    public float BotStyleSpread { get; set; } = 0f;
+    public float BotSkillSpread { get; set; } = 0f;
+    public int BotStyleSeed { get; set; } = 0;
+
+    // Styles set by hand, over the draws. Each entry names a bot by its entry-list DRIVERNAME, or
+    // without a Name applies to the AI entries in order. Any of Aggression (0 - 1, 0.5 = the
+    // settings), ChaseGapMeters and Skill; a value left out is drawn or the server's. E.g.
+    //   BotStyles:
+    //     - Name: Kenji
+    //       Aggression: 0.9
+    //       ChaseGapMeters: 1
+    //     - Name: Mia
+    //       Aggression: 0.2
+    //       Skill: 0.6
+    public List<BotStyleEntry> BotStyles { get; set; } = new();
+
     // Tandem trains: bots in order of their entry, this many to a train. The first of each train is
     // driven by the policy; the others replay what it sent a moment earlier (TandemTrains.cs), so
     // they follow its line exactly. 1 = every bot drives alone. With HoldBotSpacing the trains are
@@ -120,6 +148,18 @@ public class GradientDriftConfiguration
 
     // Adds the network's inputs to every row (about 330 bytes). Both tools need them.
     public bool LogLearnedPolicyObservations { get; set; } = true;
+
+    // A short report card of how the bots drove, one per server session: slide, walls, car hits,
+    // chase gap, how often the server's own AI had them, stuck bots (BotScorecard). Written as
+    // <start>_<track>_<session>.txt and .json into ScorecardFolder, rewritten every
+    // ScorecardWriteMinutes and when the session ends; drift_rl/scorecard_report.py reads them.
+    // A few KB a session. Off by default: the plugin writes no files unless asked.
+    public bool EnableScorecard { get; set; } = false;
+
+    // Relative to the server's working directory.
+    public string ScorecardFolder { get; set; } = "gradientdrift_scorecards";
+
+    public float ScorecardWriteMinutes { get; set; } = 10f;
 
     // The plugin's routine lines in the server log as well as its warnings: what it loaded, each
     // setting the policy file brings, each bot car's numbers, spawns and placements, and the timing

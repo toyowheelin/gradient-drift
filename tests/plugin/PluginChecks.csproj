@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- The plugin checker (Program.cs). Like the plugin, it builds inside an AssettoServer checkout:
+       CI copies this folder to AssettoServer/PluginChecks/ beside AssettoServer/GradientDriftPlugin/
+       (.github/workflows/build-plugin.yml). It is not part of the plugin or its download. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AssettoServer\AssettoServer.csproj" />
+    <ProjectReference Include="..\AssettoServer.Shared\AssettoServer.Shared.csproj" />
+    <ProjectReference Include="..\GradientDriftPlugin\GradientDriftPlugin.csproj" />
+  </ItemGroup>
+
+</Project>

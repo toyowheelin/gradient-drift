@@ -10,8 +10,9 @@ against it. The file is made from the source, so it cannot drift from what the p
     python tools/plugin_features.py --check   # exit 1 if the file is out of date (CI runs this)
 
 What it reads from the source:
-  - the plugin settings a policy file may carry: the names in ApplyPolicySettings' validation switch
-    (GradientDriftPlugin.cs), the one place a setting has to be added to be accepted;
+  - the plugin settings a policy file may carry: the names in the validation switch
+    (DriftPolicy.CanApplySetting, used by ApplyPolicySettings), the one place a setting has to be
+    added to be accepted;
   - the input and action counts DriftPolicy.TryLoad accepts (the ObservationSize* / ActionSize*
     constants it compares against), the history block's base size and limit, and the input that
     gates a residual network.
@@ -71,9 +72,10 @@ def features():
         sources['ChaseInputs'] = _read('ChaseInputs.cs')
     const = _constants(sources)
 
-    block = re.search(r'bool usable = float\.IsFinite\(value\) && name switch\s*\{(.*?)_ => false', plugin, re.S)
+    switch = r'float\.IsFinite\(value\) && name switch\s*\{(.*?)_ => false'
+    block = re.search(switch, policy, re.S) or re.search(switch, plugin, re.S)
     if not block:
-        raise ValueError("ApplyPolicySettings' validation switch not found in GradientDriftPlugin.cs")
+        raise ValueError("the policy settings' validation switch (DriftPolicy.CanApplySetting) was not found")
     settings = sorted(set(re.findall(r'"(\w+)"\s*=>', block.group(1))))
 
     load = policy[policy.index('public static DriftPolicy? TryLoad'):]

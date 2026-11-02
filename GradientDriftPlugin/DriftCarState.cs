@@ -91,10 +91,15 @@ internal sealed class DriftCarState
     // closing speed input; NaN = none yet).
     public byte ChaseLeadId;
     public float ChaseLastGap = float.NaN;
+    // EnableScorecard: the gap ChasePlayer drove to this tick (NaN = not chasing); read and reset by UpdateCar.
+    public float ScoreChaseGap = float.NaN;
     // Its speed along the line last tick, and the speed a pace of 1 asks there (the course's
     // reference, held to the car's limit), m/s: the IDM works in speeds.
     public float LineSpeedMs;
     public float PaceOneMs;
+
+    // This bot's own style (BotStyles): its pace middle, chase gap, skill and chase rules.
+    public BotStyle Style = new(0.5f, 0f, 2f, 1f, 7.5f, 1.1f);
 
     // The wandering noise of a driver below full skill (BotSkill): steering and pedal.
     public float SkillNoiseSteer;

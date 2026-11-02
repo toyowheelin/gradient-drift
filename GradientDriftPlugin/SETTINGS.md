@@ -65,6 +65,38 @@ The settings come in two kinds:
 | `ChaseBotRunSeconds` | `60` | With `ChaseBots`: how long a bot chases another bot before it drops back (0 = no limit). Chasing a player is never timed. |
 | `ChaseBotCooldownSeconds` | `30` | With `ChaseBots`: after a bot-on-bot chase ends, how long that bot takes up no other bot, so trains break up and form again. |
 
+### Each bot's own style
+
+So a server full of bots doesn't look like clones. Each bot can have its own **aggression**, **chase gap**
+and **skill**. These are all things the policy already reads (its pace, the gap it is asked to hold, its
+skill) or chase rules the plugin applies, so no retraining is needed, and every value stays inside the
+range the policy was trained for. A bot keeps its style through respawns and server restarts. With
+`VerboseLogging` on, the log shows each bot's style the first time it drives.
+
+Aggression runs from 0 to 1. **0.5** means the settings above, unchanged. Going up from there the bot asks for
+more pace (up to the policy's top), takes up a car to chase from further back (up to 1.6 × `ChaseOptInMeters`)
+and may chase up to 10% faster than `ChasePaceMaxPercent`. Going down it asks for less pace (down to
+`BotPaceMinPercent`), only takes up a car close ahead (down to 0.4 × `ChaseOptInMeters`) and chases up to
+10% slower.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `BotStyleSpread` | `0` | How far apart the bots' styles are drawn, 0 to 1. **0** means every bot drives with the settings above, as before. **1** means aggression anywhere from 0 to 1 and chase gaps from half `ChaseGapMeters` to twice it. |
+| `BotSkillSpread` | `0` | Each bot's skill is `BotSkill` minus a random amount up to this (0 to 1). **0** means every bot is at `BotSkill`. |
+| `BotStyleSeed` | `0` | Change it to draw a new set of styles. |
+| `BotStyles` | empty | Styles set by hand, which win over the draws. Each entry names a bot by its `DRIVERNAME` in `entry_list.ini`. An entry with no `Name` applies to the AI entries in order. Any of `Aggression` (0 to 1), `ChaseGapMeters` and `Skill` can be set; anything left out is drawn or taken from the settings. |
+
+```yaml
+BotStyleSpread: 0.6
+BotStyles:
+  - Name: Kenji
+    Aggression: 0.9
+    ChaseGapMeters: 1
+  - Name: Mia
+    Aggression: 0.2
+    Skill: 0.6
+```
+
 ### How the bots look (cosmetic only)
 
 None of these change how a bot drives; they change what players see and hear.
@@ -91,6 +123,9 @@ stopped for 30 seconds, and a line when it moves again. Nothing while the bots d
 |---|---|---|
 | `EnableTelemetryLogging` | `false` | Writes `drift_physics_telemetry_<date>_<time>.csv` in the server folder: one row per bot per tick. For checking a policy on a server with `drift_rl/check_plugin_policy.py` and `drive_report.py --telemetry`. About 110 MB an hour with six bots. |
 | `TelemetryMaxFileMegabytes` | `500` | The telemetry file stops growing at this size. 0 = no limit. It also stops, with a line in the log, if a write fails. |
+| `EnableScorecard` | `false` | A short report card per server session of how the bots drove: slide and spin share, wall time and wall hits, car hits (bots and players), chase time and gap (p10/p50/p90, share within 2 m of `ChaseGapMeters`), how often the server's own AI had them, stuck episodes, wrong-way recoveries. Written as `<start>_<track>_<session>.txt` (a table) and `.json` into `ScorecardFolder`; `drift_rl/scorecard_report.py` puts several side by side. A few KB a session. |
+| `ScorecardFolder` | `gradientdrift_scorecards` | Where the scorecards go, relative to the server folder. |
+| `ScorecardWriteMinutes` | `10` | The scorecard is rewritten this often while a session runs (so a crash loses at most this much), and once more when the session ends or the server stops. |
 | `LogLearnedPolicyObservations` | `true` | Adds the network's inputs to every telemetry row (about 330 bytes a row). The check tools need them. |
 | `LogHumanCarForCalibration` | `false` | Adds the first connected player's car to the telemetry: position, steering, RPM, gear, throttle, wheel speeds. No name, IP or Steam ID. Used to compare the bots with a human driver. |
 | `VerboseLogging` | `false` | The plugin's routine lines as well: what it loaded, each setting the policy file brings, each bot car's numbers, spawns and placements, and the timing line every 60 s. Off, the log has warnings only. |
@@ -111,7 +146,7 @@ Many are replaced at start, without anything in the YAML:
   wrong-way recovery thresholds. The plugin switches on only the features a policy was trained with,
   so an older policy keeps driving the car it knew.
 
-  A new setting a policy file can carry goes in both switches of `ApplyPolicySettings`; then run
+  A new setting a policy file can carry goes in `DriftPolicy.CanApplySetting` and the apply switch of `ApplyPolicySettings`; then run
   `python tools/plugin_features.py`, which writes `GradientDriftPlugin.features.json` (what policy
   files this build can run) from the source. Setup checks a policy against that file before it
   installs the pair, and CI fails while the file is out of date.
