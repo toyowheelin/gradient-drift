@@ -1,0 +1,55 @@
+{
+ "format": "gradient-drift-plugin-features-v1",
+ "policy_format": "drift-policy-v1",
+ "control_modes": [
+  "direct"
+ ],
+ "obs_sizes": [
+  46,
+  52,
+  54,
+  55,
+  66,
+  67,
+  94
+ ],
+ "action_sizes": [
+  2,
+  3
+ ],
+ "plugin_settings": [
+  "CarOutlineContact",
+  "CgHeightMeters",
+  "DisableBrakes",
+  "EnableRearBrakeLimit",
+  "EnableRearFrictionCircle",
+  "EnableRearThrustLimit",
+  "EnableTireLoadSensitivity",
+  "FrontBrakeOnly",
+  "FrontTireLoadSensitivityPerKn",
+  "FrontTrackMeters",
+  "MaxSteerAngleDeg",
+  "MaxSteerRateDegS",
+  "ProximityPinHeightOffsetMeters",
+  "RearSpinGripShare",
+  "RearTireLoadSensitivityPerKn",
+  "RearTrackMeters",
+  "RollStiffnessFrontShare",
+  "RoundTireCurve",
+  "SurfaceGrip",
+  "WrongWayEntryThresholdDeg",
+  "WrongWayEntryTicks",
+  "WrongWayExitSlipDeg",
+  "WrongWayExitYawRateDegS"
+ ],
+ "bundle": true,
+ "history": {
+  "base_obs_size": 94,
+  "max_inputs": 256
+ },
+ "residual": {
+  "gate_input": 67,
+  "obs_size": 94,
+  "with_history": false
+ }
+}

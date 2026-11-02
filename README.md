@@ -29,8 +29,8 @@
   <a href="CREDITS.md">Credits</a>
 </p>
 
-A server plugin takes over the server's AI cars and drives them sideways: linked drifts, tandem
-trains, door to door, on the server's own track. The driving comes from a small neural network
+A server plugin takes over the server's AI cars and drives them sideways: linked drifts, and tandem
+trains where bots chase players and each other, on the server's own track. The driving comes from a small neural network
 trained offline, by reinforcement learning, in a simulator of the plugin's own vehicle model. It
 ships as one `policy.json`; nothing learns on the live server.
 
@@ -48,7 +48,7 @@ ships as one `policy.json`; nothing learns on the live server.
 |---|---|
 | 🏁 **Any track** | The shipped policy was trained on seven real tracks and 100 randomly generated courses, so it drives tracks it has never seen. The setup program makes a track's data from your own game install. |
 | 🚗 **Any rear-drive car** | Every bot drives as a drift car (welded diff, an angle kit of at least 50°), with its weight, geometry, tyres, power and gearing from the car's own files. |
-| 🚦 **Several bots** | Spread round the lap, or in tandem trains where followers hold the lead car's line a car length behind. |
+| 🚦 **Several bots** | Chasing players and each other in tandem trains (`ChasePlayers`, `ChaseBots`, on by default), or spread round the lap. |
 | 🎛️ **Two dials** | How fast (a share of the track's flat-out drift speed), and how good a driver: from a careful novice who still holds a drift to the best the policy can do. |
 | 🧑 **Close to a human** | On the owner's server the bots rotate the car about as hard and as often as a human drifting the same track (yaw acceleration, direction changes, sideways g, time sliding). |
 
@@ -79,7 +79,7 @@ reads the track and the cars from it).
    why, if it stands aside and leaves the stock AI driving, or which bot is stuck and where.
 4. **Tune it** in the server's `extra_cfg.yml`, then restart the server.
    [`SETTINGS.md`](GradientDriftPlugin/SETTINGS.md) lists every setting; the ones you'll want are
-   `BotSkill`, `BotPacePercent` and `TrainSize`.
+   `BotSkill`, `BotPacePercent`, `ChasePlayers` and `ChaseBots`.
 
 > [!TIP]
 > **Server on a hosting plan?** Run setup on your own PC against the server's downloaded `cfg`
@@ -88,16 +88,18 @@ reads the track and the cars from it).
 >
 > **Trying a policy of your own?** Copy it over
 > `plugins/GradientDriftPlugin/GradientDriftPlugin.policy.json` (keep the old one) and restart. No
-> rebuild is needed.
+> rebuild is needed. A loose policy there is read instead of the one in setup's
+> `GradientDriftPlugin.bundle.zip`, and the server log says so at start. Setup checks that the
+> plugin can run a policy (`GradientDriftPlugin.features.json`) before it installs either.
 
 ## How the bot drives
 
-![The policy network: 67 inputs describing how the car is moving, the racing line, its sensors, the asked pace, the car itself and the asked skill are scaled, pass through two layers of 128 units, and come out as steering, pedal and brake, which the plugin turns into the car's next position every server tick.](docs/policy_network.svg)
+![The policy network: 130 inputs describing how the car is moving, the racing line, its sensors, the asked pace, the car itself, the asked skill, the car ahead and the last few ticks are scaled, pass through three layers of 256 units, and come out as steering, pedal and brake, which the plugin turns into the car's next position every server tick.](docs/policy_network.svg)
 
 Every server tick (18 a second on a typical server), for every bot it drives, the plugin does the
 same four things:
 
-1. **Describe the car's situation as 67 numbers.**
+1. **Describe the car's situation as 130 numbers.**
    - how the car is moving: speed, sideways speed, how fast it is rotating, its slip angle;
    - the racing line: where it is and how it bends over the next stretch;
    - its sensors: what 15 rays fanned out ahead and 6 short rays fixed to the body hit (the walls
@@ -105,10 +107,14 @@ same four things:
      course's edges;
    - what it did last tick, the pace it has been asked to drive and how far over that it has been
      lately;
-   - what car it is (weight, wheelbase, grip, power), and how good a driver it has been asked to be.
+   - what car it is (weight, wheelbase, grip, power), and how good a driver it has been asked to be;
+   - the car ahead, when it is following one in tandem: the gap, closing speed, where that car is
+     on the line and what it is doing with its wheel and pedals;
+   - a short memory: nine of these numbers (its speeds, rotation, slip, last actions and how hard
+     each axle was working) as they were over the last few ticks.
 2. **Run them through the network.** Each number is scaled the way it was in training, then
-   multiplied through two layers of 128 units (about 26,000 numbers in all, the whole content of
-   `policy.json`). That takes about 0.1 ms a car.
+   multiplied through three layers of 256 units (about 166,000 numbers in all, the whole content of
+   `policy.json`).
 3. **Read three numbers out:**
 
    | output | what it does |
@@ -134,7 +140,7 @@ different cars, and being rewarded for progress made sideways at a good angle, i
 without hitting anything (reinforcement learning, PPO). The result is frozen into `policy.json`;
 the server only runs it.
 
-The plugin also runs older, smaller policies (46 to 55 inputs, one car). The parts of the vehicle
+The plugin also runs older, smaller policies (46 to 94 inputs). The parts of the vehicle
 model a policy was trained with are listed in its file and the plugin turns on exactly those, so
 each policy drives in the car it learned in.
 
@@ -153,10 +159,12 @@ each policy drives in the car it learned in.
 - **Nothing reachable from outside.** It opens no ports and adds no web pages, chat commands or
   client messages; players cannot send it anything. It reads the other cars' positions only to
   keep bots away from them.
-- **Reads numbers, writes nothing.** At start it reads its policy
-  (`plugins/GradientDriftPlugin/GradientDriftPlugin.policy.json`), the bot cars' files
-  (`plugins/GradientDriftPlugin/cars/`) and the track's data files from the server folder: numbers
-  only, nothing in them is run. What it has to say goes to the server's own log and console.
+- **Reads numbers, writes nothing.** At start it reads its policy, the bot cars' files and the
+  track's data, all from one file setup writes
+  (`plugins/GradientDriftPlugin/GradientDriftPlugin.bundle.zip`), or loose
+  (`plugins/GradientDriftPlugin/GradientDriftPlugin.policy.json`, `plugins/GradientDriftPlugin/cars/`,
+  the track's data files in the server folder; a loose file is read instead of the bundle's copy):
+  numbers only, nothing in them is run. What it has to say goes to the server's own log and console.
 - **Telemetry, only if you turn it on** (`EnableTelemetryLogging: true`, for checking a policy with
   `drift_rl`): `drift_physics_telemetry_<date>_<time>.csv` in the server folder, every AI car every
   tick and, with `LogHumanCarForCalibration: true`, the first connected player's car (position,
@@ -231,17 +239,18 @@ dotnet build
 ```
 
 The first build also builds the AssettoServer projects it references, so it takes a minute. The
-result is in `bin/Debug/net8.0/`. The three files the server needs are:
+result is in `bin/Debug/net8.0/`. The files the server needs are:
 
 | file | what it is |
 |---|---|
 | `GradientDriftPlugin.dll` | the plugin |
 | `GradientDriftPlugin.deps.json` | what it depends on, for .NET to load it |
 | `GradientDriftPlugin.policy.json` | the trained policy, copied in from the source folder |
+| `GradientDriftPlugin.features.json` | what policies this build can run, for setup's check (the plugin itself does not read it) |
 
 **4. Install it on the server.** The [setup program](setup/README.md) does this for you: point its
 `--plugin` option (or the window's **Plugin build** field) at the `bin/Debug/net8.0/` folder. To do it by
-hand, stop the server first (Windows keeps the files locked while it runs), then copy the three
+hand, stop the server first (Windows keeps the files locked while it runs), then copy the
 files into the server's `plugins/GradientDriftPlugin/` folder, making the folder if it's new. On
 Windows, from the AssettoServer folder:
 
@@ -266,13 +275,19 @@ output: what it loaded, each bot car, spawns and timing.
 
 > [!TIP]
 > **Updating.** After pulling a newer version of this repository, copy its `GradientDriftPlugin/`
-> folder over the one inside AssettoServer again, rebuild, and copy the three files in again. A new
+> folder over the one inside AssettoServer again, rebuild, and copy the files in again. A new
 > policy on its own needs no rebuild: copying the `.policy.json` is enough. Keep the build folder's
 > copy of the policy in step with the server's, or the next copy from the build puts the old policy
 > back.
 
 `.github/workflows/build-plugin.yml` runs these same steps on every change to the plugin, so a
 build that breaks shows up there first.
+
+A release ships one policy, the same on every server. `python tools/ship_policy.py <policy.json>
+--release <tag>` puts a policy in place as `GradientDriftPlugin/GradientDriftPlugin.policy.json`
+after checking the plugin can run it, and adds it to setup's list of shipped policies; a `v*` tag
+then builds the one release zip (`release.yml`), which refuses a policy that is not on that list or
+does not fit the plugin. The release notes are the tag's section of [CHANGELOG.md](CHANGELOG.md).
 
 ## Training your own policy
 

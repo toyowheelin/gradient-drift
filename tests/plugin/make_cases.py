@@ -9,7 +9,9 @@
 
     python tests/plugin/make_cases.py <out folder>
 
-The C# side must give the same actions to within ACTION_TOLERANCE (it works in float32).
+The C# side must give the same actions to within ACTION_TOLERANCE (it works in float32), or, for
+a policy whose network float32 itself moves further than that on these inputs, twice what the same
+network gives in float32 numpy (a case's own action_tolerance).
 """
 import copy
 import json
@@ -80,6 +82,18 @@ def plugin_actions(pol, obs):
     return a
 
 
+def float32_spread(pol, obs):
+    """How far the policy's actions move when its arithmetic is float32, as the plugin's is."""
+    p32 = copy.deepcopy(pol)
+    for net in (p32.mlp, p32.residual):
+        if net is not None:
+            net.W = [w.astype(np.float32) for w in net.W]
+            net.b = [b.astype(np.float32) for b in net.b]
+    p32.obs_mean = p32.obs_mean.astype(np.float32)
+    p32.obs_std = p32.obs_std.astype(np.float32)
+    return float(np.abs(plugin_actions(p32, obs.astype(np.float32)) - plugin_actions(pol, obs)).max())
+
+
 def main():
     out = sys.argv[1]
     folder = os.path.join(out, 'policies')
@@ -98,6 +112,9 @@ def main():
             obs = observations(pol, seed, gate)
             case['obs'] = obs.tolist()
             case['actions'] = plugin_actions(pol, obs).tolist()
+            spread = float32_spread(pol, obs)
+            if 2 * spread > ACTION_TOLERANCE:
+                case['action_tolerance'] = 2 * spread
         cases['policies'].append(case)
 
     def add_doc(name, doc, why):

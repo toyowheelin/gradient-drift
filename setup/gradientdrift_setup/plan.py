@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from .find import track_data_home, track_data_root
 from .game import _DRIFT_RL, car_facts, track_facts
 from .identify import TESTED_VERSION, identify, version_tuple
+from . import bundle, pairing
 from .server import OLD_PLUGIN, OLD_PLUGIN_CONFIG_TAG, PLUGIN, PLUGIN_CONFIG_TAG, server_running
 
 PLUGIN_FILES = ['GradientDriftPlugin.dll', 'GradientDriftPlugin.deps.json', 'GradientDriftPlugin.policy.json']
@@ -20,6 +21,7 @@ PLUGIN_FILES = ['GradientDriftPlugin.dll', 'GradientDriftPlugin.deps.json', 'Gra
 # Add each release's policy here (build-plugin.yml refuses a v* release tag whose policy is missing).
 SHIPPED_POLICIES = {
     'd4388a8477bf5284d0d358e12908eb7293a7018b0140a46fd55f13bac99d2212': 'plugin-v0.1.0',
+    'f2d79acf4c49d444945af0b7078624da2a72f3a080d0b3940fd1ca4fe0f95cf6': 'v0.3.0',
 }
 # Plugin settings a release renamed (old name: new name). A setting the plugin going in does not know
 # at all is taken out of extra_cfg.yml (AssettoServer stops at start on a setting the plugin's
@@ -68,6 +70,7 @@ class Plan:
     changes: list = field(default_factory=list)
     blockers: list = field(default_factory=list)   # setup cannot fix these by editing files
     notes: list = field(default_factory=list)
+    bundle: bool = False      # apply packs the plugin's data files into its bundle (bundle.py), not loose
 
     @property
     def ready(self):
@@ -179,6 +182,14 @@ def current_pace_reference(path):
     return None
 
 
+def stale_dll(server, plugin_source):
+    """Whether the server's plugin DLL differs from (or is missing beside) the build in plugin_source."""
+    there = os.path.join(server.folder, 'plugins', PLUGIN, PLUGIN_FILES[0])
+    source = os.path.join(plugin_source or '', PLUGIN_FILES[0])
+    return (not plugin_source or not os.path.exists(source) or not os.path.exists(there)
+            or not filecmp.cmp(source, there, shallow=False))
+
+
 def policy_sha256(path):
     """The SHA-256 of a policy file with its line endings as LF (a copy on Windows may have CRLF)."""
     import hashlib
@@ -215,13 +226,14 @@ def same_data(a, b):
 
 
 def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_mode='fixed',
-             plugin_source=None, track_data=None, train_size=None, pace_percent=None, slots=None):
+             plugin_source=None, track_data=None, pace_percent=None, slots=None,
+             shipped_policy=False):
     """car, skin, slots: the bots' cars (bot_slots); an existing AI entry in another car or skin is
     put in the one asked for. plugin_source: a folder with the plugin's build (GradientDriftPlugin.dll etc.); track_data: a folder
     with a folder of files per track (drift_rl/tracks/), copied in when the server lacks them or has
-    a different copy. train_size: bots to a tandem train (1 = every bot drives on its own; None =
-    leave the server's setting). pace_percent: the bots' pace, % of each point's flat-out speed, for
-    a policy trained with paces (None = leave it)."""
+    a different copy. pace_percent: the bots' pace, % of each point's flat-out speed, for
+    a policy trained with paces (None = leave it). shipped_policy: put the policy that comes with the
+    plugin in place of a server's own one (one policy on every server)."""
     p = Plan(server=server)
     if track_data:
         # one track's own folder (drift_rl/tracks/<track>) picked for the folder of them all
@@ -274,17 +286,19 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     policy_name = f'{PLUGIN}.policy.json'
 
     def differs(f):
-        there, source = os.path.join(server.folder, plugin_rel, f), os.path.join(plugin_source or '', f)
+        there, source = server.data_path(f'{plugin_rel}/{f}'), os.path.join(plugin_source or '', f)
         return (f in server.plugin_files and plugin_source is not None and os.path.exists(source)
                 and not filecmp.cmp(source, there, shallow=False))
     stale = [f for f in PLUGIN_FILES if differs(f)]
     plugin_update = any(f != policy_name for f in stale)
-    installed = os.path.join(server.folder, plugin_rel, policy_name)
+    installed = server.data_path(f'{plugin_rel}/{policy_name}')
     carried = os.path.join(plugin_source, policy_name) if plugin_source else ''
     # beside the same plugin, a server's policy that a release shipped is replaced too (an older
     # stock policy); one that no release shipped is the server's own and stays
     stock_policy = (not plugin_update and policy_name in stale
                     and SHIPPED_POLICIES.get(policy_sha256(installed)))
+    if not plugin_update and policy_name in stale and not stock_policy and shipped_policy:
+        stock_policy = 'asked for'      # the server's own policy, swapped for the release's on request
     # the policy the bots will run, which the track's checks are for
     if os.path.exists(installed) and not plugin_update and not stock_policy:
         policy = installed
@@ -297,7 +311,7 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     for pattern in TRACK_FILES:
         name = pattern.format(track=server.track)
         source = os.path.join(track_data, server.track, name) if track_data else ''
-        there = os.path.join(server.folder, name)
+        there = server.data_path(name)
         if name.endswith('_pace_reference.csv'):
             # only pace_model's: an older one (measured by a policy) is made again below
             source = source if source and current_pace_reference(source) else ''
@@ -385,7 +399,7 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         name = f'{server.track}_pace_reference.csv'
         if any(c.file == name for c in p.changes):
             return None
-        there = os.path.join(server.folder, name)
+        there = server.data_path(name)
         return there if os.path.exists(there) else None
 
     # what the track's data asks of the bots, checked before anything is written (drift_rl/check_track.py)
@@ -522,16 +536,11 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     if bots > 1 and config.get('HoldBotSpacing') is False:
         p.changes.append(Change(x, "spread the bots round the lap", 'HoldBotSpacing: false', 'HoldBotSpacing: true',
                                 op=('yaml_doc', PLUGIN_CONFIG_TAG, 'HoldBotSpacing', 'true')))
-    now_train = int(config.get('TrainSize', 1) or 1)
-    if train_size is not None and train_size != now_train:
-        what = ("let every bot drive on its own" if train_size <= 1
-                else f"run the bots as tandem trains of {train_size}: the first car of each train drives, "
-                     "the others follow it door to door")
-        p.changes.append(Change(x, what, f'TrainSize: {now_train}', f'TrainSize: {train_size}',
-                                op=('yaml_doc', PLUGIN_CONFIG_TAG, 'TrainSize', str(train_size))))
-    size = train_size if train_size is not None else now_train
-    if size > 1 and bots % size:
-        p.notes.append(f"{bots} bots in trains of {size}: the last train has {bots % size}")
+    # tandem trains of replaying followers are retired (v0.3.0): bots chase each other (ChaseBots)
+    if 'TrainSize' in config:
+        p.changes.append(Change(x, "take out TrainSize: replayed tandem trains are retired; bots form trains by "
+                                "chasing each other (ChasePlayers and ChaseBots)", f"TrainSize: {config['TrainSize']}", '',
+                                op=('yaml_doc_remove', PLUGIN_CONFIG_TAG, 'TrainSize')))
     if pace_percent is not None:
         if not paces:
             p.notes.append("the policy has no pace (it was trained without one): the bots' pace is not set")
@@ -571,20 +580,48 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
             p.blockers.append("AssettoServer is running from this folder (the plugin is in use): stop it, then run "
                               "setup again to update the plugin")
     elif stock_policy:
+        whose = ("the server's own, replaced as asked" if stock_policy == 'asked for'
+                 else f"the server's is the one {stock_policy} shipped")
         p.changes.append(Change(f'{plugin_rel}/{policy_name}',
-                                f"update the policy (the server's is the one {stock_policy} shipped) to the one setup "
-                                "carries; it drives from the server's next start",
+                                f"update the policy ({whose}) to the one that comes with the plugin; it drives from "
+                                "the server's next start (the server's goes to the backup; undo puts it back)",
                                 op=('copy', carried, f'{plugin_rel}/{policy_name}')))
     elif stale:
-        p.notes.append(f"the server's policy ({plugin_rel}/{policy_name}) differs from the one setup carries for the "
-                       "same plugin and no release shipped it, so it is kept (it may have been polished for this "
-                       f"track). To use setup's, copy {os.path.join(plugin_source, policy_name)} over it")
+        p.notes.append(f"the server's policy ({plugin_rel}/{policy_name}) differs from the one that comes with the "
+                       "plugin and no release shipped it, so it is kept (it may have been polished for this track). "
+                       "To run the release's policy here, as on every other server, run setup with --shipped-policy")
     # settings the plugin going in (or the one installed) does not know: renamed ones move to their new
     # name, the rest come out, so AssettoServer does not stop at start on them
     going_in = plugin_update or PLUGIN_FILES[0] in missing
     dll = (os.path.join(plugin_source, PLUGIN_FILES[0]) if plugin_source else '') if going_in \
         else os.path.join(server.folder, plugin_rel, PLUGIN_FILES[0])
     known = plugin_settings(dll) if dll and os.path.exists(dll) else None
+    # the plugin's features file (what policies it can run) goes with it
+    feat_source = os.path.join(plugin_source, pairing.FEATURES) if plugin_source else ''
+    if feat_source and os.path.exists(feat_source) and (going_in or not stale_dll(server, plugin_source)):
+        feat_rel = f'{plugin_rel}/{pairing.FEATURES}'
+        feat_there = os.path.join(server.folder, plugin_rel, pairing.FEATURES)
+        if not os.path.exists(feat_there) or not filecmp.cmp(feat_source, feat_there, shallow=False):
+            p.changes.append(Change(feat_rel, "the plugin's list of the policies it can run (setup checks a policy "
+                                    "against it)", op=('copy', feat_source, feat_rel) + (('plugin',) if plugin_update else ())))
+    # the policy the bots will run against the plugin that will run it: a pair the plugin would refuse
+    # (the stock AI would drive, with a word only in the server log) is not installed
+    plugin_dir = os.path.dirname(dll) if dll else ''
+    if pairing.load_features(plugin_dir) is None and feat_source and not stale_dll(server, plugin_source):
+        plugin_dir = plugin_source
+    if os.path.exists(policy) and plugin_dir:
+        problems, checked = pairing.check_files(policy, plugin_dir)
+        if problems:
+            ours = policy == carried
+            fix = ("The plugin and its policy come from different builds: use the release's GradientDriftPlugin "
+                   "folder as it is" if ours else
+                   "Run setup with --shipped-policy to put the policy that comes with the plugin in its place, or "
+                   "install a plugin built for this policy")
+            p.blockers.append("the plugin cannot run " + ("the policy that comes with it" if ours else
+                                                          f"the server's policy ({plugin_rel}/{policy_name})") + ": "
+                              + '; '.join(problems) + f". The stock AI would drive the bots. {fix}")
+        elif not checked:
+            p.notes.append("the plugin build has no features file, so setup could not check that it runs this policy")
     if known and server.plugin_config:
         for key, value in server.plugin_config.items():
             if key in known:
@@ -607,7 +644,7 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         # before the cars' scales are worked out
         pace_made = any(c.op[:1] in (('track_data',), ('pace_reference',))
                         or (c.op[:1] == ('copy',) and (c.file in track_names or c.file == rel_ai)) for c in p.changes)
-        source, why_not = pace_source(policy, home, server.folder, server.track, made_here=pace_made,
+        source, why_not = pace_source(policy, home, server.data_folder, server.track, made_here=pace_made,
                                      server_line=server.server_ai_line()) \
             if paces else (None, None)
         if why_not:
@@ -618,7 +655,7 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
             if text is None:
                 p.blockers.append(f"no car file for {model}: {why}")
                 continue
-            there = os.path.join(server.folder, rel)
+            there = server.data_path(rel)
             old = ''
             if os.path.exists(there):
                 with open(there, encoding='utf-8') as f:
@@ -631,8 +668,31 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
             elif old != text:
                 p.changes.append(Change(rel, f"the numbers the bots in {model} drive with, from the game's car files"
                                         + (" (updated)" if old else ""), after=text, op=('write', rel, text)))
+    plan_bundle(p, plugin_source)
     if trained and not any(t.lower() in server.track.lower() for t in trained):
         p.blockers.append(f"the plugin's policy was trained on {', '.join(trained)} only; on {server.track} the plugin "
                           "leaves the cars to the stock AI. A policy for this track: drift_rl/train_ppo_gpu.py --track "
                           f"{server.track}")
     return p
+
+
+def plan_bundle(p, plugin_source):
+    """Whether apply keeps the plugin's data in one file (bundle.py): when the plugin the server will
+    run reads it. A server with loose data files gets a change that packs them."""
+    server = p.server
+    installing = any(c.file == f'plugins/{PLUGIN}/{PLUGIN_FILES[0]}' for c in p.changes)
+    dll = (os.path.join(plugin_source, PLUGIN_FILES[0]) if installing
+           else os.path.join(server.folder, 'plugins', PLUGIN, PLUGIN_FILES[0]))
+    if not os.path.exists(dll):
+        return
+    if not bundle.plugin_reads_bundle(dll):
+        if server.bundled:
+            p.notes.append(f"the server's plugin is older than {bundle.BUNDLE} and does not read it: it reads the "
+                           "loose files only. Update the plugin to use the bundle")
+        return
+    p.bundle = True
+    loose = bundle.loose_files(server.folder)
+    if loose:
+        p.changes.append(Change(bundle.BUNDLE_REL, f"pack the plugin's {len(loose)} loose data file(s) (policy, car "
+                                "files, track data) into one file; the loose ones go into setup's backup",
+                                op=('bundle',)))

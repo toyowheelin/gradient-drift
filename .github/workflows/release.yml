@@ -44,6 +44,10 @@ jobs:
             mv unz/$os/gradient-drift-setup "$top/$os"
             cp -r plugin/GradientDriftPlugin "$top/$os/"
             test -s "$top/$os/GradientDriftPlugin/GradientDriftPlugin.dll"
+            test -s "$top/$os/GradientDriftPlugin/GradientDriftPlugin.features.json"
+            # one policy for every server: exactly the plugin's own, nothing per track
+            policies=$(find "$top/$os" -name '*.policy.json' | wc -l)
+            [ "$policies" = 1 ] || { echo "::error::$os has $policies policy files, the release ships one"; exit 1; }
           done
           test -x "$top/linux/gradient-drift-setup"
           cp plugin/LICENSE plugin/CREDITS.md "$top/"
@@ -69,17 +73,47 @@ jobs:
           EOF
           zip -qry "$top.zip" "$top"
           echo "ZIP=$top.zip" >> $GITHUB_ENV
+          python3 - "$top/windows/GradientDriftPlugin/GradientDriftPlugin.policy.json" <<'PY' >> $GITHUB_ENV
+          import hashlib, json, sys
+          raw = open(sys.argv[1], 'rb').read()
+          doc = json.loads(raw)
+          print(f"POLICY_SHA={hashlib.sha256(raw.replace(b'\r\n', b'\n')).hexdigest()}")
+          print(f"POLICY_TICKS={doc.get('trained_ticks', 0):,}")
+          PY
         env:
           PACKAGE: ${{ needs.plugin.outputs.package }}
           ASSETTOSERVER: ${{ needs.plugin.outputs.assettoserver }}
+      - uses: actions/checkout@v5
+        with:
+          path: src
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+      - name: this release's notes from CHANGELOG.md
+        # the section whose heading is the tag ("## v0.3.0"), up to the next "## " heading
+        run: |
+          python3 - "$GITHUB_REF_NAME" <<'PY'
+          import re, sys
+          tag = sys.argv[1]
+          text = open('src/CHANGELOG.md', encoding='utf-8').read()
+          m = re.search(rf'^## {re.escape(tag)}[ \t]*\n(.*?)(?=^## |\Z)', text, re.S | re.M)
+          if not m or not m.group(1).strip():
+              sys.exit(f'::error::CHANGELOG.md has no "## {tag}" section: write the release notes there first')
+          open('changes.md', 'w', encoding='utf-8').write(m.group(1).strip() + '\n')
+          PY
       - name: draft release
         run: |
-          cat > notes.md <<NOTES
+          cat changes.md > notes.md
+          cat >> notes.md <<NOTES
+
+          ---
+
           Built and tested for AssettoServer $ASSETTOSERVER.
 
           **Download \`$ZIP\`** and unzip it. It has the setup program for Windows (\`windows/\`, a window or the terminal) and for Linux (\`linux/\`, the terminal: the same walk-through as questions), each with the plugin already inside. Run the one for your system on your server folder: it installs the plugin and makes the track data, car files and settings. See [setup/README.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/setup/README.md).
 
           The plugin is one build for Windows and Linux servers (a .NET plugin; tested on Windows only, Linux untested). On another AssettoServer version it warns in the server log at start.
+
+          One policy for every server: \`GradientDriftPlugin.policy.json\`, $POLICY_TICKS training ticks (SHA-256 \`$POLICY_SHA\`). Setup checks that the plugin can run it before installing either, and puts it in place of an older release's policy.
           NOTES
           gh release create "$GITHUB_REF_NAME" --draft --title "$GITHUB_REF_NAME (AssettoServer $ASSETTOSERVER)" \
             --notes-file notes.md --repo "$GITHUB_REPOSITORY" "$ZIP"

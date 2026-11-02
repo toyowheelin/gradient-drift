@@ -1,12 +1,17 @@
 """What an AssettoServer folder holds: its track, its cars and entries, whether AI and the drift
 plugin are on, and the files the bot needs."""
+import atexit
 import os
 import re
+import shutil
 import sys
+import tempfile
+import zipfile
 from dataclasses import dataclass, field
 
 from ruamel.yaml import YAML
 
+from . import bundle
 from .acini import AcIni
 
 PLUGIN = 'GradientDriftPlugin'
@@ -44,6 +49,26 @@ class Server:
     old_plugin_doc: bool = False                      # its settings under OLD_PLUGIN_CONFIG_TAG
     old_policy: str = ''                              # plugins/DriftAiPlugin/DriftAiPlugin.policy.json, if there
     problems: list = field(default_factory=list)      # things that stop setup reading the folder
+    bundled: dict = field(default_factory=dict)       # server path -> its copy unpacked from the plugin's bundle
+    bundle_dir: str = ''                              # where the bundle was unpacked (laid out like the server)
+
+    def data_path(self, rel):
+        """Where to read one of the plugin's data files (a path relative to the server folder): the
+        loose file if there is one, else its copy from the bundle (as the plugin reads them)."""
+        loose = os.path.join(self.folder, *rel.split('/'))
+        return loose if os.path.exists(loose) else self.bundled.get(rel, loose)
+
+    @property
+    def data_folder(self):
+        """A folder holding the track's data files as the plugin sees them (the loose file where there
+        is one, else the bundle's copy): the server folder itself when nothing is in a bundle."""
+        if not self.bundled:
+            return self.folder
+        view = self.bundle_dir
+        for name in os.listdir(self.folder):
+            if name.endswith(bundle.TRACK_SUFFIXES) and os.path.isfile(os.path.join(self.folder, name)):
+                shutil.copy2(os.path.join(self.folder, name), os.path.join(view, name))
+        return view
 
     @property
     def cfg(self):
@@ -108,10 +133,37 @@ def read_server(folder):
     plugin_dir = os.path.join(folder, 'plugins', PLUGIN)
     if os.path.isdir(plugin_dir):
         s.plugin_files = sorted(os.listdir(plugin_dir))
+    bundle_path = os.path.join(plugin_dir, bundle.BUNDLE)
+    if os.path.isfile(bundle_path):
+        try:
+            s.bundle_dir, s.bundled = _unpack(bundle_path)
+        except (OSError, zipfile.BadZipFile) as e:
+            s.problems.append(f"plugins/{PLUGIN}/{bundle.BUNDLE} cannot be read ({e}): move it away, or put back "
+                              "the one from setup's last backup")
+        if f'plugins/{PLUGIN}/{bundle.POLICY}' in s.bundled and bundle.POLICY not in s.plugin_files:
+            s.plugin_files = sorted(s.plugin_files + [bundle.POLICY])
     old_policy = os.path.join(folder, 'plugins', OLD_PLUGIN, OLD_PLUGIN + '.policy.json')
     if os.path.exists(old_policy):
         s.old_policy = old_policy
     return s
+
+
+def _unpack(path):
+    """The bundle's files setup knows, unpacked into a folder of their own laid out like the server's
+    that goes when setup ends: (that folder, {server path: unpacked copy})."""
+    out = tempfile.mkdtemp(prefix='gradient-drift-bundle-')
+    atexit.register(shutil.rmtree, out, True)
+    files = {}
+    for name, data in bundle.read(path).items():
+        rel = bundle.rel_of(name)
+        if rel is None:
+            continue
+        dst = os.path.join(out, *rel.split('/'))
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, 'wb') as f:
+            f.write(data)
+        files[rel] = dst
+    return out, files
 
 
 def server_running(folder):

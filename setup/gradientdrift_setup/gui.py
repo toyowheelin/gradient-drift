@@ -335,11 +335,6 @@ class CarPage(QWizardPage):
         head.setSectionResizeMode(0, QHeaderView.ResizeToContents)
         head.setSectionResizeMode(1, QHeaderView.Stretch)
         head.setSectionResizeMode(2, QHeaderView.Stretch)
-        self.train = QSpinBox()
-        self.train.setRange(0, 6)
-        self.train.setSpecialValueText('as it is')
-        self.train.setToolTip('Bots to a tandem train: the first car of each train drives, the others follow it '
-                              'door to door. 1 = every bot drives on its own.')
         self.pace = QSpinBox()
         self.pace.setRange(0, 105)
         self.pace.setSuffix(' %')
@@ -353,7 +348,6 @@ class CarPage(QWizardPage):
         form.addRow('Every bot in', self.all_car)
         form.addRow(self.slots)
         form.addRow("New bots' name", self.name)
-        form.addRow('Bots to a train', self.train)
         form.addRow('Pace', self.pace)
         form.addRow(self.note)
         form.addRow(hint('Pick how many bots you want and their car; the rest can stay as it is. '
@@ -363,7 +357,6 @@ class CarPage(QWizardPage):
     def initializePage(self):
         s = self.state['server']
         config = s.plugin_config or {}
-        self.train.setValue(int(config.get('TrainSize', 0) or 0))
         self.pace.setValue(int(float(config.get('BotPacePercent', 0) or 0)))
         self.name.setText(bot_name_now(s))         # a name chosen before is kept, not set back to DriftBot
         self.all_car.clear()
@@ -442,7 +435,7 @@ class CarPage(QWizardPage):
                  for r in range(self.slots.rowCount())]
         self.state.update(slots=slots, car=slots[0][0], skin=slots[0][1],
                           bot_name=self.name.text().strip() or 'DriftBot', bots=len(slots),
-                          train_size=self.train.value() or None, pace_percent=self.pace.value() or None)
+                          pace_percent=self.pace.value() or None)
         return True
 
 
@@ -542,7 +535,7 @@ class ChangesPage(QWizardPage):
         result, error, _ = run_busy(self, 'Exporting', lambda log: export_server(
             st['server'].folder, os.path.normpath(out), st['game'], log=log, slots=st.get('slots'), bots=st['bots'],
             bot_name=st['bot_name'], plugin_source=plugin, track_data=track_data,
-            train_size=st.get('train_size'), pace_percent=st.get('pace_percent')))
+            pace_percent=st.get('pace_percent')))
         if error:
             QMessageBox.critical(self, 'Nothing was exported', f'{type(error).__name__}: {error}')
             return
@@ -576,8 +569,7 @@ class ChangesPage(QWizardPage):
         st = self.state
         plan = plan_bot(st['server'], st['game'], slots=st.get('slots'), bots=st['bots'],
                         bot_name=st['bot_name'], plugin_source=self.plugin.value() or None,
-                        track_data=self.track_data.value() or None, train_size=st.get('train_size'),
-                        pace_percent=st.get('pace_percent'))
+                        track_data=self.track_data.value() or None, pace_percent=st.get('pace_percent'))
         st['plan'] = plan
         self.tree.clear()
         if plan.changes:
