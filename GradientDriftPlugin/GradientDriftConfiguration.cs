@@ -28,9 +28,9 @@ public class GradientDriftConfiguration
 
     // With more than one bot out: a car the plugin takes over is moved to the middle of the
     // largest gap between the others (if that is within the server's PlayerRadiusMeters of a
-    // player), and each car is then sped up or slowed down a little so the gaps stay even. A
-    // policy that reads the pace (input 52) is asked for a faster or slower pace,
-    // inside the range it was trained for, around BotPacePercent; it slows by braking with the
+    // player), and each car is then slowed down a little so the gaps stay even. A
+    // policy that reads the pace (input 52) is asked for a slower pace, never faster than
+    // BotPacePercent (or its BotStyles pace) and never below BotPaceMinPercent; it slows by braking with the
     // throttle, keeping its angle, and every car keeps the same RearSlidingGrip. An older policy
     // has its RearSlidingGrip eased up or down inside its trained range instead (RearSlidingGrip
     // below is then the middle). The bots do not see each other: one that spins can still be
@@ -41,7 +41,8 @@ public class GradientDriftConfiguration
     // course's reference speed (<track>_pace_reference.csv: a quick human's speed at each point,
     // a little faster; drift_rl/pace_model.py): 90 = 90% of that speed at every point of the lap,
     // on any track. Held inside the range the policy was trained for
-    // ("pace_fraction_range" in the policy file); 0 = the top of that range. Lower = calmer
+    // ("pace_fraction_range" in the policy file); 0 = 100, held inside that range (the top
+    // for a gen4 policy in km/h). Lower = calmer
     // bots that brake more through the corners. A policy that also reads how far over its asked
     // speed it is needs <track>_pace_reference.csv (the trainer or setup writes it) in the
     // server's folder, beside the course edges.
@@ -55,10 +56,72 @@ public class GradientDriftConfiguration
     // The same for a gen4 policy, whose paces are km/h along the line ("pace_kmh_range").
     public float BotPaceKmh { get; set; } = 0f;
 
-    // Tandem trains: bots in order of their entry, this many to a train. The first of each train is
-    // driven by the policy; the others replay what it sent a moment earlier (TandemTrains.cs), so
-    // they follow its line exactly. 1 = every bot drives alone. With HoldBotSpacing the trains are
-    // spread round the lap, each as one.
+    // Tandem with a player chasing: a bot (or train) with a player close behind waits for them -
+    // its own pace with the player right on its tail, slowing to BotPaceMinPercent as they drop back
+    // 40 m; further back, spacing as usual. A policy that reads its pace only.
+    public bool LeadPlayers { get; set; } = false;
+
+    // Tandem with a bot chasing a player: a player who pulls in within ChaseOptInMeters ahead of a
+    // bot's nose is chased until they get ChaseOptOutMeters ahead. The bot's pace comes from the
+    // Intelligent Driver Model, aiming ChaseGapMeters behind them. A policy that reads its pace only.
+    public bool ChasePlayers { get; set; } = true;
+    public float ChaseGapMeters { get; set; } = 2f;
+    // How far ahead of a bot's nose a player is taken up (about 25 ft by default, the owner's opt-in),
+    // and how far ahead they get before it gives up, metres along the line.
+    public float ChaseOptInMeters { get; set; } = 7.5f;
+    public float ChaseOptOutMeters { get; set; } = 40f;
+    // The model's time gap (drift_env chase_time_gap_blind_s: a player's plan is unknown), how far
+    // ahead its acceleration becomes the pace asked (chase_response_s), and the top of that pace as
+    // a percentage of the policy's top pace (chase_pace_max): a chaser needs some speed over the
+    // player's to catch up.
+    public float ChaseTimeGapSeconds { get; set; } = 0.2f;
+    public float ChaseResponseSeconds { get; set; } = 0.6f;
+    public float ChasePaceMaxPercent { get; set; } = 110f;
+
+    // With ChasePlayers, every car (player or bot) has at most one bot chasing it: a second bot
+    // that comes up behind waits at its usual pace or, with ChaseBots, chases the chaser. ChaseBots:
+    // a bot also chases another bot that comes within ChaseOptInMeters ahead of it, so drift trains
+    // form, at most ChaseTrainMax bots chasing in one line (behind a player or a bot that is not
+    // chasing). A bot-on-bot chase lasts at most ChaseBotRunSeconds; that bot then drops back and
+    // takes up no bot for ChaseBotCooldownSeconds, so trains break up and form again. Chasing a
+    // player is never timed.
+    public bool ChaseBots { get; set; } = true;
+    public int ChaseTrainMax { get; set; } = 3;
+    public float ChaseBotRunSeconds { get; set; } = 60f;
+    public float ChaseBotCooldownSeconds { get; set; } = 30f;
+
+    // ---- Each bot's own style ---------------------------------------------------------------
+
+    // So a server full of bots does not look like clones: each bot gets its own aggression (its
+    // pace around BotPacePercent, how far ahead it takes up a car to chase, how fast it may chase),
+    // its own chase gap and its own skill. All of these are inputs the policy was trained over, so
+    // no retraining; each is held inside the policy's trained range. A bot keeps its style through
+    // respawns and server restarts.
+    //
+    // BotStyleSpread, 0 - 1: how far the bots' styles are drawn apart. 0 = every bot drives with
+    // the settings above (as before); 1 = aggression anywhere from calm to pushy and chase gaps
+    // from half ChaseGapMeters to twice it. BotSkillSpread, 0 - 1: each bot's skill is BotSkill
+    // less up to this much (0 = all at BotSkill). BotStyleSeed: change it for a new set of draws.
+    public float BotStyleSpread { get; set; } = 0f;
+    public float BotSkillSpread { get; set; } = 0f;
+    public int BotStyleSeed { get; set; } = 0;
+
+    // Styles set by hand, over the draws. Each entry names a bot by its entry-list DRIVERNAME, or
+    // without a Name applies to the AI entries in order. Any of Aggression (0 - 1, 0.5 = the
+    // settings), ChaseGapMeters and Skill; a value left out is drawn or the server's. E.g.
+    //   BotStyles:
+    //     - Name: Kenji
+    //       Aggression: 0.9
+    //       ChaseGapMeters: 1
+    //     - Name: Mia
+    //       Aggression: 0.2
+    //       Skill: 0.6
+    public List<BotStyleEntry> BotStyles { get; set; } = new();
+
+    // Retired in v0.3.0 (bots form trains by chasing each other: ChasePlayers, ChaseBots). Still
+    // accepted so an older extra_cfg.yml starts; the plugin sets TrainSize back to 1 at start, so the
+    // replaying followers (TandemTrains.cs) never form. This and the Tandem* settings below go with
+    // that code in a later release.
     public int TrainSize { get; set; } = 1;
 
     // Seconds behind the car in front, per place in the train (0.35 is a little over a car length
@@ -86,6 +149,18 @@ public class GradientDriftConfiguration
 
     // Adds the network's inputs to every row (about 330 bytes). Both tools need them.
     public bool LogLearnedPolicyObservations { get; set; } = true;
+
+    // A short report card of how the bots drove, one per server session: slide, walls, car hits,
+    // chase gap, how often the server's own AI had them, stuck bots (BotScorecard). Written as
+    // <start>_<track>_<session>.txt and .json into ScorecardFolder, rewritten every
+    // ScorecardWriteMinutes and when the session ends; drift_rl/scorecard_report.py reads them.
+    // A few KB a session. Off by default: the plugin writes no files unless asked.
+    public bool EnableScorecard { get; set; } = false;
+
+    // Relative to the server's working directory.
+    public string ScorecardFolder { get; set; } = "gradientdrift_scorecards";
+
+    public float ScorecardWriteMinutes { get; set; } = 10f;
 
     // The plugin's routine lines in the server log as well as its warnings: what it loaded, each
     // setting the policy file brings, each bot car's numbers, spawns and placements, and the timing
@@ -216,6 +291,13 @@ public class GradientDriftConfiguration
     public float CgHeightMeters { get; set; } = 0.40f;
     public float FrontPeakSlipAngleRadians { get; set; } = 11.7f * MathF.PI / 180f;
     public float RearPeakSlipAngleRadians { get; set; } = 12.0f * MathF.PI / 180f;
+    // Each axle's sideways force follows the brush (Fiala) curve, steep at first and rounding over
+    // into full sliding, instead of a straight line to its peak; full sliding comes at the peak
+    // slip angle plus the tyre's FLEX (tyres.ini, degrees per N) x the static load on one tire.
+    // Set by the policy file.
+    public bool RoundTireCurve { get; set; } = false;
+    public float FrontTireFlex { get; set; } = 0.000852f;
+    public float RearTireFlex { get; set; } = 0.000852f;
     // The steering lock at the road wheels. A policy file that was trained with another lock
     // says so ("plugin_settings": MaxSteerAngleDeg) and that value is used instead; the same
     // goes for MaxSteerRateDegS, the two rear limits and the wrong-way recovery's four thresholds.
@@ -275,6 +357,18 @@ public class GradientDriftConfiguration
     // wheels), but the brake action - the front axle, with the throttle - still works, so the car
     // can scrub speed and keep the rear loose. Set by the policy file.
     public bool FrontBrakeOnly { get; set; } = false;
+
+    // With EnableRearFrictionCircle: the rear tires' friction circle while the throttle spins
+    // them, as a share of their peak. It shrinks toward this with the share of full-throttle
+    // thrust they are driven with: a spinning tire grips less every way than at its peak.
+    // 1 = off. Set by the policy file.
+    public float RearSpinGripShare { get; set; } = 1f;
+
+    // Each axle's peak friction times the grip of the ground under it: its surface's FRICTION in
+    // the track's surfaces.ini over the main road's, from <track>_collision_grip.csv.gz (setup
+    // writes it beside the other track files). The game scales its own tyres by the surface the
+    // same way, so a slippery stretch of road is slippery for the bots too. Set by the policy file.
+    public bool SurfaceGrip { get; set; } = false;
 
     // Floor on the speed in the slip-angle formula, which is singular at zero speed.
     public float MinSlipAngleSpeedMs { get; set; } = 3.0f;

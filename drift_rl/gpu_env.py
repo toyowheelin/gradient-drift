@@ -29,12 +29,12 @@ def kernel_arg_names():
     """Argument order of drift_env.step_kernel / step_batch, in one place."""
     return (['states', 'mids', 'diags', 'actions', 'prev_act', 'counters', 'ep', 'params', 'rw', 'obs',
              'rewards', 'terminated', 'truncated', 'final_obs', 'ep_out', 'rnd', 'env_cfg',
-             'episode_ticks', 'sp_dir', 'la_idx', 'la_min_radius', 'pace_ref'], _WORLD_NAMES)
+             'episode_ticks', 'sp_dir', 'la_idx', 'la_min_radius', 'pace_ref'], _WORLD_NAMES + ['gh', 'gh_len'])
 
 
 _WORLD_NAMES = ['sp_pos', 'sp_radius', 'sp_length', 'sp_next', 'sp_prev', 'sp_fwd', 'sp_cum', 'tri_v',
                 'tri_surf', 'gmin', 'cell_size', 'dims', 'cell_start', 'cell_items', 'rm_pos', 'rm_min', 'rm_cell',
-                'rm_dims', 'rm_start', 'rm_items', 'co', 'mk']
+                'rm_dims', 'rm_start', 'rm_items', 'co', 'mk', 'tri_grip']
 _RESET_NAMES = ['states', 'mids', 'prev_act', 'counters', 'ep', 'params', 'obs', 'rnd', 'env_cfg',
                 'sp_dir', 'la_idx', 'la_min_radius', 'sp_pos', 'sp_radius', 'sp_length', 'sp_next',
                 'sp_prev', 'sp_fwd', 'co']
@@ -67,6 +67,8 @@ def host_arrays(world, n_envs, env_cfg, rew_cfg):
     }
     for name, arr in zip(_WORLD_NAMES, world.arrays()):
         a[name] = arr
+    # ghost leaders (chase episodes): passed to the step, but the GPU environment starts no chases yet
+    a['gh'], a['gh_len'] = de_cpu.ghost_arrays(world)
     a['_base_params'] = base
     return a
 
@@ -125,12 +127,21 @@ class DriftGpuEnv:
                                        dtype=torch.float64))
 
     def _randomise_grip(self, mask):
-        g = self.cfg.grip_randomisation
-        if g <= 0.0:
-            return
         torch = self.torch
         k = int(mask.sum())
         if k == 0:
+            return
+        for share, names in ((self.cfg.dr_axle_grip, ('DR_FRONT_GRIP_SCALE', 'DR_REAR_GRIP_SCALE')),
+                             (self.cfg.dr_peak_slip, ('DR_FRONT_PEAK_SLIP_SCALE', 'DR_REAR_PEAK_SLIP_SCALE'))):
+            if share > 0.0:
+                for name in names:
+                    self.t['params'][mask, fs_cpu.P[name]] = \
+                        1.0 + (torch.rand(k, generator=self.gen, device=self.device, dtype=torch.float64) * 2 - 1) * share
+        if self.cfg.dr_surface_grip > 0.0:
+            self.t['params'][mask, fs_cpu.P['SURFACE_GRIP_DEV_SCALE']] = \
+                1.0 + (torch.rand(k, generator=self.gen, device=self.device, dtype=torch.float64) * 2 - 1) * self.cfg.dr_surface_grip
+        g = self.cfg.grip_randomisation
+        if g <= 0.0:
             return
         scale = 1.0 + (torch.rand(k, generator=self.gen, device=self.device, dtype=torch.float64) * 2 - 1) * g
         for idx in self._grip_idx:
@@ -143,6 +154,9 @@ class DriftGpuEnv:
     def set_pace_low(self, low):
         """Bottom of the range paces are drawn from (the trainer walks it down)."""
         self.t['env_cfg'][de_cpu.ENV_CFG_PACE_LOW] = low
+
+    def set_chase_gap_low(self, low):
+        """No chase episodes on the GPU simulator."""
 
     def reset(self):
         self._randomise_grip(self.torch.ones(self.n, dtype=self.torch.bool, device=self.device))
@@ -159,7 +173,8 @@ class DriftGpuEnv:
             self.t['actions'].copy_(actions)
         self._fill_random()
         self.de.step_kernel[self._blocks, self._tpb](*self._step_args)
-        if self.cfg.grip_randomisation > 0.0:
+        if (self.cfg.grip_randomisation > 0.0 or self.cfg.dr_axle_grip > 0.0 or self.cfg.dr_peak_slip > 0.0
+                or self.cfg.dr_surface_grip > 0.0):
             self._randomise_grip(self.terminated | self.truncated)
         return self.obs, self.rewards, self.terminated, self.truncated
 
@@ -179,6 +194,8 @@ class TorchCpuEnv:
         self.terminated, self.truncated = torch.from_numpy(e.terminated), torch.from_numpy(e.truncated)
         self.final_obs, self.ep_out = torch.from_numpy(e.final_obs), torch.from_numpy(e.ep_out)
         self.diags, self.states = torch.from_numpy(e.diags), torch.from_numpy(e.states)
+        # the privileged critic's inputs (EnvConfig.privileged; drift_env.PRIV_NAMES)
+        self.priv, self.final_priv = torch.from_numpy(e.priv), torch.from_numpy(e.final_priv)
 
     def set_sliding_grip_low(self, low):
         """Bottom of the range new episodes draw RearSlidingGrip from (the trainer walks it down)."""
@@ -187,6 +204,10 @@ class TorchCpuEnv:
     def set_pace_low(self, low):
         """Bottom of the range paces are drawn from (the trainer walks it down)."""
         self.env.env_cfg[de_cpu.ENV_CFG_PACE_LOW] = low
+
+    def set_chase_gap_low(self, low):
+        """Bottom of the range chase episodes draw the asked gap from (the trainer walks it down)."""
+        self.env.cfg.chase_gap_low = low
 
     def reset(self):
         self.env.reset()
@@ -245,6 +266,8 @@ class MultiTrackCpuEnv:
         self.truncated = cat([e.truncated for e in G])
         self.final_obs = cat([e.final_obs for e in G])
         self.ep_out = cat([e.ep_out for e in G])
+        self.priv = cat([e.priv for e in G])
+        self.final_priv = cat([e.final_priv for e in G])
 
     def set_sliding_grip_low(self, low):
         self.grip_low = low
@@ -255,6 +278,10 @@ class MultiTrackCpuEnv:
         self.pace_low = low
         for e in self.groups:
             e.set_pace_low(low)
+
+    def set_chase_gap_low(self, low):
+        for e in self.groups:
+            e.set_chase_gap_low(low)
 
     def reset(self):
         for e in self.groups:

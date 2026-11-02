@@ -4,16 +4,18 @@
                                           else the same five steps as questions in the terminal
     gradient-drift-setup walk             the walk-through in the terminal (Windows and Linux alike)
     gradient-drift-setup check <server folder> [<server folder> ...] [--game <AC install>]
-        [--bots N] [--car MODEL[,MODEL...]] [--skin NAME[,NAME...]] [--name NAME] [--train-size N] [--pace PERCENT]
-        [--plugin FOLDER] [--track-data FOLDER] [--details]
+        [--bots N] [--car MODEL[,MODEL...]] [--skin NAME[,NAME...]] [--name NAME] [--pace PERCENT]
+        [--plugin FOLDER] [--track-data FOLDER] [--shipped-policy] [--details]
     gradient-drift-setup apply <server folder> [the same options] [--yes]
     gradient-drift-setup undo <server folder> [--yes]
+    gradient-drift-setup bundle <server folder> [--yes]
     gradient-drift-setup export <server folder> --out <empty folder> [the same options]
 
 check reads each server and prints what it needs for drift bots, changing nothing (it exits 1 when
 a server has something setup cannot fix). apply shows the same list, asks, and makes the changes
 (originals kept in <server>/gradient-drift-setup-backups/). undo puts back what the last apply
-changed. export is for a server setup cannot reach (a hosting plan): give it the server's cfg/
+changed. bundle only packs the plugin's loose data files (policy, car files, track data) into
+plugins/GradientDriftPlugin/GradientDriftPlugin.bundle.zip, which apply also does. export is for a server setup cannot reach (a hosting plan): give it the server's cfg/
 folder downloaded from the host, and it puts the files to upload in <out>/upload/ and what to do
 with them in <out>/HOW_TO_INSTALL.txt, changing nothing it was given. Without --game setup uses the
 Assetto Corsa install it finds. The walk-through prints its run as one of these lines at the end.
@@ -58,6 +60,36 @@ def describe(plan, details=False):
         out += [f"    ! {b}" for b in plan.blockers]
     out += [f"  note: {n}" for n in plan.notes]
     return '\n'.join(out)
+
+
+def bundle_only(folders, yes):
+    """The bundle command: each server's plan with nothing but packing its loose data files."""
+    from .plan import Plan, plan_bundle
+    status = 0
+    for folder in folders:
+        server = read_server(folder)
+        print(f"\n{folder}")
+        if server.problems:
+            print('\n'.join(f"    ! {p}" for p in server.problems))
+            status = 1
+            continue
+        plan = Plan(server=server)
+        plan_bundle(plan, None)
+        if not plan.bundle:
+            print("  not packed: the server's plugin reads loose files only (or is not installed); update the "
+                  "plugin first")
+            status = 1
+            continue
+        if not plan.changes:
+            print("  nothing to pack: no loose data files")
+            continue
+        print(f"  {plan.changes[0].what}")
+        if not yes and input("  pack them? [y/N] ").strip().lower() not in ('y', 'yes'):
+            print("  nothing changed")
+            continue
+        apply_plan(plan)
+        print("  done. Restart the server for the plugin to read the bundle.")
+    return status
 
 
 def find_game(given):
@@ -137,19 +169,24 @@ def main(argv=None):
         c.add_argument('--bots', type=int, default=1, help='how many bots in all')
         c.add_argument('--name', default=None,
                        help="the bots' name in game, shown with each one's slot number (default: the server's, else DriftBot)")
-        c.add_argument('--train-size', type=int, default=None,
-                       help='bots to a tandem train (1: every bot on its own; default: leave the server as it is)')
         c.add_argument('--pace', type=float, default=None, metavar='PERCENT',
                        help="the bots' pace, %% of the flat-out speed at each point of the lap (a policy trained with paces)")
         c.add_argument('--plugin', default=None, help="the folder with the plugin's build (GradientDriftPlugin.dll ...)")
         c.add_argument('--track-data', default=None, help="a folder of track data you already have (a folder per track); leave out and setup makes it from the game")
+        c.add_argument('--shipped-policy', action='store_true',
+                       help="put the policy that comes with the plugin in place of a server's own one (the same policy on every server)")
         c.add_argument('--details', action='store_true', help='show each change as before / after')
         if name == 'apply':
             c.add_argument('--yes', action='store_true', help="don't ask")
     u = sub.add_parser('undo', help='put back what the last apply changed, after asking')
     u.add_argument('servers', nargs='+')
     u.add_argument('--yes', action='store_true', help="don't ask")
+    b = sub.add_parser('bundle', help="pack the plugin's loose data files into its one bundle file (originals kept)")
+    b.add_argument('servers', nargs='+')
+    b.add_argument('--yes', action='store_true', help="don't ask")
     args = ap.parse_args(argv)
+    if args.command == 'bundle':
+        return bundle_only(args.servers, args.yes)
     if args.command == 'walk':
         from .walk import run
         return run()
@@ -187,7 +224,8 @@ def main(argv=None):
         try:
             plan, files = run_logged(lambda log: export_server(
                 args.servers[0], args.out, game, log=log, **cars_args, bots=args.bots, bot_name=name,
-                plugin_source=plugin, track_data=track_data, train_size=args.train_size, pace_percent=args.pace))
+                plugin_source=plugin, track_data=track_data, pace_percent=args.pace,
+                shipped_policy=args.shipped_policy))
         except ValueError as e:
             print(f"  not exported: {e}")
             return 1
@@ -203,8 +241,8 @@ def main(argv=None):
     for folder in args.servers:
         server = read_server(folder)
         plan = plan_bot(server, game, **cars_args, bots=args.bots, bot_name=args.name or bot_name_now(server),
-                        plugin_source=plugin, track_data=track_data, train_size=args.train_size,
-                        pace_percent=args.pace)
+                        plugin_source=plugin, track_data=track_data,
+                        pace_percent=args.pace, shipped_policy=args.shipped_policy)
         print(describe(plan, args.details))
         if plan.blockers or plan.server.problems:
             status = 1

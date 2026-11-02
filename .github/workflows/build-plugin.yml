@@ -9,9 +9,9 @@ name: build plugin
 on:
   push:
     branches: [main]
-    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', '.github/workflows/build-plugin.yml']
+    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', 'setup/gradientdrift_setup/pairing.py', 'tools/plugin_features.py', 'drift_rl/policy.py', 'tests/plugin/**', '.github/workflows/build-plugin.yml']
   pull_request:
-    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', '.github/workflows/build-plugin.yml']
+    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', 'setup/gradientdrift_setup/pairing.py', 'tools/plugin_features.py', 'drift_rl/policy.py', 'tests/plugin/**', '.github/workflows/build-plugin.yml']
   workflow_dispatch:
   workflow_call:       # from release.yml on a v* tag
     outputs:
@@ -45,6 +45,21 @@ jobs:
       - uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 8.0.x
+      - name: the features file says what this source can run, and the shipped policy is one of those
+        # setup refuses a policy the plugin would refuse (setup/gradientdrift_setup/pairing.py, from
+        # GradientDriftPlugin.features.json, which tools/plugin_features.py makes from the C# source)
+        working-directory: gradient-drift
+        run: |
+          python3 tools/plugin_features.py --check
+          python3 - <<'PY'
+          import json, sys
+          sys.path.insert(0, 'setup')
+          from gradientdrift_setup import pairing
+          doc = json.load(open('GradientDriftPlugin/GradientDriftPlugin.policy.json', encoding='utf-8'))
+          problems = pairing.mismatches(doc, pairing.load_features('GradientDriftPlugin'))
+          print('shipped policy needs: ' + '; '.join(pairing.policy_needs(doc)))
+          assert not problems, 'the plugin cannot run its own shipped policy: ' + '; '.join(problems)
+          PY
       - name: place the plugin in the AssettoServer tree
         run: cp -r gradient-drift/GradientDriftPlugin AssettoServer/GradientDriftPlugin
       - name: build
@@ -52,7 +67,15 @@ jobs:
       - name: the build has what the server loads
         run: |
           out=AssettoServer/GradientDriftPlugin/bin/Debug/net8.0
-          ls -l $out/GradientDriftPlugin.dll $out/GradientDriftPlugin.deps.json $out/GradientDriftPlugin.policy.json
+          ls -l $out/GradientDriftPlugin.dll $out/GradientDriftPlugin.deps.json $out/GradientDriftPlugin.policy.json $out/GradientDriftPlugin.features.json
+      - name: the plugin runs policies as the trainer does, and refuses what it cannot run
+        # tests/plugin: the plugin's own loader and network on the shipped policy, made-up ones of
+        # every shape it runs (their actions against drift_rl/policy.py's) and broken ones
+        run: |
+          python3 -m pip install --quiet "numpy<2.5"
+          python3 gradient-drift/tests/plugin/make_cases.py plugin-cases
+          cp -r gradient-drift/tests/plugin AssettoServer/PluginChecks
+          dotnet run --project AssettoServer/PluginChecks/PluginChecks.csproj -- "$PWD/plugin-cases"
       - name: setup can tell what this build knows
         # setup reads the plugin's settings from the DLL's set_<Name> metadata strings (to take out
         # settings a newer plugin dropped), and replaces a server's policy only when a release shipped
@@ -99,7 +122,7 @@ jobs:
           [[ "$GITHUB_REF" == refs/tags/v* ]] || version=$(git -C gradient-drift rev-parse --short HEAD)
           name=GradientDriftPlugin-$version-for-AssettoServer-$ASSETTOSERVER_VERSION
           mkdir -p pkg/GradientDriftPlugin
-          cp $out/GradientDriftPlugin.dll $out/GradientDriftPlugin.deps.json $out/GradientDriftPlugin.policy.json pkg/GradientDriftPlugin/
+          cp $out/GradientDriftPlugin.dll $out/GradientDriftPlugin.deps.json $out/GradientDriftPlugin.policy.json $out/GradientDriftPlugin.features.json pkg/GradientDriftPlugin/
           cp gradient-drift/LICENSE gradient-drift/CREDITS.md pkg/
           cat > pkg/README.txt <<EOF
           Gradient Drift plugin $version, built for AssettoServer $ASSETTOSERVER_VERSION.

@@ -26,7 +26,7 @@ import json
 import os
 import sys
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 
 import numpy as np
 import track_files as tf
@@ -50,6 +50,40 @@ TRAIN_KEYS = ['return', 'mean_abs_slip_deg', 'drift_fraction', 'pushout_tick_fra
 # moves it; the exploration noise (BRAKE_INIT_STD) takes it above zero on about one tick in six.
 BRAKE_INIT_BIAS = -0.3
 BRAKE_INIT_STD = 0.3
+
+
+# --history-frames: the inputs a history frame holds (drift_env.OBS_NAMES): how the car moved and
+# what the policy asked of it
+HISTORY_INPUTS = ('own_speed/25', 'lateral_velocity/10', 'yaw_rate/2', 'body_slip/(pi/2)', 'prev_action_steer',
+                  'prev_action_speed', 'prev_action_brake', 'last_front_saturation', 'last_rear_saturation')
+
+
+class TorchHistory:
+    """policy.Policy.history_step for the trainer's batch of cars, on tensors: step() returns the
+    env's inputs with the history block after them and keeps the present frame; peek() the same
+    without keeping it (a finished episode's last observation)."""
+
+    def __init__(self, torch, slots, frames, every, reset_slot):
+        self.torch, self.slots, self.frames, self.every, self.reset_slot = torch, slots, frames, every, reset_slot
+        self.buf = None
+
+    def _frames(self, base, buf):
+        return self.torch.cat([base] + [buf[f * self.every - 1] for f in range(1, self.frames + 1)], dim=1)
+
+    def step(self, base):
+        now = base[:, self.slots]
+        if self.buf is None or self.buf.shape[1] != base.shape[0]:
+            self.buf = now[None].repeat(self.frames * self.every, 1, 1)
+        first = base[:, self.reset_slot] > 0.5
+        if bool(first.any()):
+            self.buf[:, first] = now[first][None]
+        out = self._frames(base, self.buf)
+        self.buf = self.torch.cat([now[None], self.buf[:-1]], dim=0)
+        return out
+
+    def peek(self, base, rows=None):
+        buf = self.buf if rows is None else self.buf[:, rows]
+        return self._frames(base, buf)
 
 
 def widen(W, b, n_inputs, hidden, rng, n_outputs=None, new_output_bias=0.0):
@@ -118,6 +152,41 @@ def main():
     ap.add_argument('--hidden', type=int, default=None,
                     help='units per hidden layer (two layers); default: the checkpoint\'s with --resume, else 128 '
                          '(a narrower --init-policy is widened)')
+    ap.add_argument('--layers', type=int, default=None,
+                    help='hidden layers in the driving network (default: the checkpoint\'s with --resume, else 2)')
+    ap.add_argument('--branch-layers', type=int, default=None,
+                    help='split the driving network after its --layers shared layers into a steering branch and a '
+                         'pedal + brake branch, each this many --hidden-unit layers deep (default: the checkpoint\'s '
+                         'with --resume, else 0 = one network). Saved as an ordinary policy file (the branches '
+                         'side by side, with zero weights between them), so the plugin runs it unchanged')
+    ap.add_argument('--vf-hidden', type=int, default=None,
+                    help='units per hidden layer of the value network (default --hidden). It never ships, so it can '
+                         'be bigger at no cost to the plugin, as GT Sophy\'s critic was')
+    ap.add_argument('--kickstart', default=None, metavar='POLICY',
+                    help='from scratch: pull the new network toward this policy\'s actions at first, the pull fading '
+                         'to nothing over --kickstart-ticks (Kickstarting, Schmitt et al. 2018, '
+                         'https://arxiv.org/abs/1803.03835): a bigger fresh network that starts out drifting, then '
+                         'learns on its own')
+    ap.add_argument('--kickstart-weight', type=float, default=1.0,
+                    help='weight of the pull (squared action difference) at the start')
+    ap.add_argument('--kickstart-ticks', type=int, default=150_000_000,
+                    help='ticks over which the pull fades linearly to zero')
+    ap.add_argument('--residual', type=int, default=0, metavar='UNITS',
+                    help='with --init-policy and --chase: keep the starting network frozen and train a second one '
+                         '(two layers of UNITS) added to its action only while a lead is present (residual '
+                         'policy learning), so solo driving stays exactly the starting policy\'s')
+    ap.add_argument('--init-residual', default=None, metavar='POLICY',
+                    help='with --residual: start the chase add-on from this policy\'s residual network (same width), e.g. '
+                         'a chase run made on another driving network. Default: --init-policy\'s own residual if it has one, '
+                         'else a fresh one')
+    ap.add_argument('--residual-steer-only', action='store_true',
+                    help='with --residual: the second network adds to the steering only; the pedal and brake stay '
+                         'the frozen network\'s, following the pace the gap law (IDM / CACC) asks for - the split '
+                         'of the TRI / Stanford tandem cars, whose controller held the gap while the path set the line')
+    ap.add_argument('--init-pedal', type=float, default=None, metavar='SHARE',
+                    help='from scratch: the pedal a fresh network starts asking for (0 - 1). With '
+                         'EnableRearFrictionCircle the pedal drives the car, and a network starting at 0 coasts '
+                         'and can learn to stall rather than drive')
     ap.add_argument('--init-log-std', type=float, default=None,
                     help='log of the starting exploration noise (default -1.2; -2.3 with --init-policy)')
     ap.add_argument('--reward-from', default=None, metavar='CONFIG',
@@ -130,6 +199,16 @@ def main():
     ap.add_argument('--min-std-brake', type=float, default=0.15,
                     help='the same for the brake output: with the general floor it collapsed within a few million '
                          'ticks and the policy stopped trying harder braking when asked for a slower pace')
+    ap.add_argument('--max-std', type=float, default=float(np.exp(0.5)),
+                    help='ceiling on every output\'s exploration noise (default 1.65); --max-std-pedal / '
+                         '--max-std-brake can set lower ones for those outputs')
+    ap.add_argument('--max-std-pedal', type=float, default=float(np.exp(0.5)),
+                    help='ceiling on the pedal (or target speed) output\'s exploration noise (default: the general '
+                         'ceiling, 1.65, which fresh2s\'s pedal noise reached under --ent-coef 0.01)')
+    ap.add_argument('--max-std-brake', type=float, default=float(np.exp(0.5)),
+                    help='ceiling on the brake output\'s exploration noise (default: the general ceiling, 1.65). With '
+                         'a bigger --ent-coef the brake noise grows to the ceiling (scratch_re, fresh2) and random '
+                         'front braking stops slides before they pay; 0.3 keeps it near where it starts')
     ap.add_argument('--car-pool', default=None, metavar='JSON',
                     help='train on several cars: a cars/car_numbers.py --json file (rear-drive cars only; each '
                          'gets a welded diff and at least a 50-degree angle kit, drift_env.DRIFT_STEER_LOCK_DEG)')
@@ -137,6 +216,22 @@ def main():
                     help='leave this car out of training (to test on a car the policy never drove)')
     ap.add_argument('--car-mass-randomisation', type=float, default=0.10, help='+- share on each episode\'s car weight')
     ap.add_argument('--car-power-randomisation', type=float, default=0.20, help='+- share on its engine force')
+    ap.add_argument('--chase', type=float, default=0.0, metavar='SHARE',
+                    help="share of episodes chasing a ghost leader (each track's <track>_ghosts.npz, record_ghosts.py)")
+    ap.add_argument('--chase-gap', type=float, nargs=2, default=(0.0, 1.0), metavar=('LOW', 'HIGH'),
+                    help='the asked gap drawn per chase episode, 0 - 1 (door to door ... a few lengths)')
+    ap.add_argument('--chase-gap-anneal-ticks', type=int, default=0,
+                    help='with --chase: start the asked gaps in the top half of --chase-gap and lower the bottom to '
+                         'LOW over this many ticks (0 = the whole range from the start)')
+    ap.add_argument('--chase-scenarios', action='store_true',
+                    help='with --chase: start some chase episodes in hard situations (drift_env CHASE_SCENARIOS: '
+                         'catch-ups, alongside into a transition, a lead mistake), as GT Sophy trained')
+    import drift_env as de
+    de.add_chase_controller_args(ap)
+    ap.add_argument('--privileged-critic', action='store_true',
+                    help='with --chase: the value network also reads what the simulator knows and the policy does '
+                         'not (drift_env PRIV_NAMES: the lead with no delay, the breathing gap, its true path ahead); '
+                         'asymmetric actor-critic, training only')
     ap.add_argument('--skill', type=float, nargs=2, default=None, metavar=('LOW', 'HIGH'),
                     help='train the skill input (drift_env SKILL_*): each episode a skill drawn from LOW - HIGH '
                          '(0 = a driver allowed out with others, 1 = the best it can do)')
@@ -149,6 +244,13 @@ def main():
     ap.add_argument('--value-warmup-updates', type=int, default=60,
                     help='with --init-policy: updates that train only the value network first')
     ap.add_argument('--grip-randomisation', type=float, default=None)
+    ap.add_argument('--drift-starts', type=float, default=0.0, metavar='SHARE',
+                    help='this share of episodes starts at speed and already sideways, a third of them mid '
+                         'transition (drift_env EnvConfig.drift_start_*; randomised start states after Zhou et al. '
+                         '2025, https://arxiv.org/abs/2507.23339). Evaluations still start on the line.')
+    ap.add_argument('--ghost-starts', type=float, default=0.0, metavar='SHARE',
+                    help='this share of the --drift-starts copies a sliding moment of the track\'s ghosts instead '
+                         '(the bot leads and the people\'s laps: drift_env EnvConfig.drift_start_ghost_share)')
     ap.add_argument('--sliding-grip', type=float, nargs=2, default=None, metavar=('LOW', 'HIGH'),
                     help="draw the plugin's RearSlidingGrip (share of peak sideways grip the "
                          "rear axle keeps while sliding; less = a slower drift) per episode from this range and "
@@ -178,6 +280,80 @@ def main():
                     help="with a --sliding-grip range wider than the starting policy's: lower the bottom of the "
                          "range gradually over this many ticks instead of at once (default: the first half of "
                          "this run). A policy trained at full sliding grip spins at 0.9, so it has to be walked down.")
+    # ---- the "every proven idea" switches (each off by default, so one-off ablations can be run) ----
+    ap.add_argument('--caps-temporal', type=float, default=0.0, metavar='WEIGHT',
+                    help='CAPS temporal smoothness (Mysore et al., "Regularizing Action Policies for Smooth '
+                         'Control with Reinforcement Learning", ICRA 2021, https://arxiv.org/abs/2012.06644): '
+                         'loss WEIGHT x |mean action now - mean action next tick|^2. 0 = off')
+    ap.add_argument('--caps-spatial', type=float, default=0.0, metavar='WEIGHT',
+                    help='CAPS spatial smoothness: loss WEIGHT x |mean action - mean action at inputs moved by '
+                         '--caps-sigma|^2 (similar inputs, similar actions). 0 = off')
+    ap.add_argument('--caps-sigma', type=float, default=0.05,
+                    help='CAPS spatial: the input nudge, in input standard deviations')
+    ap.add_argument('--obs-noise', type=float, default=0.0, metavar='SIGMA',
+                    help='sensor noise while training: every policy input gets N(0, SIGMA) of its own standard '
+                         'deviation added (observation randomisation, Peng et al. 2018, '
+                         'https://arxiv.org/abs/1710.06537). Evaluation stays clean. 0 = off')
+    ap.add_argument('--dr-axle-grip', type=float, default=0.0, metavar='SHARE',
+                    help='hidden tyre randomisation: per episode each axle\'s true peak friction x 1 +- SHARE, '
+                         'front and rear drawn apart, while the car inputs show the car file\'s numbers '
+                         '(Tobin et al. 2017; Peng et al. 2018). Evaluation stays at the car\'s numbers. 0 = off')
+    ap.add_argument('--dr-peak-slip', type=float, default=0.0, metavar='SHARE',
+                    help='hidden tyre randomisation: each axle\'s peak slip angle x 1 +- SHARE, the same way. 0 = off')
+    ap.add_argument('--dr-surface-grip', type=float, default=0.0, metavar='SHARE',
+                    help='with --plugin-setting SurfaceGrip=1: per episode every surface\'s difference in grip '
+                         'from the main road x 1 +- SHARE (the FRICTION numbers are the game\'s; how much they '
+                         'matter to the bots\' simpler tyres is a guess). Evaluation stays at the file\'s. 0 = off')
+    ap.add_argument('--self-ghosts', type=float, default=0.0, metavar='SHARE',
+                    help='self-play leads: this share of each track\'s ghost leaders is re-recorded from the policy '
+                         'being trained every --self-ghost-every ticks (opponents from the learner\'s own past, '
+                         'Bansal et al. 2018, https://arxiv.org/abs/1710.03748; GT Sophy trained against itself '
+                         'among a mix, Wurman et al. 2022). Bots chase bots running this same policy (ChaseBots). '
+                         'Needs --chase. 0 = off')
+    ap.add_argument('--self-ghost-every', type=int, default=25_000_000, metavar='TICKS',
+                    help='ticks between --self-ghosts refreshes')
+    ap.add_argument('--amp', default=None, metavar='NPZ',
+                    help='Adversarial Motion Priors (Peng et al. 2021, https://arxiv.org/abs/2104.02180): a '
+                         'discriminator learns to tell the training cars\' motion (speed, body slip, yaw rate, '
+                         'tick to tick) from the human\'s in this file (amp_reference.py), and the cars are paid '
+                         '--amp-weight x its style reward on top of the task reward. Off without a file')
+    ap.add_argument('--amp-weight', type=float, default=0.1,
+                    help='style reward per tick at a perfect match (a good solo drift earns about 0.5 a tick, '
+                         'so 0.1 is a fifth of the task at most)')
+    ap.add_argument('--amp-grad-penalty', type=float, default=1.0,
+                    help="the discriminator's gradient penalty on the human's pairs (its inputs scaled to the human's "
+                         "spread). 10 with unscaled inputs left it unable to tell the cars from the human (combo_all)")
+    ap.add_argument('--amp-steps', type=int, default=8, help='discriminator minibatch steps per update')
+    ap.add_argument('--history-frames', type=int, default=0, metavar='K',
+                    help='short-history input (RMA-style, Kumar et al. 2021, https://arxiv.org/abs/2107.04034): the '
+                         'policy also reads HISTORY_INPUTS as they were 1 .. K x --history-every ticks ago, so it can '
+                         'tell from how the car answered what grip it has. The policy file carries a "history" block '
+                         'the plugin builds the same way. 0 = off')
+    ap.add_argument('--history-every', type=int, default=2, metavar='TICKS', help='ticks between history frames')
+    ap.add_argument('--mirror', type=float, default=0.0, metavar='WEIGHT',
+                    help='mirror symmetry: loss WEIGHT x |action at the mirrored inputs - mirrored action|^2, so a '
+                         'left-hand drift is driven as the right-hand one (drift_env.mirror_obs_map; Yu, Turk and '
+                         'Liu 2018, https://arxiv.org/abs/1801.08093; Mittal et al. 2024, '
+                         'https://arxiv.org/abs/2403.04359). 0 = off')
+    ap.add_argument('--mirror-ramp-ticks', type=int, default=50_000_000,
+                    help='--mirror: its weight rises from 0 over this many ticks (a policy trained on tracks that turn '
+                         'more one way is lopsided: trialQ brakes differently in mirrored moments, and the full weight '
+                         'at once costs it a third of its return)')
+    ap.add_argument('--cat', type=float, default=0.0, metavar='P_MAX',
+                    help='constraints as terminations (CaT, Chane-Sane et al. 2024, https://arxiv.org/abs/2403.18765): '
+                         'a tick that touches the lead, comes within --cat-wall-m of a wall or needs the spin recovery '
+                         'cuts the discount on everything after it by P_MAX, as if the episode ended there with that '
+                         'chance. Meant to stand in for those penalties: turn them down with --reward. 0 = off')
+    ap.add_argument('--cat-wall-m', type=float, default=0.3, help='CaT: a side pin this close to a wall is a violation')
+    ap.add_argument('--adr', action='store_true',
+                    help='automatic curriculum (after Automatic Domain Randomization, OpenAI et al. 2019, '
+                         'https://arxiv.org/abs/1910.07113): instead of fixed schedules, the closest asked chase gap '
+                         'moves toward the bottom of --chase-gap while evaluation hits stay under --adr-hits and back '
+                         'when over twice that, and the --dr-axle-grip / --dr-peak-slip / --obs-noise ranges grow '
+                         'from 0 toward the given values while the training cars\' drift stays over --adr-drift')
+    ap.add_argument('--adr-hits', type=float, default=0.12, help='ADR: chase hits share that lets the gap close')
+    ap.add_argument('--adr-drift', type=float, default=0.55, help='ADR: training drift share that lets the ranges grow')
+    ap.add_argument('--adr-step', type=float, default=0.1, help='ADR: share of each range moved per evaluation')
     args = ap.parse_args()
     if args.resume:
         # a continued run keeps the cars, skills and number of cars it was trained with (given again
@@ -195,10 +371,27 @@ def main():
                 args.skill = list(ppo['skill'])
             if args.envs is None and ppo.get('envs'):
                 args.envs = ppo['envs']
-    if args.hidden is None:
+    if args.resume and (args.hidden is None or args.layers is None or args.vf_hidden is None
+                        or args.branch_layers is None):
         import torch as _torch
-        args.hidden = (_torch.load(args.resume, map_location='cpu', weights_only=True)['hidden']
-                       if args.resume else 128)
+        _ck = _torch.load(args.resume, map_location='cpu', weights_only=True)
+        args.hidden = args.hidden or _ck['hidden']
+        args.layers = args.layers or _ck.get('layers', 2)
+        args.vf_hidden = args.vf_hidden or _ck.get('vf_hidden', args.hidden)
+        if args.branch_layers is None:
+            args.branch_layers = _ck.get('branch_layers', 0)
+    args.hidden = args.hidden or 128
+    if args.history_frames and (args.residual or args.branch_layers):
+        sys.exit('--history-frames is not for --residual or --branch-layers runs')
+    args.layers = args.layers or 2
+    args.vf_hidden = args.vf_hidden or args.hidden
+    args.branch_layers = args.branch_layers or 0
+    if args.branch_layers and (args.init_policy or args.residual or args.kickstart):
+        sys.exit('--branch-layers is for a fresh network: not with --init-policy, --residual or --kickstart')
+    if args.kickstart and args.residual:
+        sys.exit('--kickstart is not for a --residual run')
+    # --kickstart with --init-policy (e.g. both the same file) keeps the started-from policy as an
+    # anchor: a fine-tune for something new (chasing) is pulled back toward how it drove
 
     sys.path.insert(0, _HERE)
     try:
@@ -212,6 +405,21 @@ def main():
     import gpu_env
     from policy import MLP, Policy
     from track_files import TRACK
+    hist_slots = [de.OBS_NAMES.index(n) for n in HISTORY_INPUTS] if args.history_frames > 0 else []
+    IN = de.OBS_SIZE + len(hist_slots) * args.history_frames      # the policy's inputs
+    history = TorchHistory(torch, hist_slots, args.history_frames, args.history_every,
+                           de.OBS_NAMES.index('first_tick')) if hist_slots else None
+    if args.mirror > 0.0:
+        _perm, _sign = de.mirror_obs_map()
+        # the history frames repeat their slots, so they change sign with them and do not move
+        _perm = np.r_[_perm, np.arange(de.OBS_SIZE, IN)]
+        _sign = np.r_[_sign, np.tile(_sign[hist_slots], args.history_frames)] if hist_slots else _sign
+        mirror_perm = torch.as_tensor(_perm, dtype=torch.long)
+        mirror_sign = torch.as_tensor(_sign, dtype=torch.float32)
+        mirror_act = torch.tensor([-1.0] + [1.0] * (de.ACT_SIZE - 1))
+    adr = {'gap_low': None, 'dr': 0.0} if args.adr else None
+    if args.adr and args.chase <= 0.0 and not (args.dr_axle_grip or args.dr_peak_slip or args.obs_noise):
+        sys.exit('--adr needs --chase or a --dr-* / --obs-noise range to move')
 
     # ---- where things run ----
     has_cuda = torch.cuda.is_available()
@@ -237,12 +445,23 @@ def main():
     env_cfg = de.EnvConfig()
     if args.grip_randomisation is not None:
         env_cfg.grip_randomisation = args.grip_randomisation
+    env_cfg.dr_axle_grip, env_cfg.dr_peak_slip = args.dr_axle_grip, args.dr_peak_slip
+    env_cfg.dr_surface_grip = args.dr_surface_grip
+    if args.adr:
+        env_cfg.dr_axle_grip = env_cfg.dr_peak_slip = 0.0      # ADR grows them from nothing
+    if not 0.0 <= args.drift_starts <= 1.0 - env_cfg.recovery_start_fraction:
+        sys.exit(f"--drift-starts: a share from 0 to {1.0 - env_cfg.recovery_start_fraction:g} "
+                 "(the recovery starts take the rest)")
+    env_cfg.drift_start_fraction = args.drift_starts
+    env_cfg.drift_start_ghost_share = args.ghost_starts
     grip_low_start = 1.0        # bottom of the range the starting network already handles
     if args.init_policy and not args.resume:
         init_meta = Policy.load_json(args.init_policy).meta
         de.require_direct(init_meta)
         grip_low_start = de.sliding_grip_range(init_meta)[0]
         env_cfg.plugin_settings = dict(init_meta.get('plugin_settings') or {})
+        for k, v in de.chase_controller_settings((init_meta.get('chase') or {}).get('controller')).items():
+            setattr(env_cfg, k, v)
         if args.sliding_grip is None:
             env_cfg.rear_sliding_grip_low, env_cfg.rear_sliding_grip_high = de.sliding_grip_range(init_meta)
         if args.pace is None:
@@ -348,6 +567,14 @@ def main():
         w = fs.load_world(args.tracks, track=t)
         fs.require_road_mesh(w, args.tracks, t)
         fs.require_course(w, args.tracks, t)
+        if env_cfg.plugin_settings.get('SurfaceGrip', 0.0) == 1.0:
+            g = w.tri_grip[w.n_sensor:][w.tri_surf[w.n_sensor:] != fs.SURF_WALL]
+            if np.all(g == 1.0):
+                print(f"  {t}: SurfaceGrip is on but every surface reads 1 (no {tf.name('collision_grip', t)}, "
+                      "or the track has one grip): run setup_track.py again to make the file", flush=True)
+            else:
+                print(f"  {t}: surface grip {g.min():.3f} - {g.max():.3f}, under 0.98 on {np.mean(g < 0.98):.1%} of "
+                      "the ground triangles", flush=True)
         worlds.append(w)
     world = worlds[0]
     pool, pool_names, eval_worlds = [], [], list(zip(tracks, worlds))
@@ -379,6 +606,35 @@ def main():
         flat = [float(w.sp_length.sum() / np.sum(w.sp_length / (w.pace_ref / 3.6)) * 3.6) for _, w in named[:len(tracks)]]
         print(f"pace reference ready in {time.time() - t_ref:.0f} s; flat out: "
               + ", ".join(f"{c} {v:.1f} km/h" for c, v in zip(tracks, flat)), flush=True)
+    if args.chase > 0.0:
+        if sim == 'gpu':
+            sys.exit("chase episodes run on the CPU simulator only for now: add --sim cpu")
+        env_cfg.chase_share = args.chase
+        env_cfg.chase_gap_low, env_cfg.chase_gap_high = args.chase_gap
+        env_cfg.chase_scenarios = args.chase_scenarios
+        for k, v in de.chase_controller_overrides(args).items():
+            setattr(env_cfg, k, v)
+        env_cfg.privileged = args.privileged_critic
+        for t, w in zip(tracks, worlds):
+            w.ghosts = de.load_ghosts(args.tracks, t, args.lead_speed)
+            if w.ghosts is None:
+                sys.exit(f"--chase: no ghosts for {t}; make them with record_ghosts.py --track {t}")
+        print(f"chase: {args.chase:.0%} of episodes behind a ghost leader ({', '.join(f'{t} {len(w.ghosts)}' for t, w in zip(tracks, worlds))}), "
+              f"asked gap {args.chase_gap[0]:g} - {args.chase_gap[1]:g}", flush=True)
+    if args.chase_scenarios and args.chase <= 0.0:
+        sys.exit('--chase-scenarios needs --chase')
+    self_slots = {}
+    if args.self_ghosts > 0.0:
+        if args.chase <= 0.0:
+            sys.exit('--self-ghosts needs --chase')
+        _sg_rng = np.random.default_rng(args.seed + 77)
+        for t, w in zip(tracks, worlds):
+            k = max(1, int(round(args.self_ghosts * len(w.ghosts))))
+            self_slots[t] = np.sort(_sg_rng.choice(len(w.ghosts), size=k, replace=False))
+        print(f"self-play leads: {', '.join(f'{t} {len(v)}' for t, v in self_slots.items())} of the ghosts "
+              f"re-recorded from this policy every {args.self_ghost_every:,} ticks", flush=True)
+    # --privileged-critic without --chase is allowed (its inputs are all 0 with no car ahead): a solo
+    # first stage that is later resumed with --chase needs the same critic
     if args.skill:
         env_cfg.skill_low, env_cfg.skill_high = args.skill
         print(f"skill: {args.skill[0]:g} - {args.skill[1]:g} per episode, shown to the policy (input {de.SKILL_OBS_SLOT})")
@@ -418,21 +674,106 @@ def main():
     print(f"simulator: {sim.upper()} ({n_envs} cars)   network: {dev.type.upper()}   GPU: {gpu_name}", flush=True)
 
     # ---- networks ----
-    def mlp(out, out_gain):
-        layers, last = [], de.OBS_SIZE
-        for _ in range(2):
-            lin = nn.Linear(last, args.hidden)
+    def mlp(out, out_gain, hidden=None, n_in=None, depth=2):
+        n_in = n_in or IN
+        hidden = hidden or args.hidden
+        layers, last = [], n_in
+        for _ in range(depth):
+            lin = nn.Linear(last, hidden)
             nn.init.orthogonal_(lin.weight, 2 ** 0.5)
             nn.init.zeros_(lin.bias)
             layers += [lin, nn.Tanh()]
-            last = args.hidden
+            last = hidden
         lin = nn.Linear(last, out)
         nn.init.orthogonal_(lin.weight, out_gain)
         nn.init.zeros_(lin.bias)
         return nn.Sequential(*layers, lin).to(dev)
 
-    pi = mlp(de.ACT_SIZE, 0.01)            # starts ~0 = the existing controller
-    vf = mlp(1, 1.0)
+    class Branched(nn.Module):
+        """Shared layers, then a steering branch and a pedal + brake branch (--branch-layers): each
+        control gets its own layers to work out its part from what the shared ones see."""
+
+        def __init__(self):
+            super().__init__()
+            self.trunk = mlp(args.hidden, 2 ** 0.5, depth=args.layers - 1)
+            self.trunk.append(nn.Tanh())
+            self.steer = mlp(1, 0.01, n_in=args.hidden, depth=args.branch_layers)
+            self.pedal = mlp(de.ACT_SIZE - 1, 0.01, n_in=args.hidden, depth=args.branch_layers)
+
+        def forward(self, x):
+            h = self.trunk(x)
+            return torch.cat([self.steer(h), self.pedal(h)], dim=1)
+
+        def flat(self):
+            """(W, b) of the equivalent plain network: trunk layers as they are, the branches side by side
+            with zero weights between them, so it is an ordinary policy file."""
+            g = lambda t: t.detach().double().cpu().numpy()
+            W, b = [], []
+            for l in self.trunk:
+                if isinstance(l, nn.Linear):
+                    W.append(g(l.weight)); b.append(g(l.bias))
+            sl = [l for l in self.steer if isinstance(l, nn.Linear)]
+            pl = [l for l in self.pedal if isinstance(l, nn.Linear)]
+            for k, (a, c) in enumerate(zip(sl, pl)):
+                wa, wc = g(a.weight), g(c.weight)
+                if k == 0:
+                    w = np.vstack([wa, wc])                     # both read the trunk's output
+                else:
+                    w = np.zeros((wa.shape[0] + wc.shape[0], wa.shape[1] + wc.shape[1]))
+                    w[:wa.shape[0], :wa.shape[1]] = wa          # steer reads only the steer half
+                    w[wa.shape[0]:, wa.shape[1]:] = wc
+                W.append(w); b.append(np.concatenate([g(a.bias), g(c.bias)]))
+            return W, b
+
+    if args.branch_layers:
+        if args.layers < 1:
+            sys.exit('--branch-layers needs --layers 1 or more (the shared layers)')
+        pi = Branched().to(dev)
+    else:
+        pi = mlp(de.ACT_SIZE, 0.01, depth=args.layers)        # starts ~0 = the existing controller
+    if args.init_policy and not args.resume:
+        _depth = len(Policy.load_json(args.init_policy).mlp.W) - 1
+        if _depth != args.layers:
+            sys.exit(f'--init-policy: {args.init_policy} has {_depth} hidden layers; pass --layers {_depth}')
+    if args.init_pedal is not None and not args.init_policy and not args.resume:
+        # a fresh network asks for the pedal at this share: at 0 a pedal-mode car (EnableRearFrictionCircle)
+        # coasts, and a fresh network learns to sit still (chase_scratch1 stalled for 100M ticks)
+        with torch.no_grad():
+            (pi.pedal[-1].bias[0] if args.branch_layers else pi[-1].bias[1]).fill_(args.init_pedal)
+    # the value network: with --privileged-critic it also reads drift_env.PRIV_NAMES (already scaled to
+    # about +-1), the policy never does
+    n_priv = de.N_PRIV if args.privileged_critic else 0
+    vf = mlp(1, 1.0, args.vf_hidden, n_in=IN + n_priv, depth=args.layers)
+
+    # the kickstarting teacher: its own network and input scaling, on the raw inputs it was trained with
+    teacher = None
+    if args.kickstart:
+        tp = Policy.load_json(args.kickstart)
+        if tp.residual is not None or tp.mlp.W[-1].shape[0] != de.ACT_SIZE:
+            sys.exit(f"--kickstart {args.kickstart}: needs a plain policy with {de.ACT_SIZE} outputs")
+        t_n = len(tp.obs_mean)
+        t_names = list(tp.meta.get('obs_names') or [])[:t_n]
+        if t_names:
+            bad = [j for j, nm in enumerate(t_names) if nm != de.OBS_NAMES[j] and j != de.SLIDING_GRIP_OBS_SLOT]
+            if bad:
+                sys.exit(f"--kickstart {args.kickstart}: inputs {bad[:8]} mean something else in this trainer")
+        t_w = [torch.tensor(w, dtype=torch.float32, device=dev) for w in tp.mlp.W]
+        t_b = [torch.tensor(b, dtype=torch.float32, device=dev) for b in tp.mlp.b]
+        t_mean = torch.tensor(tp.obs_mean, dtype=torch.float32, device=dev)
+        t_std = torch.tensor(tp.obs_std, dtype=torch.float32, device=dev)
+
+        def teacher(raw):
+            h = torch.clamp((raw[:, :t_n].float() - t_mean) / t_std, -10.0, 10.0)
+            for j in range(len(t_w)):
+                h = h @ t_w[j].T + t_b[j]
+                if j < len(t_w) - 1:
+                    h = torch.tanh(h)
+            return torch.clamp(h, -1.0, 1.0)
+        print(f"kickstart: pulled toward {args.kickstart}'s actions ({t_n} inputs), weight "
+              f"{args.kickstart_weight:g} fading to 0 over {args.kickstart_ticks:,} ticks", flush=True)
+
+    def value(x, pv):
+        return vf(torch.cat([x, pv], dim=1) if n_priv else x)[:, 0]
     # A policy loaded with --init-policy already drives well: explore gently around it (std 0.1)
     # rather than with the from-scratch noise, which would undo it within a few updates.
     init_log_std = args.init_log_std if args.init_log_std is not None else (-2.3 if args.init_policy else -1.2)
@@ -440,12 +781,48 @@ def main():
     if args.init_policy and not args.resume and Policy.load_json(args.init_policy).mlp.W[-1].shape[0] < de.ACT_SIZE:
         with torch.no_grad():
             log_std[2] = float(np.log(BRAKE_INIT_STD))      # a new brake output: see BRAKE_INIT_BIAS
-    opt = torch.optim.Adam(list(pi.parameters()) + list(vf.parameters()) + [log_std], lr=args.lr, eps=1e-5)
+    if args.residual and not (args.init_policy and args.chase > 0.0):
+        sys.exit('--residual needs --init-policy (the frozen network) and --chase')
+    if args.residual_steer_only and not args.residual:
+        sys.exit('--residual-steer-only needs --residual')
+    res = mlp(de.ACT_SIZE, 0.01, args.residual) if args.residual else None
+    # which of the residual's outputs count: all, or (--residual-steer-only) the steering alone
+    res_mask = torch.tensor([1.0] + [0.0 if args.residual_steer_only else 1.0] * (de.ACT_SIZE - 1), device=dev)
+    gate_slot = de.CHASE_OBS_SLOT            # lead_present, raw 0 / 1
+    # with a residual the exploration noise stays where it starts: solo ticks give the entropy bonus a
+    # free hand to widen it (the frozen network cannot answer), and the chase add-on then trains
+    # under ever more noise (std of the brake 0.16 -> 0.35 in 10M ticks, chase_debug1)
+    trained = (list(res.parameters()) if res is not None else list(pi.parameters()) + [log_std]) + list(vf.parameters())
+    opt = torch.optim.Adam(trained, lr=args.lr, eps=1e-5)
+
+    def actor(x, lead):
+        """The action mean; lead: the raw lead_present input (the residual's gate)."""
+        mu = pi(x)
+        if res is not None:
+            mu = mu + (lead > 0.5).to(mu.dtype)[:, None] * res(x) * res_mask.to(mu.dtype)
+        return mu
+
+    # Adversarial Motion Priors (--amp): the discriminator, its human state pairs and optimiser
+    amp_d = None
+    if args.amp:
+        import amp_reference
+        _ref = np.load(args.amp)
+        amp_expert = torch.tensor(_ref['pairs'], dtype=torch.float32, device=dev)
+        # the discriminator reads each feature scaled to the human's spread: the cars' and the human's
+        # slip differ by ~0.2 in the policy's units, too little for a gradient-penalised net to see
+        amp_mu, amp_sd = amp_expert.mean(dim=0), amp_expert.std(dim=0) + 1e-6
+        amp_expert = (amp_expert - amp_mu) / amp_sd
+        amp_slots = torch.tensor(amp_reference.OBS_SLOTS, device=dev)
+        amp_d = nn.Sequential(nn.Linear(2 * amp_reference.N_FEATURES, 256), nn.ReLU(), nn.Linear(256, 256), nn.ReLU(),
+                              nn.Linear(256, 1)).to(dev)
+        amp_opt = torch.optim.Adam(amp_d.parameters(), lr=1e-4, eps=1e-5)
+        amp_min_speed = amp_reference.MIN_KMH / 3.6 / 25.0
+        print(f"AMP: {len(amp_expert):,} human state pairs from {args.amp}; style reward up to {args.amp_weight:g} a tick", flush=True)
 
     # running statistics, kept in float64 on the network's device
     f64 = torch.float64
-    obs_mean = torch.zeros(de.OBS_SIZE, dtype=f64, device=dev)
-    obs_var = torch.ones(de.OBS_SIZE, dtype=f64, device=dev)
+    obs_mean = torch.zeros(IN, dtype=f64, device=dev)
+    obs_var = torch.ones(IN, dtype=f64, device=dev)
     obs_count = 1e-4
     ret_var = torch.ones((), dtype=f64, device=dev)
     ret_mean = torch.zeros((), dtype=f64, device=dev)
@@ -465,13 +842,20 @@ def main():
 
     if args.resume:
         ck = torch.load(args.resume, map_location=dev, weights_only=True)
-        if ck['hidden'] != args.hidden:
-            sys.exit(f"checkpoint was trained with --hidden {ck['hidden']}; pass the same value.")
-        if ck['log_std'].shape[0] != de.ACT_SIZE or ck['obs_mean'].shape[0] != de.OBS_SIZE:
+        if ck['hidden'] != args.hidden or ck.get('layers', 2) != args.layers or ck.get('vf_hidden', ck['hidden']) != args.vf_hidden \
+                or ck.get('branch_layers', 0) != args.branch_layers:
+            sys.exit(f"checkpoint was trained with --hidden {ck['hidden']} --layers {ck.get('layers', 2)} "
+                     f"--vf-hidden {ck.get('vf_hidden', ck['hidden'])}; pass the same values.")
+        if ck['log_std'].shape[0] != de.ACT_SIZE or ck['obs_mean'].shape[0] != IN:
             sys.exit(f"{args.resume} is from a run with {ck['obs_mean'].shape[0]} inputs and {ck['log_std'].shape[0]} "
                      f"outputs; this trainer has {de.OBS_SIZE} and {de.ACT_SIZE}. Start a new run from that run's "
                      "policy.json with --init-policy instead (it is widened, driving exactly as before).")
         pi.load_state_dict(ck['pi'])
+        if res is not None and ck.get('res') is not None:
+            res.load_state_dict(ck['res'])
+        if ck['vf']['0.weight'].shape[1] != IN + n_priv:
+            sys.exit(f"{args.resume} has a value network for {ck['vf']['0.weight'].shape[1]} inputs: resume "
+                     f"{'without' if n_priv else 'with'} --privileged-critic, as it was trained")
         vf.load_state_dict(ck['vf'])
         with torch.no_grad():
             log_std.copy_(ck['log_std'])
@@ -481,6 +865,10 @@ def main():
         obs_mean, obs_var, obs_count = ck['obs_mean'], ck['obs_var'], ck['obs_count']
         ret_mean, ret_var, ret_count = ck['ret_mean'], ck['ret_var'], ck['ret_count']
         steps_done, lr = ck['steps_done'], ck['lr']
+        if amp_d is not None and ck.get('amp_d') is not None:
+            amp_d.load_state_dict(ck['amp_d'])
+        if adr is not None and ck.get('adr'):
+            adr.update(ck['adr'])
         freeze_obs_norm = ck.get('freeze_obs_norm', False)
         # the best evaluation so far, so a run continued in its own folder does not overwrite a
         # better policy.json with its first evaluation; older checkpoints lack it - then the folder's
@@ -502,7 +890,7 @@ def main():
         lins = [m for m in pi if isinstance(m, nn.Linear)]
         n_old = p0.mlp.W[0].shape[1]
         out_old = p0.mlp.W[-1].shape[0]
-        weights = widen(p0.mlp.W, p0.mlp.b, de.OBS_SIZE, args.hidden, np.random.default_rng(args.seed),
+        weights = widen(p0.mlp.W, p0.mlp.b, IN, args.hidden, np.random.default_rng(args.seed),
                         n_outputs=de.ACT_SIZE, new_output_bias=BRAKE_INIT_BIAS)
         # an input whose meaning changed since that policy was trained (its name differs): no
         # weight, as if new (gen4's km/h pace -> the fraction of the course's flat-out speed)
@@ -525,6 +913,10 @@ def main():
             print(f"{args.init_policy}: input {j} was '{old_names[j]}', now '{de.OBS_NAMES[j]}': it starts with no weight")
         obs_mean = torch.as_tensor(np.r_[old_mean, [m for m, _ in new_norm]], dtype=f64, device=dev)
         obs_var = torch.as_tensor(np.r_[old_std, [sd for _, sd in new_norm]], dtype=f64, device=dev) ** 2
+        if hist_slots and obs_mean.shape[0] == de.OBS_SIZE:
+            # the history inputs start with no weight, scaled like the inputs they repeat
+            obs_mean = torch.cat([obs_mean, obs_mean[hist_slots].repeat(args.history_frames)])
+            obs_var = torch.cat([obs_var, obs_var[hist_slots].repeat(args.history_frames)])
         if n_old < de.OBS_SIZE:
             print(f"{args.init_policy} reads {n_old} inputs: inputs {n_old} - {de.OBS_SIZE - 1} "
                   f"({', '.join(de.OBS_NAMES[n_old:])}) start with no weight")
@@ -562,6 +954,22 @@ def main():
                 obs_var[slot] *= k * k
             print(f"steering lock {old_lock:g} -> {new_lock:g} deg: starting network re-geared (x{k:.4f})")
         print(f"driving network initialised from {args.init_policy} (value network starts fresh)")
+        if res is not None:
+            # the chase add-on: carried on rather than started afresh, so a run continues what earlier
+            # chase runs learned (before this, every --residual run began with a new add-on)
+            src = Policy.load_json(args.init_residual) if args.init_residual else p0
+            if src.residual is not None:
+                widths = [w.shape[0] for w in src.residual.W]
+                if src.residual.W[0].shape[1] != de.OBS_SIZE or widths != [args.residual, args.residual, de.ACT_SIZE]:
+                    sys.exit(f"{args.init_residual or args.init_policy}: its residual is {src.residual.W[0].shape[1]} inputs x "
+                             f"{widths}; this run needs {de.OBS_SIZE} x {[args.residual, args.residual, de.ACT_SIZE]}")
+                with torch.no_grad():
+                    for lin, w, b in zip([l for l in res if isinstance(l, nn.Linear)], src.residual.W, src.residual.b):
+                        lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
+                        lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+                print(f"chase add-on initialised from {args.init_residual or args.init_policy}")
+            elif args.init_residual:
+                sys.exit(f"--init-residual: {args.init_residual} has no residual network")
 
     meta = {
         'track': tracks[0],
@@ -576,6 +984,19 @@ def main():
         meta['tracks'] = list(tracks)
         if pool:
             meta['generated'] = {'count': args.generated, 'seed': args.gen_seed}
+    if args.chase > 0.0:
+        # the policy reads the chase inputs: it can follow a car ahead
+        meta['chase'] = {'share': args.chase, 'gap_range': [float(g) for g in args.chase_gap],
+                         'gap': 'outline', 'breathe_m': de.CHASE_BREATHE_M, 'inside_m': de.CHASE_INSIDE_M,
+                         'scenarios': bool(args.chase_scenarios), 'privileged_critic': bool(args.privileged_critic),
+                         'residual_steer_only': bool(args.residual_steer_only),
+                         'controller': {k: getattr(env_cfg, k) for k in de.CHASE_CONTROLLER}}
+    if hist_slots:
+        # the plugin reads this: it appends the same history block (DriftPolicy.AppendHistory)
+        meta['history'] = {'slots': hist_slots, 'frames': args.history_frames, 'every': args.history_every,
+                           'reset_slot': de.OBS_NAMES.index('first_tick')}
+        meta['obs_names'] += [f'{de.OBS_NAMES[j]}@-{f * args.history_every}' for f in range(1, args.history_frames + 1)
+                              for j in hist_slots]
     if args.skill:
         # the plugin reads this: the skills it may ask the policy for
         meta['skill_range'] = [float(args.skill[0]), float(args.skill[1])]
@@ -605,25 +1026,112 @@ def main():
                    'sim': sim, 'network_device': dev.type, 'n_envs': n_envs, 'gpu': gpu_name}, f, indent=2)
 
     def make_policy():
-        lins = [m for m in pi if isinstance(m, nn.Linear)]
-        m = MLP([de.OBS_SIZE, args.hidden, args.hidden, de.ACT_SIZE])
-        m.W = [l.weight.detach().double().cpu().numpy().copy() for l in lins]
-        m.b = [l.bias.detach().double().cpu().numpy().copy() for l in lins]
+        if args.branch_layers:
+            W, b = pi.flat()
+            m = MLP([de.OBS_SIZE] + [len(x) for x in b])
+            m.W, m.b = W, b
+            with torch.no_grad():       # the side-by-side file must drive exactly as the branches do
+                x = torch.randn(8, de.OBS_SIZE, device=dev)
+                assert np.allclose(m.forward(x.double().cpu().numpy()), pi(x).double().cpu().numpy(), atol=1e-4)
+        else:
+            lins = [m for m in pi if isinstance(m, nn.Linear)]
+            m = MLP([IN] + [args.hidden] * args.layers + [de.ACT_SIZE])
+            m.W = [l.weight.detach().double().cpu().numpy().copy() for l in lins]
+            m.b = [l.bias.detach().double().cpu().numpy().copy() for l in lins]
+        r = None
+        if res is not None:
+            rl = [l for l in res if isinstance(l, nn.Linear)]
+            r = MLP([de.OBS_SIZE, args.residual, args.residual, de.ACT_SIZE])
+            r.W = [l.weight.detach().double().cpu().numpy().copy() for l in rl]
+            r.b = [l.bias.detach().double().cpu().numpy().copy() for l in rl]
+            # the outputs that do not count are written as zeros, so the file runs anywhere unchanged
+            keep = res_mask.cpu().numpy().astype(np.float64)
+            r.W[-1] = r.W[-1] * keep[:, None]
+            r.b[-1] = r.b[-1] * keep
         return Policy(m, obs_mean.cpu().numpy().copy(), obs_var.sqrt().cpu().numpy() + 1e-8,
-                      dict(meta, trained_ticks=steps_done))
+                      dict(meta, trained_ticks=steps_done), r, gate_slot, 0.5)
+
+    def refresh_self_ghosts():
+        """--self-ghosts: re-record this run's share of each track's leads with the current policy and
+        put them in place, in the world and in every environment simulating it."""
+        import record_ghosts
+        policy = make_policy()
+        t0 = time.time()
+        lo, hi = (env_cfg.pace_low, env_cfg.pace_high) if pace_range != (0.0, 0.0) else (0.0, 0.0)
+        speeds = list(args.lead_speed) if args.lead_speed else [1.0]
+        report = []
+        for t, w in zip(tracks, worlds):
+            slots = self_slots[t]
+            n_ticks = w.ghosts.shape[1]
+            new = []
+            for c0 in range(0, len(slots), 32):
+                cars = min(32, len(slots) - c0)
+                pace = float(_sg_rng.uniform(lo, hi)) if hi > 0.0 else None
+                new.append(record_ghosts.record(w, policy, cars, n_ticks + 100, 100, pace, 1.0,
+                                                seed=int(_sg_rng.integers(1 << 30))))
+            g = np.concatenate(new)[:, :n_ticks, :w.ghosts.shape[2]]
+            for j in range(len(g)):
+                g[j] = de.scale_ghosts(g[j:j + 1], float(_sg_rng.choice(speeds)))[0]
+            w.ghosts[slots] = g
+            if multi:
+                envs = [e.env for e, wo in zip(env.groups, env.world_of) if wo is w]
+            else:
+                envs = [env.env]
+            for e in envs:
+                if e.gh is not w.ghosts:
+                    e.gh[slots, :n_ticks, :g.shape[2]] = g
+            report.append(f"{t} sliding {np.mean(np.abs(g[:, :, de.GH_SLIP]) > np.radians(20.0)):.0%}")
+        print(f"  self-play leads re-recorded at {steps_done:,} ticks in {time.time() - t0:.0f} s: {', '.join(report)}", flush=True)
+
+    def adr_update(row):
+        """--adr after an evaluation: the closest asked gap and the randomisation ranges move one step."""
+        if args.chase > 0.0 and last_chase and adr['gap_low'] is not None:
+            lo, span = args.chase_gap[0], chase_low_start - args.chase_gap[0]
+            if last_chase['hits'] <= args.adr_hits:
+                adr['gap_low'] = max(lo, adr['gap_low'] - args.adr_step * span)
+            elif last_chase['hits'] > 2.0 * args.adr_hits:
+                adr['gap_low'] = min(chase_low_start, adr['gap_low'] + args.adr_step * span)
+        drift = row.get('train_drift_fraction')
+        if drift is not None and np.isfinite(drift) and (args.dr_axle_grip or args.dr_peak_slip or args.obs_noise):
+            adr['dr'] = min(1.0, adr['dr'] + args.adr_step) if drift >= args.adr_drift else max(0.0, adr['dr'] - args.adr_step)
+            env_cfg.dr_axle_grip, env_cfg.dr_peak_slip = args.dr_axle_grip * adr['dr'], args.dr_peak_slip * adr['dr']
+            if multi:
+                targets = [g.env.cfg for g in env.groups]
+            else:
+                targets = [env.env.cfg] if hasattr(env, 'env') else [env.cfg]
+            for c in targets:
+                c.dr_axle_grip, c.dr_peak_slip = env_cfg.dr_axle_grip, env_cfg.dr_peak_slip
 
     def save_checkpoint():
         torch.save({'pi': pi.state_dict(), 'vf': vf.state_dict(), 'log_std': log_std.detach(),
+                    'res': res.state_dict() if res is not None else None,
                     'opt': opt.state_dict(), 'obs_mean': obs_mean, 'obs_var': obs_var,
                     'obs_count': obs_count, 'ret_mean': ret_mean, 'ret_var': ret_var,
                     'ret_count': ret_count, 'steps_done': steps_done, 'lr': lr, 'hidden': args.hidden,
-                    'freeze_obs_norm': freeze_obs_norm, 'grip_low_now': grip_low_now(), 'best_eval': best_eval},
+                    'layers': args.layers, 'vf_hidden': args.vf_hidden, 'branch_layers': args.branch_layers,
+                    'freeze_obs_norm': freeze_obs_norm, 'grip_low_now': grip_low_now(), 'best_eval': best_eval,
+                    'amp_d': amp_d.state_dict() if amp_d is not None else None, 'adr': adr},
                    os.path.join(out_dir, 'checkpoint.pt'))
 
     N, T = n_envs, (args.rollout or (32 if sim == 'gpu' else 64))
     f32 = torch.float32
-    obs_buf = torch.zeros((T, N, de.OBS_SIZE), dtype=f32, device=dev)
+    obs_buf = torch.zeros((T, N, IN), dtype=f32, device=dev)
     act_buf = torch.zeros((T, N, de.ACT_SIZE), dtype=f32, device=dev)
+    lead_buf = torch.zeros((T, N), dtype=f32, device=dev)
+    teach_buf = torch.zeros((T, N, de.ACT_SIZE), dtype=f32, device=dev) if teacher else None
+    priv_buf = torch.zeros((T, N, n_priv), dtype=f32, device=dev)
+    cat_buf = torch.zeros((T, N), dtype=f32, device=dev)
+    cat_log = []
+    _pins = slice(de.OBS_NAMES.index('pin_0/12'), de.OBS_NAMES.index('pin_0/12') + de.N_PINS)
+    _spin = de.OBS_NAMES.index('spin_recovering')
+    if amp_d is not None:
+        amp_pre = torch.zeros((T, N, len(amp_slots)), dtype=f32, device=dev)
+        amp_post = torch.zeros((T, N, len(amp_slots)), dtype=f32, device=dev)
+        amp_log = {}
+    no_priv = torch.zeros((N, 0), dtype=f32, device=dev)
+
+    def priv_now():
+        return env.priv.to(dev, f32) if n_priv else no_priv
     logp_buf = torch.zeros((T, N), dtype=f32, device=dev)
     rew_buf = torch.zeros((T, N), dtype=f32, device=dev)
     val_buf = torch.zeros((T + 1, N), dtype=f32, device=dev)
@@ -679,9 +1187,26 @@ def main():
         f = min(1.0, max(0.0, (steps_done - grip_anneal_from) / grip_anneal_ticks))
         return grip_low_start + (grip_range[0] - grip_low_start) * f
 
+    chase_low_start = 0.5 * (args.chase_gap[0] + args.chase_gap[1])
+    if args.chase > 0.0 and args.chase_gap_anneal_ticks > 0:
+        print(f"chase: the closest gap asked goes {chase_low_start:g} -> {args.chase_gap[0]:g} over the first "
+              f"{args.chase_gap_anneal_ticks:,} ticks", flush=True)
+
+    def chase_gap_low_now():
+        if adr is not None:
+            if adr['gap_low'] is None:
+                adr['gap_low'] = chase_low_start
+            return adr['gap_low']
+        if args.chase_gap_anneal_ticks <= 0:
+            return args.chase_gap[0]
+        f = min(1.0, max(0.0, (steps_done - grip_anneal_from) / args.chase_gap_anneal_ticks))
+        return chase_low_start + (args.chase_gap[0] - chase_low_start) * f
+
     env.set_sliding_grip_low(grip_low_now())
     if pace_range != (0.0, 0.0):
         env.set_pace_low(pace_low_now())
+    if args.chase > 0.0:
+        env.set_chase_gap_low(chase_gap_low_now())
     obs = env.reset().to(dev)
     if not freeze_obs_norm:
         obs_mean, obs_var, obs_count = rms_update(obs_mean, obs_var, obs_count, obs)
@@ -692,6 +1217,7 @@ def main():
     last_eval = None
     recent = []
     update = 0
+    nonfinite_ticks, nonfinite_reports, skipped_steps = 0, 0, 0
     interrupted = False
     # --init-policy gives a good driver but a blank value network. Advantages computed from a
     # blank value network are noise, so for the first few updates only the value network learns.
@@ -699,20 +1225,37 @@ def main():
 
     per_track = {}
 
+    last_chase = {}
+
     def evaluate_now():
         nonlocal best_eval, last_eval
         policy = make_policy()
         episodes = max(32, args.eval_episodes // len(eval_worlds))
         for name, w in eval_worlds:
-            ev = de.evaluate(w, policy, episodes, seed=999, env_config=env_cfg, reward_config=rew_cfg)
+            ev = de.evaluate(w, policy, episodes, seed=999, env_config=replace(env_cfg, privileged=False, dr_axle_grip=0.0, dr_peak_slip=0.0, dr_surface_grip=0.0),
+                             reward_config=rew_cfg)
             per_track[name] = {k: float(ev[k].mean()) for k in EVAL_KEYS}
         last_eval = {k: float(np.mean([v[k] for v in per_track.values()])) for k in EVAL_KEYS}
+        if args.chase > 0.0:
+            # chase episodes only, at the whole --chase-gap range (what chase_report.py shows)
+            name, w = eval_worlds[0]
+            ev = de.evaluate(w, policy, episodes, seed=998, env_config=replace(env_cfg, chase_share=1.0, chase_scenarios=False, dr_axle_grip=0.0, dr_peak_slip=0.0, dr_surface_grip=0.0,
+                                                                                 privileged=False),
+                             reward_config=rew_cfg)
+            had = ev['chase_fraction'] > 0
+            wt = ev['chase_fraction'][had] * ev['length'][had]
+            cmean = lambda k: float(np.sum(ev[k][had] * wt) / max(np.sum(wt), 1e-9))
+            last_chase.update({'return': float(np.mean(ev['return'][had])) if had.any() else float('nan'),
+                               'gap': cmean('chase_mean_gap_m'), 'in_band': cmean('chase_in_band_fraction'),
+                               'hits': float(np.mean(ev['contacts'][had] > 0)) if had.any() else 0.0,
+                               'slip': cmean('chase_slip_diff_deg'), 'line': cmean('chase_line_diff_m')})
         if last_eval['return'] > best_eval:
             best_eval = last_eval['return']
             policy.meta['eval'] = last_eval
             policy.save_json(os.path.join(out_dir, 'policy.json'))
         save_checkpoint()
 
+    next_self_ghosts = steps_done + args.self_ghost_every
     try:
         while steps_done < target_steps:
             if args.minutes is not None and (time.time() - t_start) / 60.0 >= args.minutes:
@@ -726,19 +1269,57 @@ def main():
             env.set_sliding_grip_low(grip_low_now())
             if pace_range != (0.0, 0.0):
                 env.set_pace_low(pace_low_now())
+            if args.chase > 0.0:
+                env.set_chase_gap_low(chase_gap_low_now())
             with torch.no_grad():
                 for t in range(T):
-                    x = norm_obs(obs)
-                    mu = pi(x)
+                    x = norm_obs(history.step(obs) if history else obs)
+                    if args.obs_noise > 0.0:
+                        x = x + args.obs_noise * (adr['dr'] if adr is not None else 1.0) * torch.randn_like(x)
+                    lead_buf[t] = obs[:, gate_slot]
+                    if teacher:
+                        teach_buf[t] = teacher(obs)
+                    mu = actor(x, lead_buf[t])
                     a = mu + log_std.exp() * torch.randn_like(mu)
                     obs_buf[t], act_buf[t] = x, a
                     logp_buf[t] = logp_of(a, mu, log_std)
-                    val_buf[t] = vf(x)[:, 0]
+                    priv_buf[t] = priv_now()
+                    val_buf[t] = value(x, priv_buf[t])
+                    if amp_d is not None:
+                        amp_pre[t] = obs[:, amp_slots].to(f32)
                     o, r, term, trunc = env.step(a.to(env.device, f64))
                     obs = o.to(dev)
                     r = r.to(dev)
+                    # the sim ends a car whose state goes non-finite (end reason 7), but one bad number
+                    # reaching the running normalisation turns the whole network to NaN (fresh2, 28M):
+                    # zero it here and say where it came from
+                    bad = ~(torch.isfinite(obs).all(dim=1) & torch.isfinite(r))
+                    if bool(bad.any()):
+                        nonfinite_ticks += int(bad.sum())
+                        if nonfinite_reports < 10:
+                            nonfinite_reports += 1
+                            cars = torch.nonzero(bad).flatten()[:4].tolist()
+                            slots = torch.nonzero(~torch.isfinite(obs[bad]).all(dim=0)).flatten().tolist()
+                            print(f'  non-finite sim output at {steps_done:,} ticks: cars {cars}, obs slots {slots}, '
+                                  f'reward finite {bool(torch.isfinite(r[bad]).all())}', flush=True)
+                        obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+                        r = torch.nan_to_num(r, nan=0.0, posinf=0.0, neginf=0.0)
                     term, trunc = term.to(dev), trunc.to(dev)
                     done = term | trunc
+                    if args.cat > 0.0:
+                        # what this tick led to (an ended car's last observation, not its next start)
+                        post = obs.clone()
+                        if bool(done.any()):
+                            post[done] = torch.nan_to_num(env.final_obs.to(dev)[done])
+                        touch = (post[:, gate_slot] > 0.5) & (post[:, gate_slot + 1] <= 0.0)
+                        wall = post[:, _pins].min(dim=1).values * 12.0 < args.cat_wall_m
+                        spin = post[:, _spin] > 0.5
+                        cat_buf[t] = args.cat * (touch | wall | spin).to(f32)
+                    if amp_d is not None:
+                        post = obs[:, amp_slots].to(f32)
+                        if bool(done.any()):
+                            post[done] = torch.nan_to_num(env.final_obs.to(dev)[done][:, amp_slots].to(f32))
+                        amp_post[t] = post
                     # reward scaling by the running std of the discounted return
                     running_ret = running_ret * args.gamma + r
                     ret_mean, ret_var, ret_count = rms_update(ret_mean, ret_var, ret_count, running_ret)
@@ -747,28 +1328,52 @@ def main():
                         if bool(trunc.any()):
                             # a time-limit cut-off is not a real ending: bootstrap from the value
                             # of the observation the episode was cut off at
-                            fo = norm_obs(env.final_obs.to(dev)[trunc])
-                            r[trunc] += args.gamma * vf(fo)[:, 0]
+                            fo = env.final_obs.to(dev)[trunc]
+                            fo = norm_obs(history.peek(fo, trunc) if history else fo)
+                            fp = env.final_priv.to(dev, f32)[trunc] if n_priv else no_priv[:int(trunc.sum())]
+                            r[trunc] += args.gamma * (1.0 - cat_buf[t][trunc]) * value(fo, fp)
                         running_ret[done] = 0.0
                         if len(ep_rows) < 64:
                             ep_rows.append(env.ep_out[done.to(env.device)].cpu().numpy())
                     rew_buf[t], done_buf[t] = r, done.to(f32)
                     if not freeze_obs_norm:
-                        obs_mean, obs_var, obs_count = rms_update(obs_mean, obs_var, obs_count, obs)
-                val_buf[T] = vf(norm_obs(obs))[:, 0]
+                        obs_mean, obs_var, obs_count = rms_update(obs_mean, obs_var, obs_count,
+                                                                  history.peek(obs) if history else obs)
+                last_x = norm_obs(history.peek(obs) if history else obs)
+                val_buf[T] = value(last_x, priv_now())
+                if amp_d is not None:
+                    # the style reward of each tick's transition (AMP's least-squares form), in the
+                    # task reward's scaled units; nothing below AMP's slowest human speed
+                    d_out = amp_d((torch.cat([amp_pre, amp_post], dim=2).reshape(T * N, -1) - amp_mu) / amp_sd).reshape(T, N)
+                    style = torch.clamp(1.0 - 0.25 * (d_out - 1.0) ** 2, min=0.0)
+                    style = style * (amp_pre[:, :, 0] > amp_min_speed).to(f32)
+                    rew_buf += args.amp_weight * style / float(ret_var.sqrt() + 1e-8)
+                    amp_log['style'] = float(style.mean())
                 steps_done += N * T
 
                 adv = torch.zeros((T, N), dtype=f32, device=dev)
                 last = torch.zeros(N, dtype=f32, device=dev)
                 for t in range(T - 1, -1, -1):
-                    nonterm = 1.0 - done_buf[t]
+                    nonterm = (1.0 - done_buf[t]) * (1.0 - cat_buf[t])
                     delta = rew_buf[t] + args.gamma * val_buf[t + 1] * nonterm - val_buf[t]
                     last = delta + args.gamma * args.lam * nonterm * last
                     adv[t] = last
                 ret = adv + val_buf[:T]
 
-            b_obs = obs_buf.reshape(-1, de.OBS_SIZE)
+            b_obs = obs_buf.reshape(-1, IN)
+            b_lead = lead_buf.reshape(-1)
+            b_priv = priv_buf.reshape(b_lead.shape[0], n_priv)
             b_act = act_buf.reshape(-1, de.ACT_SIZE)
+            if args.caps_temporal > 0.0:
+                # each sample's next input (same car, next tick) and whether there is one (no episode end between)
+                b_next = torch.cat([obs_buf[1:], last_x[None]], dim=0).reshape(-1, IN)
+                b_cont = (1.0 - done_buf).reshape(-1)
+            caps_t_log, caps_s_log, mirror_log = [], [], []
+            if args.cat > 0.0:
+                cat_log.append(float((cat_buf > 0).float().mean()))
+            b_teach = teach_buf.reshape(-1, de.ACT_SIZE) if teacher else None
+            kick_w = args.kickstart_weight * max(0.0, 1.0 - steps_done / args.kickstart_ticks) if teacher else 0.0
+            kick_errs = []
             b_logp, b_adv, b_ret = logp_buf.reshape(-1), adv.reshape(-1), ret.reshape(-1)
             n = b_obs.shape[0]
             # Fixed minibatch SIZE, not a fixed number of minibatches: with thousands of cars one
@@ -786,24 +1391,61 @@ def main():
                     idx = perm[s:s + mb]
                     a_mb = b_adv[idx]
                     a_mb = (a_mb - a_mb.mean()) / (a_mb.std() + 1e-8)
-                    mu = pi(b_obs[idx])
+                    mu = actor(b_obs[idx], b_lead[idx])
                     logp = logp_of(b_act[idx], mu, log_std)
-                    log_ratio = logp - b_logp[idx]
+                    # clamped so exp() cannot overflow to inf (inf x a zero advantage is NaN); a step
+                    # this far off is clipped by the PPO objective anyway
+                    log_ratio = (logp - b_logp[idx]).clamp(-20.0, 20.0)
                     ratio = log_ratio.exp()
                     pi_loss = -torch.min(ratio * a_mb, torch.clamp(ratio, 1 - args.clip, 1 + args.clip) * a_mb).mean()
                     entropy = (log_std + 0.5 * (LOG_2PI + 1.0)).sum()
-                    v_loss = 0.5 * ((vf(b_obs[idx])[:, 0] - b_ret[idx]) ** 2).mean()
+                    v_loss = 0.5 * ((value(b_obs[idx], b_priv[idx]) - b_ret[idx]) ** 2).mean()
                     if update <= warmup_updates:
                         loss = args.vf_coef * v_loss
                     else:
                         loss = pi_loss - args.ent_coef * entropy + args.vf_coef * v_loss
+                    if kick_w > 0.0:
+                        kick = ((mu - b_teach[idx]) ** 2).sum(dim=1).mean()
+                        loss = loss + kick_w * kick
+                        kick_errs.append(float(kick.detach()))
+                    if args.caps_temporal > 0.0:
+                        mu_next = actor(b_next[idx], b_lead[idx])
+                        caps_t = (((mu - mu_next) ** 2).sum(dim=1) * b_cont[idx]).mean()
+                        loss = loss + args.caps_temporal * caps_t
+                        caps_t_log.append(float(caps_t.detach()))
+                    if args.caps_spatial > 0.0:
+                        mu_near = actor(b_obs[idx] + args.caps_sigma * torch.randn_like(b_obs[idx]), b_lead[idx])
+                        caps_s = ((mu - mu_near) ** 2).sum(dim=1).mean()
+                        loss = loss + args.caps_spatial * caps_s
+                        caps_s_log.append(float(caps_s.detach()))
+                    if args.mirror > 0.0:
+                        # mirror the raw inputs, scale them again, and ask for the mirrored action
+                        sd = (obs_var.sqrt() + 1e-8).to(f32)
+                        raw = b_obs[idx] * sd + obs_mean.to(f32)
+                        xm = torch.clamp((raw[:, mirror_perm.to(dev)] * mirror_sign.to(dev) - obs_mean.to(f32)) / sd, -10.0, 10.0)
+                        # on the actions as applied (clipped): outputs past the clip are the same action
+                        mir = ((torch.clamp(actor(xm, b_lead[idx]), -1.0, 1.0)
+                                - torch.clamp(mu, -1.0, 1.0) * mirror_act.to(dev)) ** 2).sum(dim=1).mean()
+                        loss = loss + args.mirror * min(1.0, steps_done / max(1, args.mirror_ramp_ticks)) * mir
+                        mirror_log.append(float(mir.detach()))
+                    if not bool(torch.isfinite(loss)):
+                        # never step on a non-finite loss: one such step makes every weight NaN
+                        skipped_steps += 1
+                        if skipped_steps == 1:
+                            print(f'  non-finite loss: policy {float(pi_loss):g} value {float(v_loss):g} '
+                                  f'entropy {float(entropy):g} returns finite {bool(torch.isfinite(b_ret[idx]).all())} '
+                                  f'advantages finite {bool(torch.isfinite(a_mb).all())}', flush=True)
+                        continue
                     opt.zero_grad(set_to_none=True)
                     loss.backward()
-                    nn.utils.clip_grad_norm_(list(pi.parameters()) + list(vf.parameters()) + [log_std], 0.5)
+                    if not bool(torch.isfinite(nn.utils.clip_grad_norm_(trained, 0.5))):
+                        skipped_steps += 1
+                        continue
                     opt.step()
                     with torch.no_grad():
-                        log_std.clamp_(float(np.log(args.min_std)), 0.5)
-                        log_std[2].clamp_(min=float(np.log(args.min_std_brake)))
+                        log_std.clamp_(float(np.log(args.min_std)), float(np.log(args.max_std)))
+                        log_std[1].clamp_(max=float(np.log(args.max_std_pedal)))
+                        log_std[2].clamp_(float(np.log(args.min_std_brake)), float(np.log(args.max_std_brake)))
                         kl = float(((ratio - 1.0) - log_ratio).mean())
                         cfs.append(float(((ratio - 1.0).abs() > args.clip).float().mean()))
                     kls.append(kl)
@@ -812,8 +1454,31 @@ def main():
                         break
                 if stop:
                     break
+            if amp_d is not None:
+                agent = torch.cat([amp_pre, amp_post], dim=2).reshape(T * N, -1)
+                agent = (agent[amp_pre.reshape(T * N, -1)[:, 0] > amp_min_speed] - amp_mu) / amp_sd
+                d_losses = []
+                for _ in range(args.amp_steps if len(agent) else 0):
+                    ia = torch.randint(0, len(agent), (min(mb, len(agent)),), device=dev)
+                    ie = torch.randint(0, len(amp_expert), (min(mb, len(agent)),), device=dev)
+                    xe = amp_expert[ie].clone().requires_grad_(True)
+                    de_out, da_out = amp_d(xe), amp_d(agent[ia])
+                    grad = torch.autograd.grad(de_out.sum(), xe, create_graph=True)[0]
+                    d_loss = 0.5 * (((de_out - 1.0) ** 2).mean() + ((da_out + 1.0) ** 2).mean()) \
+                        + args.amp_grad_penalty * (grad ** 2).sum(dim=1).mean()
+                    amp_opt.zero_grad(set_to_none=True)
+                    d_loss.backward()
+                    amp_opt.step()
+                    d_losses.append(float(d_loss.detach()))
+                    amp_log['d_human'], amp_log['d_cars'] = float(de_out.detach().mean()), float(da_out.detach().mean())
+                amp_log['d_loss'] = float(np.mean(d_losses)) if d_losses else float('nan')
             # hold the policy change per update near --target-kl by adapting the learning rate
-            mean_kl = float(np.mean(kls))
+            if skipped_steps:
+                print(f'  skipped {skipped_steps} gradient steps with a non-finite loss at {steps_done:,} ticks '
+                      f'({nonfinite_ticks} non-finite sim outputs so far)', flush=True)
+                skipped_steps = 0
+            mean_kl = float(np.mean(kls)) if kls else 0.0
+            kick_err = float(np.mean(kick_errs)) if kick_errs else 0.0
             if update <= warmup_updates:
                 pass
             elif mean_kl > 2.0 * args.target_kl:
@@ -835,8 +1500,13 @@ def main():
                 for k in TRAIN_KEYS:
                     row['train_' + k] = float(np.mean(np.concatenate([e[k] for e in recent])))
 
+            if self_slots and steps_done >= next_self_ghosts:
+                refresh_self_ghosts()
+                next_self_ghosts = steps_done + args.self_ghost_every
             if (now - t_last_eval) / 60.0 >= args.eval_minutes or steps_done >= target_steps:
                 evaluate_now()
+                if adr is not None:
+                    adr_update(row)
                 t_last_eval = time.time()
                 print(f"[{steps_done:>13,} ticks {row['minutes']:6.1f} min {row['ticks_per_s']:9,.0f}/s] "
                       f"eval return {last_eval['return']:8.2f}  "
@@ -852,6 +1522,17 @@ def main():
                       f"braking {last_eval['brake_fraction']:.2f}"
                       + (f"  pace-error {last_eval['pace_abs_error_pct']:.1f}% (signed {last_eval['pace_error_pct']:+.1f}%)"
                          if pace_range != (0.0, 0.0) else "")
+                      + (f"  | chase return {last_chase['return']:.1f} gap {last_chase['gap']:.1f}m "
+                         f"in-band {last_chase['in_band']:.0%} hits {last_chase['hits']:.1%} "
+                         f"slip-diff {last_chase['slip']:.1f} line-diff {last_chase['line']:.2f} |" if last_chase else "")
+                      + (f"  kickstart {kick_w:.2f} (off by {kick_err:.3f})" if kick_w > 0.0 else "")
+                      + (f"  amp style {amp_log.get('style', 0):.2f} D human {amp_log.get('d_human', 0):+.2f} cars {amp_log.get('d_cars', 0):+.2f}"
+                         if amp_d is not None else "")
+                      + (f"  mirror {np.mean(mirror_log):.4f}" if mirror_log else "")
+                      + (f"  cat {np.mean(cat_log[-10:]):.3f} of ticks" if cat_log else "")
+                      + (f"  adr gap-low {adr['gap_low']:.2f} dr {adr['dr']:.2f}" if adr is not None and adr['gap_low'] is not None else "")
+                      + (f"  caps t {np.mean(caps_t_log):.4f}" if caps_t_log else "")
+                      + (f"  caps s {np.mean(caps_s_log):.4f}" if caps_s_log else "")
                       + f"  kl {mean_kl:.4f}  lr {lr:.1e}  "
                       f"std {row['std_steer']:.2f}/{row['std_speed']:.2f}/{row['std_brake']:.2f}"
                       + (f"  | training cars: grip {grip_low_now():.2f}-{grip_range[1]:.2f}"

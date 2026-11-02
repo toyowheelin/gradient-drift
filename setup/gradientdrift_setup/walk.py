@@ -186,16 +186,12 @@ def bots_step(st):
         t.say(f'     {t.OK} ' + ('All found' if len(models) > 1 else 'Found') + ' in the game install.')
     name = t.ask_text("Bots' name in game (each shows as this and its slot number):",
                       st.get('bot_name') or bot_name_now(s))
-    t.hint('A tandem train: the first car of each drives, the others follow it door to door. 1 = every bot\n'
-           'drives on its own.')
-    train = t.ask_number('Bots to a train', st.get('train_size') or int(config.get('TrainSize', 0) or 0), 0, 6,
-                         zero='as it is')
     t.hint('How fast the bots drive, as a share of the flat-out speed round the lap (a policy trained with\n'
            'paces). Lower is calmer.')
     pace = t.ask_number('Pace', st.get('pace_percent') or int(float(config.get('BotPacePercent', 0) or 0)), 0, 105,
                         zero='as it is', suffix=' %')
     st.update(slots=[(m, k) for _, m, k in rows], bots=len(rows), bot_name=name,
-              train_size=train or None, pace_percent=pace or None)
+              pace_percent=pace or None)
 
 
 # --- 5. the changes ------------------------------------------------------------------------------
@@ -203,7 +199,7 @@ def bots_step(st):
 def plan_now(st):
     return plan_bot(st['server'], st['game'], slots=st.get('slots'), bots=st['bots'], bot_name=st['bot_name'],
                     plugin_source=st.get('plugin'), track_data=st.get('track_data'),
-                    train_size=st.get('train_size'), pace_percent=st.get('pace_percent'))
+                    pace_percent=st.get('pace_percent'))
 
 
 def show_plan(plan, details=False, brief=False):
@@ -271,7 +267,7 @@ def export_changes(st):
         plan, files = t.run_logged(lambda log: export_server(
             st['server'].folder, out, st['game'], log=log, slots=st.get('slots'), bots=st['bots'],
             bot_name=st['bot_name'], plugin_source=st.get('plugin'), track_data=st.get('track_data'),
-            train_size=st.get('train_size'), pace_percent=st.get('pace_percent')))
+            pace_percent=st.get('pace_percent')))
     except Exception as e:
         t.say(f'     {t.BAD} Nothing was exported: {type(e).__name__}: {e}')
         return
@@ -364,8 +360,6 @@ def command_line(st):
             words += ['--car', ','.join(m for m, _ in slots), '--skin', ','.join(k for _, k in slots)]
     if st['bot_name'] != bot_name_now(s):
         words += ['--name', st['bot_name']]
-    if st.get('train_size'):
-        words += ['--train-size', str(st['train_size'])]
     if st.get('pace_percent'):
         words += ['--pace', str(st['pace_percent'])]
     if st.get('plugin') and st['plugin'] != default_plugin_source():

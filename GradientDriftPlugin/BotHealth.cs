@@ -29,6 +29,8 @@ internal sealed class BotHealth
 
     private readonly Func<AiState, bool> _policyHasIt;
     private readonly Func<Vector3, int> _pointAt;
+    // Told of every stuck episode, warned about or not (EnableScorecard).
+    public Action<byte>? OnStuck;
     private readonly Dictionary<AiState, Bot> _bots = new();
     // kept when a bot is taken away, so one the server keeps respawning into the same trouble is
     // still warned about at most every RepeatMs: when it was last, and the episodes since
@@ -77,6 +79,10 @@ internal sealed class BotHealth
             }
 
             bot.Still++;
+            if (bot.Still == StillSamples)
+            {
+                OnStuck?.Invoke(sessionId);
+            }
             if (bot.Warned || bot.Still < StillSamples)
             {
                 continue;

@@ -14,6 +14,12 @@ reads the layout. The plugin and the trainer load the same two files.
     (ROAD's, or the most used track key's: verges a track lets count as track), Unknown for a key found
     in neither surfaces file.
 
+<name>_collision_grip.csv.gz - one row per row of the collision file, in the same order: the
+    surface's KEY and its grip, its FRICTION over the FRICTION of the road the layout has most of
+    (so the main road is 1 and a slippery patch less; walls 1). The plugin's and the simulator's
+    SurfaceGrip setting scales the tyres' grip by it. Plugins and trainers without that setting
+    never read the file.
+
 <name> is the track folder's name unless --name gives another. Each row: X1,Y1,Z1,X2,Y2,Z2,X3,Y3,Z3,
 SurfaceType in world coordinates (to 0.1 mm), after one header line; gzip-compressed.
 
@@ -35,7 +41,11 @@ import re
 from kn5_reader import parse
 
 GAME_DEFAULTS = {'ROAD': True, 'GRASS': False, 'KERB': True, 'SAND': False}   # the game's system/data/surfaces.ini
+# FRICTION when neither surfaces file gives one (the game's own file always does; these are only
+# the fallback when it is not found): the same for all, so nothing differs from the road
+DEFAULT_FRICTION = 1.0
 HEADER = 'X1,Y1,Z1,X2,Y2,Z2,X3,Y3,Z3,SurfaceType\n'
+GRIP_HEADER = 'Key,Grip\n'
 # a track surface with less grip than this share of the main road's is the verge, not the course
 OFF_ROAD_FRICTION_SHARE = 0.9
 
@@ -61,6 +71,11 @@ def read_ini(path):
 
 def surfaces(path):
     """{KEY: counts as track} from a surfaces.ini."""
+    return {k: valid for k, (valid, _) in surface_table(path).items()}
+
+
+def surface_table(path):
+    """{KEY: (counts as track, FRICTION or None)} from a surfaces.ini."""
     found = {}
     if path and os.path.exists(path):
         ini = read_ini(path)
@@ -68,23 +83,19 @@ def surfaces(path):
             if section.upper().startswith('SURFACE_') and ini.has_option(section, 'KEY'):
                 key = ini.get(section, 'KEY').strip().upper()
                 valid = ini.get(section, 'IS_VALID_TRACK', fallback='1').strip()
-                found.setdefault(key, valid not in ('0', ''))
-    return found
-
-
-def surface_friction(path):
-    """{KEY: FRICTION} from a surfaces.ini, for the keys that give one."""
-    found = {}
-    if path and os.path.exists(path):
-        ini = read_ini(path)
-        for section in ini.sections():
-            if section.upper().startswith('SURFACE_') and ini.has_option(section, 'KEY'):
                 try:
-                    found.setdefault(ini.get(section, 'KEY').strip().upper(),
-                                     float(ini.get(section, 'FRICTION', fallback='').strip()))
+                    friction = float(ini.get(section, 'FRICTION', fallback='').strip())
                 except ValueError:
-                    pass
+                    friction = None
+                found.setdefault(key, (valid not in ('0', ''), friction))
     return found
+
+
+def triangle_area(t):
+    ax, ay, az = t[3] - t[0], t[4] - t[1], t[5] - t[2]
+    bx, by, bz = t[6] - t[0], t[7] - t[1], t[8] - t[2]
+    cx, cy, cz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
+    return 0.5 * (cx * cx + cy * cy + cz * cz) ** 0.5
 
 
 def off_road_keys(friction, road_count):
@@ -180,19 +191,22 @@ def main(argv=None):
     name = args.name or os.path.basename(os.path.normpath(track))
     game_file = args.game_surfaces or find(os.path.join(track, '..', '..', '..'), 'system/data/surfaces.ini')
     keys = dict(GAME_DEFAULTS)
-    keys.update(surfaces(game_file))
+    friction = {k: DEFAULT_FRICTION for k in GAME_DEFAULTS}
     layout_data = find(track, f'{args.layout}/data') if args.layout else None
     track_surfaces = find(layout_data, 'surfaces.ini') if layout_data and os.path.isdir(layout_data) \
         else find(track, 'data/surfaces.ini')
-    keys.update(surfaces(track_surfaces))
-    friction = surface_friction(game_file)
-    friction.update(surface_friction(track_surfaces))
+    for source in (game_file, track_surfaces):
+        for k, (valid, f) in surface_table(source).items():
+            keys[k] = valid
+            if f is not None:
+                friction[k] = f
+            friction.setdefault(k, DEFAULT_FRICTION)
     patterns = [(re.compile(r'^\d+' + re.escape(k)), k) for k in sorted(keys, key=len, reverse=True)]
     wall = re.compile(r'^\d+WALL')
 
     def collision_surface(mesh_name):
-        """(Wall / Road / Grass / Unknown, its surfaces.ini KEY) for a colliding mesh, (None, '') for
-        scenery."""
+        """(Wall / Road / Grass / Unknown, surfaces.ini KEY or '') for a colliding mesh, (None, '')
+        for scenery."""
         upper = mesh_name.upper()
         if not upper[:1].isdigit():
             return None, ''
@@ -245,10 +259,41 @@ def main(argv=None):
         by_type = collections.Counter(r[9] for r in rows)
         print(f'Wrote {len(rows)} triangles to {out_path}: '
               + ', '.join(f'{k} {v}' for k, v in sorted(by_type.items())))
+    write_grip(os.path.join(args.output, f'{name}_collision_grip.csv.gz'), collision, collision_keys, friction)
     if unplaced:
         print('  numbered meshes with no known surface: ' + ', '.join(f'{k} ({v})' for k, v in unplaced.most_common(12)))
     if not any(r[9] != 'Wall' for r in collision):
         print('  warning: no ground found - the layout names no colliding <number><KEY> meshes')
+
+
+def write_grip(out_path, collision, collision_keys, friction):
+    """<name>_collision_grip.csv.gz: each collision row's KEY and FRICTION over the reference road's
+    (the counted-as-track KEY with the most area). Walls and unknown keys are 1."""
+    area = collections.Counter()
+    for row, key in zip(collision, collision_keys):
+        if row[9] == 'Road' and key:
+            area[key] += triangle_area(row)
+    reference = area.most_common(1)[0][0] if area else None
+    ref_friction = friction.get(reference, DEFAULT_FRICTION) if reference else DEFAULT_FRICTION
+    if ref_friction <= 0.0:
+        ref_friction = DEFAULT_FRICTION
+
+    def grip(row, key):
+        if row[9] == 'Wall' or not key:
+            return 1.0
+        return friction.get(key, DEFAULT_FRICTION) / ref_friction
+    with gzip.open(out_path, 'wt', compresslevel=6) as out:
+        out.write(GRIP_HEADER)
+        for row, key in zip(collision, collision_keys):
+            out.write(f'{key or "-"},{grip(row, key):.4f}\n')
+    total = sum(triangle_area(r) for r in collision if r[9] != 'Wall') or 1.0
+    by_key = collections.Counter()
+    for row, key in zip(collision, collision_keys):
+        if row[9] != 'Wall':
+            by_key[key or '-'] += triangle_area(row)
+    print(f'Wrote surface grip to {out_path} (1 = {reference or "the road"}, FRICTION {ref_friction:g}): '
+          + ', '.join(f'{k} {friction.get(k, DEFAULT_FRICTION) / ref_friction:.3f} ({a / total:.0%} of the ground)'
+                      for k, a in by_key.most_common(8)))
 
 
 if __name__ == '__main__':

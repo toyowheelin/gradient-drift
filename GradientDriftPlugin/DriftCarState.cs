@@ -69,10 +69,37 @@ internal sealed class DriftCarState
     // This car's RearSlidingGrip (the setting, or what HoldBotSpacing has eased it to), and
     // the distance along the line to the next bot ahead (-1 = no other bot).
     public float RearSlidingGrip;
+    // SurfaceGrip: the grip of the ground under the front / rear axle from the last tick's pose
+    // (0 = not known yet: 1).
+    public float FrontSurfaceGrip;
+    public float RearSurfaceGrip;
     public float GapAheadM = -1f;
     // The pace this car is asked to drive, in the policy's units (a fraction of the course's
     // flat-out speed, or km/h for gen4): the setting, or what HoldBotSpacing has eased it to; 0 = none.
     public float Pace;
+    // LeadPlayers: a player is chasing this car, and its pace waits for them.
+    public bool LeadingPlayer;
+    // ChasePlayers: this car is chasing the car ahead (a player, or a bot with ChaseBots); its pace
+    // comes from the IDM.
+    public bool ChasingPlayer;
+    // ... whether that lead is a bot, when this chase began, and until when this bot takes up no
+    // other bot (ChaseBotCooldownSeconds), server milliseconds.
+    public bool ChaseLeadIsBot;
+    public long ChaseStartMs;
+    public long ChaseBotCooldownUntilMs;
+    // ... the player's session id, and the gap between the outlines last tick (a tandem policy's
+    // closing speed input; NaN = none yet).
+    public byte ChaseLeadId;
+    public float ChaseLastGap = float.NaN;
+    // EnableScorecard: the gap ChasePlayer drove to this tick (NaN = not chasing); read and reset by UpdateCar.
+    public float ScoreChaseGap = float.NaN;
+    // Its speed along the line last tick, and the speed a pace of 1 asks there (the course's
+    // reference, held to the car's limit), m/s: the IDM works in speeds.
+    public float LineSpeedMs;
+    public float PaceOneMs;
+
+    // This bot's own style (BotStyles): its pace middle, chase gap, skill and chase rules.
+    public BotStyle Style = new(0.5f, 0f, 2f, 1f, 7.5f, 1.1f);
 
     // The wandering noise of a driver below full skill (BotSkill): steering and pedal.
     public float SkillNoiseSteer;

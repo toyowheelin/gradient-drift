@@ -14,21 +14,21 @@ public static class PaceReference
     // Null, with the reason logged, if the file is missing or unreadable.
     public static float[]? Load(string path)
     {
-        if (!File.Exists(path))
+        if (!PluginData.Exists(path))
         {
-            VerboseLog.Information("GradientDrift: no pace reference file at {Path}", Path.GetFullPath(path));
+            VerboseLog.Information("GradientDrift: no pace reference file at {Path}", PluginData.Describe(path));
             return null;
         }
         try
         {
             var kmh = new List<float>();
-            using var reader = new StreamReader(path);
+            using var reader = new StreamReader(PluginData.Open(path));
             string[] header = (reader.ReadLine() ?? "").Split(',');
             int idColumn = Array.IndexOf(header, "PointId");
             int kmhColumn = Array.IndexOf(header, "Kmh");
             if (idColumn < 0 || kmhColumn < 0)
             {
-                Log.Warning("GradientDrift: {Path} lacks PointId / Kmh", Path.GetFullPath(path));
+                Log.Warning("GradientDrift: {Path} lacks PointId / Kmh", PluginData.Describe(path));
                 return null;
             }
             string? line;
@@ -44,17 +44,17 @@ public static class PaceReference
                 if (id != kmh.Count || !(value > 0f))
                 {
                     Log.Warning("GradientDrift: {Path} is not in point order or has a speed that is not above 0 at point {Id}",
-                        Path.GetFullPath(path), id);
+                        PluginData.Describe(path), id);
                     return null;
                 }
                 kmh.Add(value);
             }
-            VerboseLog.Information("GradientDrift: loaded the pace reference ({Count} points) from {Path}", kmh.Count, Path.GetFullPath(path));
+            VerboseLog.Information("GradientDrift: loaded the pace reference ({Count} points) from {Path}", kmh.Count, PluginData.Describe(path));
             return kmh.ToArray();
         }
         catch (Exception e) when (e is IOException or FormatException or OverflowException or UnauthorizedAccessException)
         {
-            Log.Warning(e, "GradientDrift: could not read {Path}", Path.GetFullPath(path));
+            Log.Warning(e, "GradientDrift: could not read {Path}", PluginData.Describe(path));
             return null;
         }
     }

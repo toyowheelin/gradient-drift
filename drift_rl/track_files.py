@@ -35,7 +35,9 @@ PACE_REFERENCE = 'pace_reference.csv'
 # model): where build_course.py finds the course's tire stacks and cones. The sensors themselves
 # see <track>_triangles.csv.gz, which sensor_view.py makes from what the game collides with plus
 # those markers. Stays in the track's folder; the server does not need it.
-OPTIONAL = {'pace_reference': PACE_REFERENCE, 'visual': 'visual.csv.gz'}
+# Each collision triangle's surface KEY and grip (tools/track_triangles.py): read only with the
+# SurfaceGrip setting, every surface 1 without it.
+OPTIONAL = {'pace_reference': PACE_REFERENCE, 'visual': 'visual.csv.gz', 'collision_grip': 'collision_grip.csv.gz'}
 
 
 def name(kind, track=TRACK):

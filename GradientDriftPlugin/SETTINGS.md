@@ -8,11 +8,11 @@ EnablePlugins: [GradientDriftPlugin]
 EnableLearnedPolicy: true
 BotSkill: 1
 BotPacePercent: 90
-TrainSize: 3
+ChaseBots: false
 ```
 
 Every setting has a working default, so the block can hold only what you want to change. The setup
-program writes `EnablePlugins`, `EnableLearnedPolicy`, `TrainSize` and `BotPacePercent` for you.
+program writes `EnablePlugins`, `EnableLearnedPolicy` and `BotPacePercent` for you.
 Settings are read when the server starts: restart it after a change.
 
 The settings come in two kinds:
@@ -31,27 +31,67 @@ The settings come in two kinds:
 | Setting | Default | What it does |
 |---|---|---|
 | `EnableLearnedPolicy` | `true` | Lets the plugin drive the AI cars. Off, or no usable policy file, and the server's own AI drives them as before. The shipped policy drives any track, but the plugin stands aside (and says why in the log) if the track's data files are missing from the server folder (setup puts them there: the track's geometry, course edges and pace reference, made for the server's AI line), or if the policy needs a feature this build of the plugin doesn't have. An older policy trained only on real tracks also stands aside on a track it wasn't trained on. |
-| `LearnedPolicyPath` | empty | The policy file to run. Empty means `GradientDriftPlugin.policy.json` beside the plugin's DLL, which is where the release puts it. |
+| `LearnedPolicyPath` | empty | The policy file to run. Empty means `GradientDriftPlugin.policy.json` beside the plugin's DLL, which is where the release puts it, or its copy in `GradientDriftPlugin.bundle.zip` there when there is no loose file. |
 
 ### How the bots drive
 
 | Setting | Default | What it does |
 |---|---|---|
 | `BotSkill` | `1` | How good a driver the bots are, 0 to 1. **1** is the best the policy can do. **0** is a driver a track day would still let out with others: holds a drift and rarely spins, but at a shallower angle, on a more cautious line, with slower and sloppier hands. Only for a policy trained with a skill input (gen9 and later); others ignore it. Kept inside the range the policy was trained for. |
-| `BotPacePercent` | `0` | How fast the bots are asked to go, as a percentage of the track's flat-out drift speed at each point of the lap. 90 means 90% everywhere, on any track. Lower means calmer bots that brake more into corners and slide a little less. Kept inside the policy's trained range (80 to 100 for current policies); **0** means the top of that range (100 for current policies). Needs the track's `<track>_pace_reference.csv` in the server folder (setup puts it there). |
+| `BotPacePercent` | `0` | How fast the bots are asked to go, as a percentage of the track's flat-out drift speed at each point of the lap. 90 means 90% everywhere, on any track. Lower means calmer bots that brake more into corners and slide a little less. Kept inside the policy's trained range (80 to 120 for the newest policies, 80 to 100 for older ones); **0** (or not set) means 100, held inside that range; before v0.3.0 it meant the top of the range. Spacing and leading a player only ever slow a bot from this pace, never speed it past it. Needs the track's `<track>_pace_reference.csv` in the server folder (setup puts it there). |
 | `BotPaceMinPercent` | `85` | With several bots out, spacing speeds some up and slows others down (see `HoldBotSpacing`). This is the slowest it may ask for. Below about 85% the bots slide noticeably less, so the default keeps them above that. 0 means the bottom of the policy's range. |
-| `HoldBotSpacing` | `true` | With more than one bot (or train) out, spreads them evenly round the lap. A bot the plugin takes over is placed in the middle of the biggest gap near a player, then each bot's pace is nudged up or down a little to keep the gaps even. The bots don't see each other: if one spins, the car behind can drive through it. |
+| `HoldBotSpacing` | `true` | With more than one bot out, spreads them evenly round the lap. A bot the plugin takes over is placed in the middle of the biggest gap near a player, then a bot that is catching the one ahead is slowed a little to keep the gaps even (never sped past `BotPacePercent`). The bots don't see each other: if one spins, the car behind can drive through it. |
 | `RearSlidingGrip` | `0.5` | How much sideways grip the rear tyres keep once sliding. Current policies are trained at exactly 0.55, so for them any value is moved to 0.55 (with a warning in the log). Only matters for an older policy trained over a range of grips. |
 
-### Tandem trains
+### Tandem
 
 | Setting | Default | What it does |
 |---|---|---|
-| `TrainSize` | `1` | Bots per train, in the order of their entries in `entry_list.ini`. The first of each train is driven by the policy; the others follow it, replaying what it did a moment earlier, so they hold its line door to door. **1** means every bot drives alone. |
-| `TandemGapSeconds` | `0.35` | How far each follower runs behind the car in front, in seconds. 0.35 s is a little over a car length at drift speed. |
-| `TandemGapVariation` | `0.25` | The gap wanders by up to this share either way (0.25 = ±25%), slowly and differently for each car, so a train doesn't look robotic. |
-| `TandemMinGapMeters` | `4.8` | Never closer than this to the car in front, nose to nose. A car is about 4.4 m long. |
-| `TandemLateralOffsetMeters` | `0.6` | How far a follower may sit to one side of the lead's line. Each wanders between about a fifth of this and all of it, on a side of its own. |
+| `TrainSize`, `TandemGapSeconds`, `TandemGapVariation`, `TandemMinGapMeters`, `TandemLateralOffsetMeters` | | **Retired in v0.3.0.** Trains of followers replaying a lead car are gone: bots form trains by chasing each other, each driving itself (`ChasePlayers` with `ChaseBots`, below). The plugin still accepts these settings, so an old `extra_cfg.yml` starts, but ignores them (a `TrainSize` above 1 gets a warning in the log). Setup takes `TrainSize` out. |
+| `LeadPlayers` | `false` | A bot with a player chasing close behind waits for them: its own pace (`BotPacePercent`) with the player right on its tail, slowing to `BotPaceMinPercent` as they drop back to 40 m. Further back, the bots space themselves as usual. Only for a policy that reads its pace (every current one). |
+| `ChasePlayers` | `true` | A bot chases a player who pulls in within `ChaseOptInMeters` (7.5 m, about 25 ft) in front of its nose, until the player gets `ChaseOptOutMeters` (40 m) ahead. Its pace comes from the Intelligent Driver Model, the standard car-following model of traffic simulation, aiming `ChaseGapMeters` behind the player and easing off early when it closes fast. Only for a policy that reads its pace (every current one). With a tandem policy (one trained to chase, with the car-ahead inputs and a residual network) the bot also sees the player, as in training: where they are, their gap between the car outlines, line, slip, steering, throttle and brake lights, and its pace takes in the player's acceleration and may drop to the chase floor the policy was trained with. On by default since v0.3.0; it does nothing for an older policy that doesn't read its pace. |
+| `ChaseGapMeters` | `2` | With `ChasePlayers`: the gap the chasing bot aims for behind the player, bumper to bumper, before the speed-dependent margin the model adds. |
+| `ChaseOptInMeters` | `7.5` | With `ChasePlayers`: how far ahead of a bot's nose, along the line, a player has to be for the bot to start chasing them. Bigger has bots join a tandem from further back. |
+| `ChaseOptOutMeters` | `40` | With `ChasePlayers`: how far ahead the player has to get before the bot stops chasing. |
+| `ChaseTimeGapSeconds` | `0.2` | With `ChasePlayers`: the speed-dependent margin, in seconds of the bot's speed added to `ChaseGapMeters`. Lower sits closer at speed but leaves less room when the player slows. |
+| `ChaseResponseSeconds` | `0.6` | With `ChasePlayers`: how quickly the bot's pace answers the gap, in seconds. Lower closes up and backs off faster. |
+| `ChasePaceMaxPercent` | `110` | With `ChasePlayers`: the most pace the chasing bot may ask, as a percentage of the policy's top pace. Over 100 gives it some speed in hand to catch a player who drives at the bots' top pace. |
+| `ChaseBots` | `true` | With `ChasePlayers`: a bot also chases a bot that comes within `ChaseOptInMeters` ahead of it, so drift trains of bots form on their own. Whatever this is, every car (player or bot) has at most one bot chasing it: a second bot coming up behind a chaser waits at its usual pace, or with this on chases the chaser. On by default since v0.3.0: set it to `false` to keep bots spaced round the lap and chasing players only. |
+| `ChaseTrainMax` | `3` | With `ChaseBots`: the most bots chasing in one line, behind a player or a bot that is not chasing. Longer trains don't form. |
+| `ChaseBotRunSeconds` | `60` | With `ChaseBots`: how long a bot chases another bot before it drops back (0 = no limit). Chasing a player is never timed. |
+| `ChaseBotCooldownSeconds` | `30` | With `ChaseBots`: after a bot-on-bot chase ends, how long that bot takes up no other bot, so trains break up and form again. |
+
+### Each bot's own style
+
+So a server full of bots doesn't look like clones. Each bot can have its own **aggression**, **chase gap**
+and **skill**. These are all things the policy already reads (its pace, the gap it is asked to hold, its
+skill) or chase rules the plugin applies, so no retraining is needed, and every value stays inside the
+range the policy was trained for. A bot keeps its style through respawns and server restarts. With
+`VerboseLogging` on, the log shows each bot's style the first time it drives.
+
+Aggression runs from 0 to 1. **0.5** means the settings above, unchanged. Going up from there the bot asks for
+more pace (up to the policy's top), takes up a car to chase from further back (up to 1.6 × `ChaseOptInMeters`)
+and may chase up to 10% faster than `ChasePaceMaxPercent`. Going down it asks for less pace (down to
+`BotPaceMinPercent`), only takes up a car close ahead (down to 0.4 × `ChaseOptInMeters`) and chases up to
+10% slower.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `BotStyleSpread` | `0` | How far apart the bots' styles are drawn, 0 to 1. **0** means every bot drives with the settings above, as before. **1** means aggression anywhere from 0 to 1 and chase gaps from half `ChaseGapMeters` to twice it. |
+| `BotSkillSpread` | `0` | Each bot's skill is `BotSkill` minus a random amount up to this (0 to 1). **0** means every bot is at `BotSkill`. |
+| `BotStyleSeed` | `0` | Change it to draw a new set of styles. |
+| `BotStyles` | empty | Styles set by hand, which win over the draws. Each entry names a bot by its `DRIVERNAME` in `entry_list.ini`. An entry with no `Name` applies to the AI entries in order. Any of `Aggression` (0 to 1), `ChaseGapMeters` and `Skill` can be set; anything left out is drawn or taken from the settings. |
+
+```yaml
+BotStyleSpread: 0.6
+BotStyles:
+  - Name: Kenji
+    Aggression: 0.9
+    ChaseGapMeters: 1
+  - Name: Mia
+    Aggression: 0.2
+    Skill: 0.6
+```
 
 ### How the bots look (cosmetic only)
 
@@ -79,6 +119,9 @@ stopped for 30 seconds, and a line when it moves again. Nothing while the bots d
 |---|---|---|
 | `EnableTelemetryLogging` | `false` | Writes `drift_physics_telemetry_<date>_<time>.csv` in the server folder: one row per bot per tick. For checking a policy on a server with `drift_rl/check_plugin_policy.py` and `drive_report.py --telemetry`. About 110 MB an hour with six bots. |
 | `TelemetryMaxFileMegabytes` | `500` | The telemetry file stops growing at this size. 0 = no limit. It also stops, with a line in the log, if a write fails. |
+| `EnableScorecard` | `false` | A short report card per server session of how the bots drove: slide and spin share, wall time and wall hits, car hits (bots and players), chase time and gap (p10/p50/p90, share within 2 m of `ChaseGapMeters`), how often the server's own AI had them, stuck episodes, wrong-way recoveries. Only time with a player on the server counts: once the last one leaves, the bots still out are being taken away and are left out (the card says how many bot-minutes that was). Written as `<start>_<track>_<session>.txt` (a table) and `.json` into `ScorecardFolder`; `drift_rl/scorecard_report.py` puts several side by side. A few KB a session. |
+| `ScorecardFolder` | `gradientdrift_scorecards` | Where the scorecards go, relative to the server folder. |
+| `ScorecardWriteMinutes` | `10` | The scorecard is rewritten this often while a session runs (so a crash loses at most this much), and once more when the session ends or the server stops. |
 | `LogLearnedPolicyObservations` | `true` | Adds the network's inputs to every telemetry row (about 330 bytes a row). The check tools need them. |
 | `LogHumanCarForCalibration` | `false` | Adds the first connected player's car to the telemetry: position, steering, RPM, gear, throttle, wheel speeds. No name, IP or Steam ID. Used to compare the bots with a human driver. |
 | `VerboseLogging` | `false` | The plugin's routine lines as well: what it loaded, each setting the policy file brings, each bot car's numbers, spawns and placements, and the timing line every 60 s. Off, the log has warnings only. |
@@ -98,6 +141,11 @@ Many are replaced at start, without anything in the YAML:
   the rear thrust, brake and friction-circle models, tyre load sensitivity and its numbers, and the
   wrong-way recovery thresholds. The plugin switches on only the features a policy was trained with,
   so an older policy keeps driving the car it knew.
+
+  A new setting a policy file can carry goes in `DriftPolicy.CanApplySetting` and the apply switch of `ApplyPolicySettings`; then run
+  `python tools/plugin_features.py`, which writes `GradientDriftPlugin.features.json` (what policy
+  files this build can run) from the source. Setup checks a policy against that file before it
+  installs the pair, and CI fails while the file is out of date.
 - **By the car files** (`plugins/GradientDriftPlugin/cars/<model>.json`, written by setup) for a
   policy that drives any car (gen8 and later): each bot's weight, axle geometry, yaw inertia, tyre
   grip and load sensitivity, track width, CG height, steering lock and engine. A car without a file
@@ -130,6 +178,8 @@ Many are replaced at start, without anything in the YAML:
 | `EnableRearFrictionCircle` | `false` | Policy file |
 | `DisableBrakes` | `false` | Policy file. With `EnableRearFrictionCircle`: no pedal braking and no brake action, so the car slows only by lifting and with its angle (gen18 on) |
 | `FrontBrakeOnly` | `false` | Policy file. With `EnableRearFrictionCircle`: no pedal braking, but the brake action (the front axle, with the throttle) still works, so the car can scrub speed and keep its angle |
+| `SurfaceGrip` | `false` | Policy file. Each axle's peak friction times the grip of the ground under it: its surface's `FRICTION` in the track's `surfaces.ini` over the main road's, from `<track>_collision_grip.csv.gz` (setup writes it beside the other track files; without it every surface grips 1, with a warning) |
+| `RearSpinGripShare` | `1` (off) | Policy file. With `EnableRearFrictionCircle`: the rear friction circle while the throttle spins the tires, as a share of their peak; it shrinks toward this with the share of full-throttle thrust used |
 | `MaxLongitudinalDecelMs2` | `5.6` | Hardest braking, m/s² |
 | `MinSlipAngleSpeedMs` | `3.0` | Speed floor in the slip-angle formula |
 | `MaxLateralDynamicsSubStepSeconds` | `0.05` | Longest physics sub-step |
@@ -167,6 +217,8 @@ The policy reads these sensors' outputs directly, so their geometry has to match
 | `CarOutlineContact` | `false` | Policy file. Walls touch the car's own outline (a rectangle turned with its heading: each axle's distance from the centre plus `CarOutlineOverhangMeters`, half the wider track plus `CarOutlineSideMarginMeters`) instead of the contact distance's circle, so a sliding car's tail can't pass through a wall |
 | `CarOutlineOverhangMeters` | `0.8` | |
 | `CarOutlineSideMarginMeters` | `0.1` | |
+| `RoundTireCurve` | `false` | Policy file. Each axle's sideways force follows the brush (Fiala) curve: three times as steep as the straight line at small slip angles, rounding over into full sliding at the tyres' `FRICTION_LIMIT_ANGLE` plus `FLEX` x the static load on one tire (car file `FRONT_TIRE_FLEX` / `REAR_TIRE_FLEX`, else `FrontTireFlex` / `RearTireFlex`). Matches Assetto Corsa's front tyre, which gives 75 - 90% of its peak by 4 - 8 deg |
+| `FrontTireFlex`, `RearTireFlex` | `0.000852` | tyres.ini `FLEX`, degrees of slip angle per N, for cars without a car file |
 | `GroundRayHeightOffsetM` | `0.40` | Ride height above the ground found below the car. The bot drives and senses at this height; clients are sent each car at its own CG height (`CG_HEIGHT_M` in its car file) instead |
 | `GroundRayStartAboveMeters` | `1.5` | |
 | `GroundRayMaxDistanceMeters` | `6.0` | |

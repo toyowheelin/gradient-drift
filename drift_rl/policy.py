@@ -8,6 +8,18 @@ The network is two tanh hidden layers and a linear output:
     h2     = tanh(W2 @ h1 + b2)
     action = clip(W3 @ h2 + b3, -1, 1)
 
+A tandem policy can carry a residual (residual policy learning: Silver et al. 2018, Johannink et
+al. 2019): a second network of the same shape on the same scaled inputs, added to the first's
+action only while input `residual.gate_input` is above `residual.gate_above` (a lead is present),
+so solo driving stays exactly the first network's.
+
+A policy can also read a short history of some of its inputs (a "history" block in the file:
+Kumar et al., "RMA: Rapid Motor Adaptation for Legged Robots", RSS 2021, adapt from recent states
+and actions; here the history goes straight into the one network). After the env's inputs come,
+for f = 1 .. frames, the inputs `slots` as they were f x every ticks ago. On a car's first tick
+(input reset_slot above 0.5) every past frame is the present one. The plugin builds the same block
+(DriftPolicy.AppendHistory).
+
 That is the whole inference path - about 7,500 multiply-adds per tick for the default 64-unit
 layers. The saved .json holds exactly those arrays (row-major, W[i] is the weights INTO output
 unit i) plus the observation names and the plugin settings, so the C# side needs nothing but
@@ -48,16 +60,43 @@ class MLP:
 class Policy:
     """Deterministic deployment policy: observation normalisation + MLP + clip."""
 
-    def __init__(self, mlp, obs_mean, obs_std, meta=None):
+    def __init__(self, mlp, obs_mean, obs_std, meta=None, residual=None, gate_input=-1, gate_above=0.5):
         self.mlp = mlp
+        self.residual = residual
+        self.gate_input = gate_input
+        self.gate_above = gate_above
         self.obs_mean = np.asarray(obs_mean, dtype=np.float64)
         self.obs_std = np.asarray(obs_std, dtype=np.float64)
         self.meta = meta or {}
 
     def __call__(self, obs):
         # a policy from before an input was added reads only the inputs it was trained with
-        x = np.clip((np.atleast_2d(obs)[:, :len(self.obs_mean)] - self.obs_mean) / self.obs_std, -10.0, 10.0)
-        return np.clip(self.mlp.forward(x), -1.0, 1.0)
+        h = self.meta.get('history')
+        if h:
+            obs = self.history_step(np.atleast_2d(obs))
+        raw = np.atleast_2d(obs)[:, :len(self.obs_mean)]
+        x = np.clip((raw - self.obs_mean) / self.obs_std, -10.0, 10.0)
+        a = self.mlp.forward(x)
+        if self.residual is not None:
+            a = a + (raw[:, self.gate_input] > self.gate_above)[:, None] * self.residual.forward(x)
+        return np.clip(a, -1.0, 1.0)
+
+    def history_step(self, obs):
+        """The env's inputs plus the history block (meta 'history'), and the present frame kept for
+        later ticks. Called once per tick for the same cars in the same order."""
+        h = self.meta['history']
+        slots, frames, every = list(h['slots']), int(h['frames']), int(h['every'])
+        n_base = len(self.obs_mean) - frames * len(slots)
+        base = obs[:, :n_base]
+        now = base[:, slots]
+        buf = getattr(self, '_hist', None)
+        if buf is None or buf.shape[1] != len(obs):
+            buf = np.repeat(now[None], frames * every, axis=0)
+        first = base[:, int(h['reset_slot'])] > 0.5
+        buf[:, first] = now[first]
+        out = np.concatenate([base] + [buf[f * every - 1] for f in range(1, frames + 1)], axis=1)
+        self._hist = np.concatenate([now[None], buf[:-1]], axis=0)
+        return out
 
     def save_json(self, path):
         doc = dict(self.meta)
@@ -72,6 +111,11 @@ class Policy:
                         'W': w.tolist(), 'b': b.tolist()}
                        for i, (w, b) in enumerate(zip(self.mlp.W, self.mlp.b))],
         })
+        if self.residual is not None:
+            doc['residual'] = {'gate_input': int(self.gate_input), 'gate_above': float(self.gate_above),
+                               'layers': [{'activation': 'tanh' if i < len(self.residual.W) - 1 else 'linear',
+                                           'W': w.tolist(), 'b': b.tolist()}
+                                          for i, (w, b) in enumerate(zip(self.residual.W, self.residual.b))]}
         with open(path, 'w') as f:
             json.dump(doc, f)
 
@@ -83,8 +127,14 @@ class Policy:
         mlp = MLP(sizes)
         mlp.W = [np.array(l['W'], dtype=np.float64) for l in doc['layers']]
         mlp.b = [np.array(l['b'], dtype=np.float64) for l in doc['layers']]
-        meta = {k: v for k, v in doc.items() if k not in ('layers', 'obs_mean', 'obs_std')}
-        return Policy(mlp, doc['obs_mean'], doc['obs_std'], meta)
+        meta = {k: v for k, v in doc.items() if k not in ('layers', 'obs_mean', 'obs_std', 'residual')}
+        res = doc.get('residual')
+        if res is None:
+            return Policy(mlp, doc['obs_mean'], doc['obs_std'], meta)
+        rmlp = MLP([doc['obs_size']] + [len(l['b']) for l in res['layers']])
+        rmlp.W = [np.array(l['W'], dtype=np.float64) for l in res['layers']]
+        rmlp.b = [np.array(l['b'], dtype=np.float64) for l in res['layers']]
+        return Policy(mlp, doc['obs_mean'], doc['obs_std'], meta, rmlp, res['gate_input'], res['gate_above'])
 
 
 def default_policy_path():

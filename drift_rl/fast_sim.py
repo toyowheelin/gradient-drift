@@ -53,7 +53,9 @@ S_REAR_SLIDE_GRIP = 46  # the plugin's RearSlidingGrip for this car: share of it
 S_LOAD_SHIFT = 48       # load moved onto the front axle by braking (- = onto the rear by thrust), N; EnableWeightTransfer
 S_PACE = 47             # the pace this car is asked to drive, a fraction of the course's reference speed (0 = none): the
                         # plugin's bot-spacing dial, drawn per episode in training (drift_env)
-STATE_SIZE = 49
+S_GRIP_F = 49           # SurfaceGrip: the grip of the ground under the front / rear axle (FRICTION over
+S_GRIP_R = 50           # the main road's), from the last tick's pose; 0 = not known (1)
+STATE_SIZE = 51
 
 # Bumped whenever the simulator changes in a way that makes policies trained before it unfit for
 # the server. Trainers write it into policy.json ("simulator_revision"); check_plugin_policy.py
@@ -144,6 +146,30 @@ _PNAMES = [
     # around its centre: a sliding car's tail reaches a wall long before its centre does
     # (Spirit Peaks' tire stacks, 2026-10-21). The reward's nearest wall reads the same outline.
     'EXT_CAR_OUTLINE_CONTACT', 'CAR_OUTLINE_OVERHANG_M', 'CAR_OUTLINE_SIDE_MARGIN_M',
+    # RoundTireCurve (the same kind of setting): each axle's sideways force follows the brush
+    # (Fiala) curve, steep at first and rounding over into full sliding, instead of a straight line
+    # to its peak. Full sliding comes at the tyre's FRICTION_LIMIT_ANGLE plus FLEX x its static
+    # load (tyres.ini: FLEX, "the bigger the added slip angle with load", degrees per N).
+    # Assetto Corsa's E36 front gives 75 - 90% of its peak by 4 - 8 deg (the owner's laps).
+    'EXT_ROUND_TIRE_CURVE', 'FRONT_TIRE_FLEX', 'REAR_TIRE_FLEX',
+    # RearSpinGripShare (the same kind of setting): with EnableRearFrictionCircle, the rear tires'
+    # friction circle when they are spinning, as a share of their peak: spun up by the throttle a
+    # tire grips less in all directions than at its peak (step_post). 0 or 1 = off
+    'REAR_SPIN_GRIP_SHARE',
+    # Hidden domain randomisation (trainer --dr-axle-grip / --dr-peak-slip; Tobin et al. 2017,
+    # https://arxiv.org/abs/1703.06907; Peng et al. 2018, https://arxiv.org/abs/1710.06537): the
+    # simulated tyres' true front / rear peak friction and peak slip angles are these multiples of the
+    # car's numbers, while the car inputs keep showing the car's numbers. A car file never matches
+    # the game's tyres exactly; the policy learns to drive cars a little off what it is told.
+    # 0 = 1 = off. Training only: the plugin has no such setting.
+    'DR_FRONT_GRIP_SCALE', 'DR_REAR_GRIP_SCALE', 'DR_FRONT_PEAK_SLIP_SCALE', 'DR_REAR_PEAK_SLIP_SCALE',
+    # SurfaceGrip (a plugin setting a policy file may carry): each axle's peak friction times the
+    # grip of the ground under it, the surface's FRICTION in the track's surfaces.ini over the main
+    # road's (<track>_collision_grip.csv.gz, tools/track_triangles.py), as the game scales its tyres
+    # by the surface. Without the file every surface is 1. SURFACE_GRIP_DEV_SCALE (training only,
+    # --dr-surface-grip) stretches each surface's difference from the road: grip 1 + (g - 1) x it;
+    # 0 = 1 = as the file says.
+    'EXT_SURFACE_GRIP', 'SURFACE_GRIP_DEV_SCALE',
 ]
 P = {name: i for i, name in enumerate(_PNAMES)}
 
@@ -241,6 +267,8 @@ def make_params():
         'FRONT_LOAD_SENSITIVITY_PER_KN': -0.044, 'REAR_LOAD_SENSITIVITY_PER_KN': -0.049,
         'FRONT_TRACK_M': 1.67, 'REAR_TRACK_M': 1.50, 'ROLL_STIFFNESS_FRONT_SHARE': 0.67,
         'SKILL': 1.0,
+        # tyres.ini FLEX (RoundTireCurve only), degrees of slip angle per N on a tire
+        'FRONT_TIRE_FLEX': 0.000852, 'REAR_TIRE_FLEX': 0.000852,
     }
     p = np.zeros(PARAM_SIZE)
     for k, v in values.items():
@@ -258,7 +286,7 @@ class World:
 
     def __init__(self, spline_points, tri_v, tri_surf, collision_v, collision_surf, target_per_cell=8, max_cell_span=64,
                  fine_grid=True, fine_cell_size=1.0, fine_margin_m=100.0, road_mesh=None, rm_cell=2.0,
-                 course_edges=None, course_markers=None, course_zones=None):
+                 course_edges=None, course_markers=None, course_zones=None, collision_grip=None):
         n = len(spline_points)
         self.sp_pos = np.array([p.position for p in spline_points], dtype=np.float64)
         self.sp_radius = np.array([p.radius for p in spline_points], dtype=np.float64)
@@ -306,7 +334,8 @@ class World:
         # 0 none; build_zones.py), a 9th the same for the stretch of a long corner the tail has to
         # stay out the whole way (build_zones.held_side_per_point), a 10th which way the line turns
         # over the next TURN_WINDOW_M (+1 / -1 as the slip angle's sign in a drift through it; 0 =
-        # less than TURN_MIN_DEG: straight; drift_env's weave penalty).
+        # less than TURN_MIN_DEG: straight; drift_env's weave penalty), an 11th the line's signed
+        # curvature (signed_curvature: + = turning toward + cross-track; drift_env path_progress).
         self.course_rows = 0 if course_edges is None else len(course_edges)
         if course_edges is not None and len(course_edges) == n:
             on_straight = np.zeros(n)
@@ -328,9 +357,10 @@ class World:
             edges = np.asarray(course_edges, dtype=np.float64)[:, :6]
             from build_zones import held_side_per_point
             held_side = held_side_per_point(edges[:, 2:4], edges[:, 4:6])
-            self.co = np.ascontiguousarray(np.c_[edges, on_straight, zone_side, held_side, self.turn_side()])
+            self.co = np.ascontiguousarray(np.c_[edges, on_straight, zone_side, held_side, self.turn_side(),
+                                                    self.signed_curvature()])
         else:
-            self.co = np.zeros((1, 10))
+            self.co = np.zeros((1, 11))
         if course_markers is not None and len(course_markers) > 0:
             self.mk = np.ascontiguousarray(course_markers, dtype=np.float64)
         else:
@@ -346,6 +376,12 @@ class World:
         self.tri_v = np.ascontiguousarray(np.concatenate([np.asarray(tri_v, dtype=np.float64).reshape(-1, 3, 3),
                                                           np.asarray(collision_v, dtype=np.float64).reshape(-1, 3, 3)]))
         self.tri_surf = np.ascontiguousarray(np.concatenate([tri_surf, collision_surf]), dtype=np.int8)
+        # each triangle's grip (SurfaceGrip): the sensors' 1, the collision triangles' from
+        # <track>_collision_grip.csv.gz (1 without it)
+        grip = np.ones(len(self.tri_surf))
+        if collision_grip is not None and len(collision_grip) == len(collision_surf):
+            grip[self.n_sensor:] = collision_grip
+        self.tri_grip = np.ascontiguousarray(grip, dtype=np.float64)
         if fine_grid:
             # TRAINING GRID. The plugin's grids (fine_grid=False, roughly: the plugin sizes its
             # sensor and collision grids separately) size their cells from the whole mesh's
@@ -395,6 +431,26 @@ class World:
             out[i] = 0.0 if abs(turned) < min_deg else math.copysign(1.0, turned)
         return out
 
+    def signed_curvature(self, window_m=15.0):
+        """Per spline point: the line's heading change per metre over window_m centred on it (round
+        the loop), + where it turns toward + cross-track (the side M_CTE counts as +). A path
+        n metres to that side of the line is (1 - k n) metres long per metre of the line."""
+        xz = self.sp_pos[:, [0, 2]]
+        step = np.roll(xz, -1, axis=0) - xz
+        heading = np.arctan2(step[:, 1], step[:, 0])
+        turn = np.diff(np.r_[heading, heading[0]])
+        turn = (turn + math.pi) % (2.0 * math.pi) - math.pi
+        lengths = np.asarray(self.sp_length, dtype=np.float64)
+        arc = np.r_[0.0, np.cumsum(lengths[:-1])]
+        lap = float(lengths.sum())
+        cum = np.r_[0.0, np.cumsum(turn)]
+        knots = np.r_[arc, lap]
+
+        def heading_at(a):
+            laps = np.floor(a / lap)
+            return np.interp(a - laps * lap, knots, cum) + laps * cum[-1]
+        return (heading_at(arc + 0.5 * window_m) - heading_at(arc - 0.5 * window_m)) / window_m
+
     def sensor_triangles(self):
         """(vertices, surface codes) of the sensors' triangles."""
         return self.tri_v[:self.n_sensor], self.tri_surf[:self.n_sensor]
@@ -405,7 +461,7 @@ class World:
                 self.sp_cum, self.tri_v, self.tri_surf, self.grid_min, self.cell_size, self.dims,
                 self.cell_start, self.cell_items,
                 self.rm_pos, self.rm_min, self.rm_cell, self.rm_dims, self.rm_start, self.rm_items,
-                self.co, self.mk)
+                self.co, self.mk, self.tri_grip)
 
     def ray_arrays(self):
         """Just the triangle grid, as raycast() takes it."""
@@ -438,6 +494,15 @@ def load_world(tracks_dir, fine_grid=True, track=None, fine_margin_m=100.0, fine
         tris.append((df.iloc[:, :9].to_numpy(dtype=np.float64).reshape(-1, 3, 3),
                      df.iloc[:, 9].map(SURFACE_CODES).to_numpy(dtype=np.int8)))
     (v, surf), (collision_v, collision_surf) = tris
+    collision_grip = None
+    grip_path = tf.path(data, 'collision_grip', track or tf.TRACK)
+    if os.path.exists(grip_path):
+        collision_grip = pd.read_csv(grip_path)['Grip'].to_numpy(dtype=np.float64)
+        if len(collision_grip) != len(collision_surf):
+            print(f"WARNING: {grip_path} has {len(collision_grip)} rows, the collision file "
+                  f"{len(collision_surf)}: made from different track files, so every surface reads 1 "
+                  "(run setup_track.py again).", file=sys.stderr)
+            collision_grip = None
     road_mesh = None
     road_mesh_path = tf.path(data, 'road_mesh', track or tf.TRACK)
     if os.path.exists(road_mesh_path):
@@ -457,7 +522,8 @@ def load_world(tracks_dir, fine_grid=True, track=None, fine_margin_m=100.0, fine
         course_zones = pd.read_csv(zones_path)[['Side', 'FirstPointId', 'LastPointId']].to_numpy(dtype=np.float64)
     return World(points, v, surf, collision_v, collision_surf, fine_grid=fine_grid, fine_margin_m=fine_margin_m,
                  fine_cell_size=fine_cell_size, rm_cell=rm_cell, road_mesh=road_mesh,
-                 course_edges=course_edges, course_markers=course_markers, course_zones=course_zones)
+                 course_edges=course_edges, course_markers=course_markers, course_zones=course_zones,
+                 collision_grip=collision_grip)
 
 
 def require_course(world, tracks_dir, track=None):
@@ -689,6 +755,29 @@ def surface_below(x, oy, z, max_distance, tri_v, tri_surf, gmin, cell_size, dims
     return SURF_NONE
 
 
+@njit(cache=True)
+def ground_grip(x, oy, z, max_distance, tri_v, tri_surf, tri_grip, gmin, cell_size, dims, cell_start, cell_items):
+    """The grip (tri_grip) of the ground below (x, oy, z), found as ground_below finds it (walls
+    stepped through, cracks bridged as in surface_below); -1 when there is no ground."""
+    for k in range(5):
+        dx = CRACK_PROBE_M if k == 1 else (-CRACK_PROBE_M if k == 2 else 0.0)
+        dz = CRACK_PROBE_M if k == 3 else (-CRACK_PROBE_M if k == 4 else 0.0)
+        ray_y = oy
+        left = max_distance
+        for _ in range(12):
+            d, idx = raycast_index(x + dx, ray_y, z + dz, 0.0, -1.0, 0.0, left, tri_v, tri_surf, gmin, cell_size,
+                                   dims, cell_start, cell_items, 1)
+            if d < 0.0:
+                break
+            if tri_surf[idx] != SURF_WALL:
+                return tri_grip[idx]
+            ray_y -= d + 0.001
+            left -= d + 0.001
+            if left <= 0.0:
+                break
+    return -1.0
+
+
 N_OUTLINE = 8
 
 
@@ -715,9 +804,9 @@ def _outline_point(i, front, rear, half):
 
 
 @njit(cache=True)
-def raycast(ox, oy, oz, dx, dy, dz, max_distance, tri_v, tri_surf, gmin, cell_size, dims,
+def raycast_index(ox, oy, oz, dx, dy, dz, max_distance, tri_v, tri_surf, gmin, cell_size, dims,
             cell_start, cell_items, which):
-    """Returns (distance, surface_code); distance < 0 means no hit within max_distance. which:
+    """Returns (distance, triangle index); distance < 0 (and index -1) means no hit within max_distance. which:
     0 = the sensors' triangles, 1 = the collision triangles (what the game collides with), 2 = only
     the walls among the collision triangles (the contact pins: a rise in the road just ahead must
     not hide a low wall behind it)."""
@@ -768,7 +857,7 @@ def raycast(ox, oy, oz, dx, dy, dz, max_distance, tri_v, tri_surf, gmin, cell_si
     d2 = dims[2]
 
     best_t = -1.0
-    best_surface = SURF_NONE
+    best_idx = -1
     eps = 1e-6
     guard = 0
     while guard < 100000:
@@ -801,30 +890,41 @@ def raycast(ox, oy, oz, dx, dy, dz, max_distance, tri_v, tri_surf, gmin, cell_si
             t = f * (e2x * qx + e2y * qy + e2z * qz)
             if t > eps and t <= max_distance and (best_t < 0.0 or t < best_t):
                 best_t = t
-                best_surface = tri_surf[idx]
+                best_idx = idx
 
         next_boundary = min(tmx, tmy, tmz)
         if best_t >= 0.0 and best_t <= next_boundary:
-            return best_t, best_surface
+            return best_t, best_idx
         if next_boundary > max_distance:
-            return best_t, best_surface
+            return best_t, best_idx
         # first axis holding the minimum (x, then y, then z) - same tie-break as list.index(min)
         if tmx <= tmy and tmx <= tmz:
             cx += stx
             if not (0 <= cx < dims[0]):
-                return best_t, best_surface
+                return best_t, best_idx
             tmx += tdx
         elif tmy <= tmz:
             cy += sty
             if not (0 <= cy < dims[1]):
-                return best_t, best_surface
+                return best_t, best_idx
             tmy += tdy
         else:
             cz += stz
             if not (0 <= cz < dims[2]):
-                return best_t, best_surface
+                return best_t, best_idx
             tmz += tdz
-    return best_t, best_surface
+    return best_t, best_idx
+
+
+@njit(cache=True)
+def raycast(ox, oy, oz, dx, dy, dz, max_distance, tri_v, tri_surf, gmin, cell_size, dims,
+            cell_start, cell_items, which):
+    """Returns (distance, surface_code); distance < 0 means no hit within max_distance (raycast_index)."""
+    t, idx = raycast_index(ox, oy, oz, dx, dy, dz, max_distance, tri_v, tri_surf, gmin, cell_size, dims,
+                           cell_start, cell_items, which)
+    if idx < 0:
+        return t, SURF_NONE
+    return t, tri_surf[idx]
 
 
 @njit(cache=True)
@@ -842,10 +942,40 @@ def rear_sliding_grip(s):
 
 
 @njit(cache=True)
-def _lateral_force_within(slip_angle, peak_force, peak_slip_angle_rad, capacity):
+def _tire_curve(slip_mag, peak_slip_angle_rad, round_curve):
+    """How much of its peak force an axle gives at slip angle slip_mag (0 - 1): a straight line up
+    to peak_slip_angle_rad, or with round_curve (RoundTireCurve) the brush (Fiala) curve, which
+    starts three times as steep and reaches full sliding at peak_slip_angle_rad:
+    3x - 3x^2 + x^3, x = tan(slip) / tan(full sliding)."""
+    if slip_mag >= peak_slip_angle_rad:
+        return 1.0
+    if round_curve:
+        x = math.tan(slip_mag) / math.tan(peak_slip_angle_rad)
+        return x * (3.0 - 3.0 * x + x * x)
+    return slip_mag / peak_slip_angle_rad
+
+
+@njit(cache=True)
+def tire_curve_angles(p):
+    """(front, rear) slip angle where each axle's force reaches its peak: the tyres' friction limit
+    angle, plus with RoundTireCurve FLEX x the static load on one of its tires."""
+    front = p[P_FRONT_PEAK_SLIP_RAD]
+    rear = p[P_REAR_PEAK_SLIP_RAD]
+    if p[P_DR_FRONT_PEAK_SLIP_SCALE] > 0.0:
+        front *= p[P_DR_FRONT_PEAK_SLIP_SCALE]
+    if p[P_DR_REAR_PEAK_SLIP_SCALE] > 0.0:
+        rear *= p[P_DR_REAR_PEAK_SLIP_SCALE]
+    if p[P_EXT_ROUND_TIRE_CURVE] > 0.5:
+        front += math.radians(p[P_FRONT_TIRE_FLEX] * 0.5 * p[P_FRONT_STATIC_LOAD_N])
+        rear += math.radians(p[P_REAR_TIRE_FLEX] * 0.5 * p[P_REAR_STATIC_LOAD_N])
+    return front, rear
+
+
+@njit(cache=True)
+def _lateral_force_within(slip_angle, peak_force, peak_slip_angle_rad, capacity, round_curve):
     """Sideways force of an axle that rises with slip angle as _lateral_tire_force does and stops at
     `capacity`: what the friction circle leaves after the force along the car. Opposes the slip."""
-    force_mag = min(peak_force * (abs(slip_angle) / peak_slip_angle_rad), capacity)
+    force_mag = min(peak_force * _tire_curve(abs(slip_angle), peak_slip_angle_rad, round_curve), capacity)
     if slip_angle > 0.0:
         return -force_mag
     if slip_angle < 0.0:
@@ -854,8 +984,10 @@ def _lateral_force_within(slip_angle, peak_force, peak_slip_angle_rad, capacity)
 
 
 @njit(cache=True)
-def _lateral_tire_force(slip_angle, peak_friction, static_load_n, peak_slip_angle_rad, sliding_grip):
-    """Sideways force of one axle: rises linearly to its peak at peak_slip_angle_rad, then falls
+def _lateral_tire_force(slip_angle, peak_friction, static_load_n, peak_slip_angle_rad, sliding_grip,
+                        round_curve):
+    """Sideways force of one axle: rises to its peak at peak_slip_angle_rad (linearly, or along the
+    brush curve with round_curve: _tire_curve), then falls
     linearly to sliding_grip x peak at twice that angle and stays there. sliding_grip = 1 is the
     flat-topped curve the model had at first (bit for bit: the force is peak_force itself).
 
@@ -867,7 +999,7 @@ def _lateral_tire_force(slip_angle, peak_friction, static_load_n, peak_slip_angl
     peak_force = peak_friction * static_load_n
     mag = abs(slip_angle)
     if mag < peak_slip_angle_rad:
-        force_mag = peak_force * (mag / peak_slip_angle_rad)
+        force_mag = peak_force * _tire_curve(mag, peak_slip_angle_rad, round_curve)
     elif sliding_grip >= 1.0:
         force_mag = peak_force
     else:
@@ -1011,7 +1143,7 @@ def nearest_point_correct(raw_id, prev_id, prev_streak, own_speed, dt, px, py, p
 def step(s, act_steer, act_speed, act_brake, dt_s, p, diag, mid,
          sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
          tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-         rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk):
+         rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip):
     """One whole tick = step_pre + step_post. Advances state row `s` in place and fills `diag`.
     act_steer/act_speed are the policy's first two actions, in [-1, 1]; act_brake its third, in
     [0, 1] (0 for a policy with two)."""
@@ -1019,7 +1151,7 @@ def step(s, act_steer, act_speed, act_brake, dt_s, p, diag, mid,
     step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
               sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
               tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-              rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk)
+              rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip)
 
 
 @njit(cache=True)
@@ -1085,6 +1217,34 @@ def step_pre(s, dt_s, p, mid, sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp
 
 @njit(cache=True)
 def axle_friction(p, s):
+    """(front, rear) peak friction of each axle this tick (_axle_friction_model), times the grip of
+    the ground under each axle (SurfaceGrip) and the hidden domain randomisation scales
+    (DR_*_GRIP_SCALE; 0 = 1)."""
+    mu_f, mu_r = _axle_friction_model(p, s)
+    if p[P_EXT_SURFACE_GRIP] > 0.5:
+        mu_f *= surface_grip_scale(p, s[S_GRIP_F])
+        mu_r *= surface_grip_scale(p, s[S_GRIP_R])
+    if p[P_DR_FRONT_GRIP_SCALE] > 0.0:
+        mu_f *= p[P_DR_FRONT_GRIP_SCALE]
+    if p[P_DR_REAR_GRIP_SCALE] > 0.0:
+        mu_r *= p[P_DR_REAR_GRIP_SCALE]
+    return mu_f, mu_r
+
+
+@njit(cache=True)
+def surface_grip_scale(p, grip):
+    """What SurfaceGrip multiplies an axle's friction by on ground of this grip (0 = not known: 1),
+    its difference from the road stretched by SURFACE_GRIP_DEV_SCALE (0 = 1)."""
+    if grip <= 0.0:
+        return 1.0
+    k = p[P_SURFACE_GRIP_DEV_SCALE]
+    if k > 0.0:
+        grip = 1.0 + (grip - 1.0) * k
+    return max(grip, 0.05)
+
+
+@njit(cache=True)
+def _axle_friction_model(p, s):
     """(front, rear) peak friction of each axle this tick. The tyre file's peak (DY0) is the grip
     of a tire with no load on it; each kN on a tire takes DY1 off (EnableTireLoadSensitivity).
     An axle's two tires share its load evenly at rest; cornering moves
@@ -1142,7 +1302,7 @@ def engine_force(p, speed_ms):
 def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
               sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd, sp_cum,
               tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
-              rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk):
+              rm_pos, rm_min, rm_cell, rm_dims, rm_start, rm_items, co, mk, tri_grip):
     """The rest of the tick: forward speed, lateral dynamics, recovery, integration, sensing."""
     px, py, pz = s[S_X], s[S_Y], s[S_Z]
     heading = s[S_HEADING]
@@ -1158,6 +1318,8 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
     np_glitch = mid[M_NP_GLITCH] > 0.5
     dt_s = mid[M_DT]
     mu_f, mu_r = axle_friction(p, s)     # each axle's peak friction this tick (load sensitivity)
+    curve_f, curve_r = tire_curve_angles(p)
+    round_curve = p[P_EXT_ROUND_TIRE_CURVE] > 0.5
 
     # --- forward speed ---
     # The speed action is the target speed as a fraction of MaxSpeed (-1 => stop, +1 =>
@@ -1174,6 +1336,9 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
     # sideways grip, sqrt(peak^2 - F_x^2) is. Lift, and a sliding rear axle grips at its peak;
     # full throttle leaves it RearSlidingGrip x the peak. A human's car on this course, rear
     # sliding at 20 - 60 deg: 1.26 x its load sideways with no wheelspin, 0.54 at full throttle.
+    # RearSpinGripShare shrinks the whole circle while the throttle spins the tires: an E36 in the
+    # game, rear sliding 25 - 60 deg at full throttle, has 0.90 - 1.0 of the total rear grip this
+    # model gives it (0.89 - 1.02 on two tracks; forces from its recorded motion, per static rear load).
     #
     # The brake action (a third output): braking WITH the throttle, the way a drifter
     # scrubs off speed to hold a gap without giving up the angle. It works the front axle only -
@@ -1209,8 +1374,7 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
         t_vx = max(prev_own, p[P_MIN_SLIP_SPEED_MS])
         t_steer = s[S_LAST_STEER]
         t_front_slip = math.atan2(s[S_LATV] + p[P_DIST_CG_FRONT_M] * s[S_YAW], t_vx) - t_steer
-        t_fy_f = _lateral_tire_force(t_front_slip, mu_f, front_load,
-                                     p[P_FRONT_PEAK_SLIP_RAD], 1.0)
+        t_fy_f = _lateral_tire_force(t_front_slip, mu_f, front_load, curve_f, 1.0, round_curve)
         t_rear_peak = mu_r * rear_load
         front_along = -t_fy_f * math.sin(t_steer)
         slide_loss = s[S_LATV] * s[S_YAW]
@@ -1229,6 +1393,15 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
             to_limit = t_mass * ((s[S_MAX_SPEED] - prev_own) / dt_s - slide_loss) - front_along - front_brake_fx
             rear_fx = max(0.0, min(rear_fx, to_limit))
             front_fx = front_brake_fx
+            # RearSpinGripShare: the circle shrinks toward that share of the peak with the share of
+            # the full-throttle thrust the tires are driven with (no shrinking for thrust the engine
+            # or the speed limit holds back: those tires are not spinning)
+            spin_share = p[P_REAR_SPIN_GRIP_SHARE]
+            full_fx = t_rear_peak * math.sqrt(max(0.0, 1.0 - grip_at_full_throttle * grip_at_full_throttle))
+            if spin_share > 0.0 and spin_share < 1.0 and full_fx > 1e-6:
+                spun = 1.0 - (1.0 - spin_share) * min(1.0, rear_fx / full_fx)
+                t_rear_peak *= spun
+                rear_fx *= spun
         else:
             brake_force = -act_speed * p[P_MAX_LONGITUDINAL_DECEL_MS2] * t_mass
             rear_fx = -min(rear_share * brake_force, t_rear_peak)
@@ -1275,10 +1448,9 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
         t_steer = s[S_LAST_STEER]
         t_front_slip = math.atan2(s[S_LATV] + p[P_DIST_CG_FRONT_M] * s[S_YAW], t_vx) - t_steer
         t_rear_slip = math.atan2(s[S_LATV] - p[P_DIST_CG_REAR_M] * s[S_YAW], t_vx)
-        t_fy_f = _lateral_tire_force(t_front_slip, mu_f, p[P_FRONT_STATIC_LOAD_N],
-                                     p[P_FRONT_PEAK_SLIP_RAD], 1.0)
-        t_fy_r = _lateral_tire_force(t_rear_slip, mu_r, p[P_REAR_STATIC_LOAD_N],
-                                     p[P_REAR_PEAK_SLIP_RAD], rear_sliding_grip(s))
+        t_fy_f = _lateral_tire_force(t_front_slip, mu_f, p[P_FRONT_STATIC_LOAD_N], curve_f, 1.0, round_curve)
+        t_fy_r = _lateral_tire_force(t_rear_slip, mu_r, p[P_REAR_STATIC_LOAD_N], curve_r, rear_sliding_grip(s),
+                                     round_curve)
         t_rear_peak = mu_r * p[P_REAR_STATIC_LOAD_N]
         thrust_max = math.sqrt(max(0.0, t_rear_peak * t_rear_peak - t_fy_r * t_fy_r))
         front_along = -t_fy_f * math.sin(t_steer)
@@ -1336,16 +1508,14 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
         slip_speed = max(body_speed, p[P_MIN_SLIP_SPEED_MS])
         front_slip = math.atan2(run_latv + p[P_DIST_CG_FRONT_M] * run_yaw, slip_speed) - steer_cmd
         rear_slip = math.atan2(run_latv - p[P_DIST_CG_REAR_M] * run_yaw, slip_speed)
-        fy_f = _lateral_tire_force(front_slip, mu_f, front_load,
-                                   p[P_FRONT_PEAK_SLIP_RAD], 1.0)
+        fy_f = _lateral_tire_force(front_slip, mu_f, front_load, curve_f, 1.0, round_curve)
         if front_capacity >= 0.0:
-            fy_f = _lateral_force_within(front_slip, mu_f * front_load,
-                                         p[P_FRONT_PEAK_SLIP_RAD], front_capacity)
+            fy_f = _lateral_force_within(front_slip, mu_f * front_load, curve_f, front_capacity, round_curve)
         rear_fric_used = eff_rear_fric if p[P_ENABLE_FRICTION_ELLIPSE] > 0.5 else mu_r
         rear_peak_used = rear_fric_used * rear_load
-        fy_r = _lateral_tire_force(rear_slip, rear_fric_used, rear_load, p[P_REAR_PEAK_SLIP_RAD], slide_grip)
+        fy_r = _lateral_tire_force(rear_slip, rear_fric_used, rear_load, curve_r, slide_grip, round_curve)
         if rear_capacity >= 0.0:
-            fy_r = _lateral_force_within(rear_slip, rear_peak_force, p[P_REAR_PEAK_SLIP_RAD], rear_capacity)
+            fy_r = _lateral_force_within(rear_slip, rear_peak_force, curve_r, rear_capacity, round_curve)
             rear_peak_used = rear_capacity
 
         yaw_moment = p[P_DIST_CG_FRONT_M] * fy_f * cos_steer - p[P_DIST_CG_REAR_M] * fy_r
@@ -1554,6 +1724,18 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
     # the ground directly under the car (from 3 m above, walls stepped through, cracks bridged).
     surface_under = surface_below(new_x, new_y + 3.0, new_z, 12.0, tri_v, tri_surf, gmin, cell_size, dims,
                                   cell_start, cell_items)
+    if p[P_EXT_SURFACE_GRIP] > 0.5:
+        # SurfaceGrip: the ground under each axle at the new pose, for next tick's friction (the
+        # plugin's UpdateSurfaceGrip); no ground keeps the last
+        hx, hz = math.cos(new_heading), math.sin(new_heading)
+        g = ground_grip(new_x + hx * p[P_DIST_CG_FRONT_M], new_y + 3.0, new_z + hz * p[P_DIST_CG_FRONT_M], 12.0,
+                        tri_v, tri_surf, tri_grip, gmin, cell_size, dims, cell_start, cell_items)
+        if g >= 0.0:
+            s[S_GRIP_F] = g
+        g = ground_grip(new_x - hx * p[P_DIST_CG_REAR_M], new_y + 3.0, new_z - hz * p[P_DIST_CG_REAR_M], 12.0,
+                        tri_v, tri_surf, tri_grip, gmin, cell_size, dims, cell_start, cell_items)
+        if g >= 0.0:
+            s[S_GRIP_R] = g
 
     # --- write state back ---
     s[S_X], s[S_Y], s[S_Z] = new_x, new_y, new_z

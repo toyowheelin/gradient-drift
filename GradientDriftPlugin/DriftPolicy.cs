@@ -53,6 +53,10 @@ public sealed class DriftPolicyCarState
     public float PaceAskedAverageMs;
     public int PaceTicks;
     public float PaceOver;
+    // The history block (DriftPolicy.AppendHistory): past frames of the history inputs, a ring with
+    // HistoryHead at the latest. Null until the first tick.
+    public float[]? History;
+    public int HistoryHead;
 }
 
 // Valid is false when the network produced a non-finite value (the actions are then 0). Brake is
@@ -82,8 +86,11 @@ public sealed class DriftPolicy
     // ("pace_kmh_range") km/h / 50. The newest also read 54, how far over the speed asked of it the
     // car has been driving lately (PaceOver; needs the course's pace reference file).
     // The any-car policies read 55 - 65 as well, what tells this car from another (CarSpec.CarInputs),
-    // and the newest 66, how good a driver to be (the skill, 0 - 1).
-    public const int ObservationSize = 67;
+    // and the newest 66, how good a driver to be (the skill, 0 - 1). A tandem policy reads 67 - 93
+    // as well, the car ahead (ChaseInputs), and carries a residual network added to the actions only
+    // while one is there.
+    public const int ObservationSize = ChaseInputs.Slot + ChaseInputs.Count;
+    public const int ObservationSizeV6 = ChaseInputs.Slot;
     public const int ObservationSizeV5 = 66;
     public const int ObservationSizeV4 = 55;
     public const int ObservationSizeV1 = 46;
@@ -121,7 +128,7 @@ public sealed class DriftPolicy
     public IReadOnlyList<string> Tracks { get; private set; } = Array.Empty<string>();
     public bool TrainedOnGeneratedCourses { get; private set; }
 
-    // How many inputs this policy reads (ObservationSizeV1, V2, V3 or ObservationSize).
+    // How many inputs this policy reads (ObservationSizeV1 ... V6 or ObservationSize).
     public int InputCount { get; }
     public bool ReadsCourseRoom => InputCount > ObservationSizeV1;
     // A policy that reads the pace and was trained with one: the plugin spaces bots by pace
@@ -138,6 +145,23 @@ public sealed class DriftPolicy
     public bool ReadsSkill => InputCount > ObservationSizeV5;
     public float SkillLow { get; private set; } = 1f;
     public float SkillHigh { get; private set; } = 1f;
+    // A tandem policy: reads the car ahead, either as one network trained with chase episodes (a
+    // "chase" block in the file) or through a residual network added to the actions while input
+    // _residualGate is above _residualGateAbove (lead_present). ChasePaceMin: the bottom of the
+    // chase pace in training, a share of PaceLow ("chase.controller.chase_pace_min").
+    public bool ReadsChase => BaseInputCount > ObservationSizeV6 && (_residualWeights != null || _trainedToChase);
+    // A policy that also reads a short history of some of its inputs (a "history" block in the file;
+    // drift_rl/policy.py): after the BaseInputCount inputs come, for f = 1 .. HistoryFrames, the inputs
+    // _historySlots as they were f x _historyEvery ticks ago. The largest block a file may ask for is
+    // MaxHistoryInputs.
+    public const int MaxHistoryInputs = 256;
+    public int HistoryFrames { get; private set; }
+    public int BaseInputCount => InputCount - HistoryFrames * _historySlots.Length;
+    private int[] _historySlots = Array.Empty<int>();
+    private int _historyEvery = 1;
+    private int _historyResetSlot;
+    private bool _trainedToChase;
+    public float ChasePaceMin { get; private set; } = 1f;
     // How long the pace error averages over, seconds ("pace_average_s"; the reward's).
     public float PaceAverageSeconds { get; private set; } = 1f;
     // How many outputs it has (ActionSizeV1 or ActionSize).
@@ -170,6 +194,11 @@ public sealed class DriftPolicy
     private readonly float[][] _weights;
     private readonly float[][] _biases;
     private readonly float[][] _activations;
+    private float[][]? _residualWeights;
+    private float[][]? _residualBiases;
+    private float[][]? _residualActivations;
+    private int _residualGate;
+    private float _residualGateAbove;
 
     // Per spline point, built once at load: direction of travel, the point id each look-ahead
     // distance further on, and the tightest radius within the look-ahead window. Same
@@ -248,36 +277,92 @@ public sealed class DriftPolicy
         }
     }
 
+    // Whether this build can apply a plugin setting a policy file carries (its "plugin_settings"), at that
+    // value. GradientDriftPlugin.ApplyPolicySettings refuses a policy carrying any it cannot: the policy has
+    // never driven a car without it. tests/plugin checks it against the trainer's settings.
+    public static bool CanApplySetting(string name, float value)
+    {
+        return float.IsFinite(value) && name switch
+        {
+            "MaxSteerAngleDeg" => value > 0f && value <= 90f,
+            "WrongWayEntryThresholdDeg" => value > 0f && value <= 180f,
+            "WrongWayEntryTicks" => value >= 1f && value <= 1000f && value == MathF.Round(value),
+            "WrongWayExitSlipDeg" => value > 0f && value <= 180f,
+            "WrongWayExitYawRateDegS" => value > 0f,
+            "EnableRearThrustLimit" => value == 0f || value == 1f,
+            "EnableRearBrakeLimit" => value == 0f || value == 1f,
+            "EnableRearFrictionCircle" => value == 0f || value == 1f,
+            "MaxSteerRateDegS" => value >= 0f,
+            "EnableTireLoadSensitivity" => value == 0f || value == 1f,
+            "FrontTireLoadSensitivityPerKn" => value <= 0f && value > -1f,
+            "RearTireLoadSensitivityPerKn" => value <= 0f && value > -1f,
+            "FrontTrackMeters" => value > 0.5f && value < 3f,
+            "RearTrackMeters" => value > 0.5f && value < 3f,
+            "RollStiffnessFrontShare" => value > 0f && value < 1f,
+            "CgHeightMeters" => value > 0.1f && value < 2f,
+            "ProximityPinHeightOffsetMeters" => value > -0.4f && value < 1f,
+            "DisableBrakes" => value == 0f || value == 1f,
+            "FrontBrakeOnly" => value == 0f || value == 1f,
+            "CarOutlineContact" => value == 0f || value == 1f,
+            "RoundTireCurve" => value == 0f || value == 1f,
+            "RearSpinGripShare" => value > 0f && value <= 1f,
+            "SurfaceGrip" => value == 0f || value == 1f,
+            _ => false,
+        };
+    }
+
     // Returns null, and logs why, on any problem. The caller then leaves the cars to the stock AI.
     public static DriftPolicy? TryLoad(string path, ReadOnlySpan<SplinePoint> points)
     {
-        if (!File.Exists(path))
+        if (!PluginData.Exists(path))
         {
-            Log.Warning("GradientDrift: no policy file at {Path}", Path.GetFullPath(path));
+            Log.Warning("GradientDrift: no policy file at {Path}", PluginData.Describe(path));
             return null;
         }
 
         try
         {
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path));
+            using JsonDocument document = JsonDocument.Parse(PluginData.ReadAllText(path));
             JsonElement root = document.RootElement;
 
             string format = root.GetProperty("format").GetString() ?? "";
             if (format != "drift-policy-v1")
             {
                 Log.Warning("GradientDrift: policy file {Path} has format '{Format}', expected 'drift-policy-v1'",
-                    Path.GetFullPath(path), format);
+                    PluginData.Describe(path), format);
                 return null;
             }
 
-            int obsSize = root.GetProperty("obs_size").GetInt32();
+            int fileObsSize = root.GetProperty("obs_size").GetInt32();
             int actionSize = root.GetProperty("action_size").GetInt32();
-            if ((obsSize != ObservationSize && obsSize != ObservationSizeV5 && obsSize != ObservationSizeV4
+            // a history block: the inputs after the env's own (validated with the block below)
+            int[] historySlots = Array.Empty<int>();
+            int historyFrames = 0, historyEvery = 1, historyResetSlot = 0;
+            if (root.TryGetProperty("history", out JsonElement historyElement) && historyElement.ValueKind == JsonValueKind.Object)
+            {
+                float[] slotValues = ReadFloatArray(historyElement.GetProperty("slots"));
+                historySlots = Array.ConvertAll(slotValues, v => (int)v);
+                historyFrames = historyElement.GetProperty("frames").GetInt32();
+                historyEvery = historyElement.GetProperty("every").GetInt32();
+                historyResetSlot = historyElement.GetProperty("reset_slot").GetInt32();
+                int count = historyFrames * historySlots.Length;
+                int baseSize = fileObsSize - count;
+                if (historyFrames < 1 || historyEvery < 1 || historySlots.Length == 0 || count > MaxHistoryInputs
+                    || baseSize != ObservationSize || historyResetSlot < 0 || historyResetSlot >= baseSize
+                    || Array.Exists(historySlots, j => j < 0 || j >= baseSize))
+                {
+                    Log.Warning("GradientDrift: policy file {Path} has a history block this build cannot run ({Frames} frames of {Slots} inputs every {Every} ticks after {Base} inputs; at most {Max} history inputs after {Size})",
+                        PluginData.Describe(path), historyFrames, historySlots.Length, historyEvery, baseSize, MaxHistoryInputs, ObservationSize);
+                    return null;
+                }
+            }
+            int obsSize = fileObsSize - historyFrames * historySlots.Length;
+            if ((obsSize != ObservationSize && obsSize != ObservationSizeV6 && obsSize != ObservationSizeV5 && obsSize != ObservationSizeV4
                  && obsSize != ObservationSizeV3 && obsSize != ObservationSizeV2 && obsSize != ObservationSizeV1)
                 || (actionSize != ActionSize && actionSize != ActionSizeV1))
             {
-                Log.Warning("GradientDrift: policy file {Path} expects {ObsSize} observations / {ActionSize} actions, this build provides {BuildObs} (or {V5Obs}, {V4Obs}, {V3Obs}, {MidObs} or {OldObs}) / {BuildActions} (or {OldActions})",
-                    Path.GetFullPath(path), obsSize, actionSize, ObservationSize, ObservationSizeV5, ObservationSizeV4, ObservationSizeV3, ObservationSizeV2, ObservationSizeV1, ActionSize, ActionSizeV1);
+                Log.Warning("GradientDrift: policy file {Path} expects {ObsSize} observations / {ActionSize} actions, this build provides {BuildObs} (or {V6Obs}, {V5Obs}, {V4Obs}, {V3Obs}, {MidObs} or {OldObs}) / {BuildActions} (or {OldActions})",
+                    PluginData.Describe(path), obsSize, actionSize, ObservationSize, ObservationSizeV6, ObservationSizeV5, ObservationSizeV4, ObservationSizeV3, ObservationSizeV2, ObservationSizeV1, ActionSize, ActionSizeV1);
                 return null;
             }
 
@@ -293,87 +378,93 @@ public sealed class DriftPolicy
             if (controlMode != "direct")
             {
                 Log.Warning("GradientDrift: policy file {Path} is a '{Mode}' policy; this plugin runs 'direct' policies only (train a new one with drift_rl/train_ppo_gpu.py)",
-                    Path.GetFullPath(path), controlMode);
+                    PluginData.Describe(path), controlMode);
                 return null;
             }
 
-            if (obsMean.Length != obsSize || obsStd.Length != obsSize || lookaheadMeters.Length != LookaheadCount)
+            if (obsMean.Length != fileObsSize || obsStd.Length != fileObsSize || lookaheadMeters.Length != LookaheadCount)
             {
                 Log.Warning("GradientDrift: policy file {Path} has obs_mean/obs_std/lookahead_m of the wrong length",
-                    Path.GetFullPath(path));
+                    PluginData.Describe(path));
                 return null;
             }
-            for (int i = 0; i < obsSize; i++)
+            for (int i = 0; i < fileObsSize; i++)
             {
                 if (!float.IsFinite(obsMean[i]) || !float.IsFinite(obsStd[i]) || obsStd[i] <= 0f)
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a non-finite or non-positive normalisation value at observation {Index}",
-                        Path.GetFullPath(path), i);
+                        PluginData.Describe(path), i);
                     return null;
                 }
             }
 
-            JsonElement layersElement = root.GetProperty("layers");
-            int layerCount = layersElement.GetArrayLength();
-            var weights = new float[layerCount][];
-            var biases = new float[layerCount][];
-            int inputs = obsSize;
-            int layerIndex = 0;
-            foreach (JsonElement layerElement in layersElement.EnumerateArray())
+            if (!TryReadLayers(path, root.GetProperty("layers"), fileObsSize, "", out float[][] weights, out float[][] biases))
             {
-                string activation = layerElement.GetProperty("activation").GetString() ?? "";
-                string expectedActivation = layerIndex < layerCount - 1 ? "tanh" : "linear";
-                if (activation != expectedActivation)
-                {
-                    Log.Warning("GradientDrift: policy file {Path} layer {Layer} has activation '{Activation}', expected '{Expected}'",
-                        Path.GetFullPath(path), layerIndex, activation, expectedActivation);
-                    return null;
-                }
-
-                float[] bias = ReadFloatArray(layerElement.GetProperty("b"));
-                int outputs = bias.Length;
-                JsonElement weightRows = layerElement.GetProperty("W");
-                if (outputs == 0 || weightRows.GetArrayLength() != outputs)
-                {
-                    Log.Warning("GradientDrift: policy file {Path} layer {Layer} has mismatched W/b sizes",
-                        Path.GetFullPath(path), layerIndex);
-                    return null;
-                }
-
-                var flat = new float[outputs * inputs];
-                int rowIndex = 0;
-                foreach (JsonElement rowElement in weightRows.EnumerateArray())
-                {
-                    if (rowElement.GetArrayLength() != inputs)
-                    {
-                        Log.Warning("GradientDrift: policy file {Path} layer {Layer} row {Row} has {Got} weights, expected {Expected}",
-                            Path.GetFullPath(path), layerIndex, rowIndex, rowElement.GetArrayLength(), inputs);
-                        return null;
-                    }
-                    int column = 0;
-                    foreach (JsonElement value in rowElement.EnumerateArray())
-                    {
-                        flat[rowIndex * inputs + column] = (float)value.GetDouble();
-                        column++;
-                    }
-                    rowIndex++;
-                }
-
-                weights[layerIndex] = flat;
-                biases[layerIndex] = bias;
-                inputs = outputs;
-                layerIndex++;
+                return null;
             }
+            int layerCount = weights.Length;
+            int inputs = layerCount > 0 ? biases[layerCount - 1].Length : 0;
 
             if (layerCount == 0 || inputs != actionSize)
             {
                 Log.Warning("GradientDrift: policy file {Path} does not end in a {ActionSize}-unit layer",
-                    Path.GetFullPath(path), actionSize);
+                    PluginData.Describe(path), actionSize);
                 return null;
             }
+            float[][]? residualWeights = null;
+            float[][]? residualBiases = null;
+            int residualGate = -1;
+            float residualGateAbove = 0.5f;
+            if (root.TryGetProperty("residual", out JsonElement residualElement))
+            {
+                residualGate = residualElement.GetProperty("gate_input").GetInt32();
+                residualGateAbove = (float)residualElement.GetProperty("gate_above").GetDouble();
+                if (residualGate != ChaseInputs.Slot || obsSize != ObservationSize || historyFrames > 0)
+                {
+                    Log.Warning("GradientDrift: policy file {Path} has a residual network gated by input {Gate} of {ObsSize}; this build runs one gated by the car ahead (input {Slot} of {BuildObs})",
+                        PluginData.Describe(path), residualGate, obsSize, ChaseInputs.Slot, ObservationSize);
+                    return null;
+                }
+                if (!TryReadLayers(path, residualElement.GetProperty("layers"), obsSize, "residual ", out residualWeights, out residualBiases))
+                {
+                    return null;
+                }
+                if (residualWeights.Length == 0 || residualBiases[^1].Length != actionSize)
+                {
+                    Log.Warning("GradientDrift: policy file {Path} residual network does not end in a {ActionSize}-unit layer",
+                        PluginData.Describe(path), actionSize);
+                    return null;
+                }
+            }
 
-            var policy = new DriftPolicy(Path.GetFullPath(path), track, trainedTicks, obsSize, actionSize, obsMean, obsStd, obsClip,
+            var policy = new DriftPolicy(PluginData.Describe(path), track, trainedTicks, fileObsSize, actionSize, obsMean, obsStd, obsClip,
                 weights, biases, lookaheadMeters, minRadiusWindowMeters, points);
+            policy.HistoryFrames = historyFrames;
+            policy._historySlots = historySlots;
+            policy._historyEvery = historyEvery;
+            policy._historyResetSlot = historyResetSlot;
+            if (residualWeights != null && residualBiases != null)
+            {
+                policy._residualWeights = residualWeights;
+                policy._residualBiases = residualBiases;
+                policy._residualActivations = new float[residualBiases.Length + 1][];
+                policy._residualActivations[0] = policy._activations[0];
+                for (int layer = 0; layer < residualBiases.Length; layer++)
+                {
+                    policy._residualActivations[layer + 1] = new float[residualBiases[layer].Length];
+                }
+                policy._residualGate = residualGate;
+                policy._residualGateAbove = residualGateAbove;
+            }
+            if (root.TryGetProperty("chase", out JsonElement chaseElement) && chaseElement.ValueKind == JsonValueKind.Object)
+            {
+                policy._trainedToChase = obsSize == ObservationSize;
+                if (chaseElement.TryGetProperty("controller", out JsonElement controllerElement)
+                    && controllerElement.TryGetProperty("chase_pace_min", out JsonElement paceMinElement))
+                {
+                    policy.ChasePaceMin = Math.Clamp((float)paceMinElement.GetDouble(), 0.1f, 1f);
+                }
+            }
             bool fractionPaces = root.TryGetProperty("pace_fraction_range", out JsonElement paceRangeElement);
             if (fractionPaces || root.TryGetProperty("pace_kmh_range", out paceRangeElement))
             {
@@ -382,7 +473,7 @@ public sealed class DriftPolicy
                     || (fractionPaces && !(paceRange[1] <= 1.5f)))
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a pace range that is not [low, high] with 0 < low <= high",
-                        Path.GetFullPath(path));
+                        PluginData.Describe(path));
                     return null;
                 }
                 policy.PaceLow = paceRange[0];
@@ -401,7 +492,7 @@ public sealed class DriftPolicy
                 float paceAverage = (float)paceAverageElement.GetDouble();
                 if (!(paceAverage > 0f))
                 {
-                    Log.Warning("GradientDrift: policy file {Path} has a pace_average_s that is not above 0", Path.GetFullPath(path));
+                    Log.Warning("GradientDrift: policy file {Path} has a pace_average_s that is not above 0", PluginData.Describe(path));
                     return null;
                 }
                 policy.PaceAverageSeconds = paceAverage;
@@ -409,7 +500,7 @@ public sealed class DriftPolicy
             if (obsSize > ObservationSizeV3 && policy.PaceHigh > 0f && !policy.PaceIsFraction)
             {
                 Log.Warning("GradientDrift: policy file {Path} reads the pace error but its paces are not fractions (pace_fraction_range)",
-                    Path.GetFullPath(path));
+                    PluginData.Describe(path));
                 return null;
             }
             if (obsSize > ObservationSizeV4)
@@ -420,7 +511,7 @@ public sealed class DriftPolicy
                     || !(lockElement.GetDouble() > 0.0))
                 {
                     Log.Warning("GradientDrift: policy file {Path} reads the car inputs but has no cars.drift_steer_lock_deg",
-                        Path.GetFullPath(path));
+                        PluginData.Describe(path));
                     return null;
                 }
                 policy.DriftSteerLockDeg = (float)lockElement.GetDouble();
@@ -430,7 +521,7 @@ public sealed class DriftPolicy
                 float[] skillRange = ReadFloatArray(skillElement);
                 if (skillRange.Length != 2 || !(skillRange[0] >= 0f) || !(skillRange[0] <= skillRange[1]) || !(skillRange[1] <= 1f))
                 {
-                    Log.Warning("GradientDrift: policy file {Path} has a skill_range that is not [low, high] within 0 - 1", Path.GetFullPath(path));
+                    Log.Warning("GradientDrift: policy file {Path} has a skill_range that is not [low, high] within 0 - 1", PluginData.Describe(path));
                     return null;
                 }
                 policy.SkillLow = skillRange[0];
@@ -442,7 +533,7 @@ public sealed class DriftPolicy
                 if (gripRange.Length != 2 || !(gripRange[0] > 0f) || !(gripRange[0] <= gripRange[1]) || !(gripRange[1] <= 1f))
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a rear_sliding_grip_range that is not [low, high] with 0 < low <= high <= 1",
-                        Path.GetFullPath(path));
+                        PluginData.Describe(path));
                     return null;
                 }
                 policy.RearSlidingGripLow = gripRange[0];
@@ -463,9 +554,66 @@ public sealed class DriftPolicy
         }
         catch (Exception ex)
         {
-            Log.Warning(ex, "GradientDrift: failed to read policy file {Path}", Path.GetFullPath(path));
+            Log.Warning(ex, "GradientDrift: failed to read policy file {Path}", PluginData.Describe(path));
             return null;
         }
+    }
+
+    // The tanh layers and the linear last one of a network on inputCount inputs; false, logged, on any problem.
+    private static bool TryReadLayers(string path, JsonElement layersElement, int inputCount, string what,
+        out float[][] weights, out float[][] biases)
+    {
+        int layerCount = layersElement.GetArrayLength();
+        weights = new float[layerCount][];
+        biases = new float[layerCount][];
+        int inputs = inputCount;
+        int layerIndex = 0;
+        foreach (JsonElement layerElement in layersElement.EnumerateArray())
+        {
+            string activation = layerElement.GetProperty("activation").GetString() ?? "";
+            string expectedActivation = layerIndex < layerCount - 1 ? "tanh" : "linear";
+            if (activation != expectedActivation)
+            {
+                Log.Warning("GradientDrift: policy file {Path} {What}layer {Layer} has activation '{Activation}', expected '{Expected}'",
+                    PluginData.Describe(path), what, layerIndex, activation, expectedActivation);
+                return false;
+            }
+
+            float[] bias = ReadFloatArray(layerElement.GetProperty("b"));
+            int outputs = bias.Length;
+            JsonElement weightRows = layerElement.GetProperty("W");
+            if (outputs == 0 || weightRows.GetArrayLength() != outputs)
+            {
+                Log.Warning("GradientDrift: policy file {Path} {What}layer {Layer} has mismatched W/b sizes",
+                    PluginData.Describe(path), what, layerIndex);
+                return false;
+            }
+
+            var flat = new float[outputs * inputs];
+            int rowIndex = 0;
+            foreach (JsonElement rowElement in weightRows.EnumerateArray())
+            {
+                if (rowElement.GetArrayLength() != inputs)
+                {
+                    Log.Warning("GradientDrift: policy file {Path} {What}layer {Layer} row {Row} has {Got} weights, expected {Expected}",
+                        PluginData.Describe(path), what, layerIndex, rowIndex, rowElement.GetArrayLength(), inputs);
+                    return false;
+                }
+                int column = 0;
+                foreach (JsonElement value in rowElement.EnumerateArray())
+                {
+                    flat[rowIndex * inputs + column] = (float)value.GetDouble();
+                    column++;
+                }
+                rowIndex++;
+            }
+
+            weights[layerIndex] = flat;
+            biases[layerIndex] = bias;
+            inputs = outputs;
+            layerIndex++;
+        }
+        return true;
     }
 
     private static float[] ReadFloatArray(JsonElement element)
@@ -564,6 +712,54 @@ public sealed class DriftPolicy
         obs[SkillSlot] = skill;
     }
 
+    // The history block into obs after the BaseInputCount inputs BuildObservation (and the chase
+    // inputs) wrote, then this tick's frame kept for later ticks: exactly drift_rl/policy.py's
+    // Policy.history_step. On a car's first tick (or its first since a re-teleport) every past
+    // frame is the present one. Call once per tick per car, just before Evaluate.
+    public void AppendHistory(float[] obs, DriftPolicyCarState carState)
+    {
+        if (HistoryFrames == 0)
+        {
+            return;
+        }
+        int n = _historySlots.Length;
+        int length = HistoryFrames * _historyEvery;
+        float[]? history = carState.History;
+        bool fresh = history == null || history.Length != length * n || obs[_historyResetSlot] > 0.5f;
+        if (history == null || history.Length != length * n)
+        {
+            history = new float[length * n];
+            carState.History = history;
+        }
+        if (fresh)
+        {
+            for (int j = 0; j < length; j++)
+            {
+                for (int i = 0; i < n; i++)
+                {
+                    history[j * n + i] = obs[_historySlots[i]];
+                }
+            }
+            carState.HistoryHead = 0;
+        }
+        int head = carState.HistoryHead;
+        int at = BaseInputCount;
+        for (int f = 1; f <= HistoryFrames; f++)
+        {
+            int frame = (head + f * _historyEvery - 1) % length;
+            for (int i = 0; i < n; i++)
+            {
+                obs[at++] = history[frame * n + i];
+            }
+        }
+        head = (head - 1 + length) % length;
+        for (int i = 0; i < n; i++)
+        {
+            history[head * n + i] = obs[_historySlots[i]];
+        }
+        carState.HistoryHead = head;
+    }
+
     // A non-finite input would otherwise propagate through Math.Clamp into the car's state.
     public DriftPolicyAction Evaluate(ReadOnlySpan<float> obs)
     {
@@ -573,27 +769,15 @@ public sealed class DriftPolicy
             input[i] = Math.Clamp((obs[i] - _obsMean[i]) / _obsStd[i], -_obsClip, _obsClip);
         }
 
-        int lastLayer = _weights.Length - 1;
-        for (int layer = 0; layer <= lastLayer; layer++)
+        float[] output = NetworkMath.Forward(_weights, _biases, _activations);
+        if (_residualWeights != null && obs[_residualGate] > _residualGateAbove)
         {
-            float[] layerWeights = _weights[layer];
-            float[] layerBias = _biases[layer];
-            float[] layerInput = _activations[layer];
-            float[] layerOutput = _activations[layer + 1];
-            int inputCount = layerInput.Length;
-            for (int o = 0; o < layerOutput.Length; o++)
+            float[] residual = NetworkMath.Forward(_residualWeights, _residualBiases!, _residualActivations!);
+            for (int o = 0; o < output.Length; o++)
             {
-                float sum = layerBias[o];
-                int rowStart = o * inputCount;
-                for (int i = 0; i < inputCount; i++)
-                {
-                    sum += layerWeights[rowStart + i] * layerInput[i];
-                }
-                layerOutput[o] = layer < lastLayer ? MathF.Tanh(sum) : sum;
+                output[o] += residual[o];
             }
         }
-
-        float[] output = _activations[lastLayer + 1];
         float steer = output[0];
         float speed = output[1];
         float brake = OutputCount > ActionSizeV1 ? output[2] : 0f;

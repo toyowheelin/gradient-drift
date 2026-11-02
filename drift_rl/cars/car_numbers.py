@@ -228,6 +228,8 @@ def car_numbers(folder):
         'rear_load_sensitivity_per_kn': number(rear, 'DY1'),
         'front_peak_slip_deg': number(front, 'FRICTION_LIMIT_ANGLE'),
         'rear_peak_slip_deg': number(rear, 'FRICTION_LIMIT_ANGLE'),
+        'front_tyre_flex': number(front, 'FLEX'),
+        'rear_tyre_flex': number(rear, 'FLEX'),
         'tyre_version': tyre_version,
         'front_ls_expy': number(front, 'LS_EXPY') if tyre_version >= 5 else None,
         'rear_ls_expy': number(rear, 'LS_EXPY') if tyre_version >= 5 else None,
@@ -260,6 +262,7 @@ _CAR_NUMBER_PARAMS = {
     'LAT_REAR_PEAK_FRICTION': 'rear_peak_friction', 'CG_HEIGHT_M': 'cg_height_m',
     'FRONT_TRACK_M': 'front_track_m', 'REAR_TRACK_M': 'rear_track_m',
     'ROLL_STIFFNESS_FRONT_SHARE': 'roll_stiffness_front_share',
+    'FRONT_TIRE_FLEX': 'front_tyre_flex', 'REAR_TIRE_FLEX': 'rear_tyre_flex',
 }
 
 

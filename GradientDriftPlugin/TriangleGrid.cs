@@ -5,16 +5,18 @@ using Serilog;
 
 namespace GradientDriftPlugin;
 
-// Nearest triangle a ray hit: distance along the ray and that triangle's surface.
+// Nearest triangle a ray hit: distance along the ray and that triangle's surface and grip.
 public readonly struct RaycastHit
 {
     public readonly float Distance;
     public readonly SurfaceType Surface;
+    public readonly float Grip;
 
-    public RaycastHit(float distance, SurfaceType surface)
+    public RaycastHit(float distance, SurfaceType surface, float grip = 1f)
     {
         Distance = distance;
         Surface = surface;
+        Grip = grip;
     }
 }
 
@@ -172,6 +174,7 @@ public class TriangleGrid
 
             float bestT = float.PositiveInfinity;
             SurfaceType bestSurface = SurfaceType.None;
+            float bestGrip = 1f;
             bool found = false;
 
             for (int guard = 0; guard < 100000; guard++)
@@ -190,6 +193,7 @@ public class TriangleGrid
                         {
                             bestT = t;
                             bestSurface = tri.Surface;
+                            bestGrip = tri.Grip;
                             found = true;
                         }
                     }
@@ -227,7 +231,7 @@ public class TriangleGrid
                 }
             }
 
-            hit = found ? new RaycastHit(bestT, bestSurface) : default;
+            hit = found ? new RaycastHit(bestT, bestSurface, bestGrip) : default;
             return found;
         }
 

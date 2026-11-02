@@ -3,7 +3,9 @@
 Before a file is changed or replaced its original goes to
 <server>/gradient-drift-setup-backups/<date_time>/<its path>, and that run's manifest.json lists what
 was changed and what was new. undo() puts the originals back and moves the files the run added
-into the same backup folder (under added/), so nothing is ever deleted. Edited files are checked
+into the same backup folder (under added/), so nothing is ever deleted. When the plan keeps the
+plugin's data in its bundle (bundle.py), the data files are packed into it at the end of the run,
+the loose ones going into the backup the same way, so undo puts them back. Edited files are checked
 after editing (the .ini and YAML parsed back, the values read) before anything is written; one
 that fails stops the run with nothing changed.
 """
@@ -14,7 +16,7 @@ import time
 
 from ruamel.yaml import YAML
 
-from . import edits
+from . import bundle, edits
 from .acini import AcIni
 from .server import server_running
 
@@ -165,7 +167,7 @@ def apply_plan(plan, log=print):
     backup = os.path.join(server, BACKUPS, stamp)
     edits_by_file, copies, builds, paces, writes, checks = {}, [], [], [], [], []
     for c in plan.changes:
-        if not c.op:
+        if not c.op or c.op[0] == 'bundle':     # done at the end whenever the plan keeps the data in the bundle
             continue
         if c.op[0] == 'copy':
             copies.append(c)
@@ -256,11 +258,41 @@ def apply_plan(plan, log=print):
             with open(_abs(server, rel), 'w', encoding='utf-8', newline='\n') as f:
                 f.write(text)
             log(f'  wrote   {rel}')
+        if getattr(plan, 'bundle', False):
+            _pack(server, manifest, keep, log)
     finally:
         with open(os.path.join(backup, 'manifest.json'), 'w', encoding='utf-8') as f:
             json.dump(manifest, f, indent=1)
     log(f'  originals kept in {os.path.relpath(backup, server)}')
     return backup
+
+
+def _pack(server, manifest, keep, log):
+    """Every loose data file of the plugin into its bundle (over the bundle's copy: the plugin reads
+    the loose one first, so it is the one in use). A loose file this run added is simply moved in;
+    one that was there before goes into the run's backup first, so undo puts it back."""
+    loose = bundle.loose_files(server)
+    if not loose:
+        return
+    path = _abs(server, bundle.BUNDLE_REL)
+    entries = bundle.read(path) if os.path.exists(path) else {}
+    for rel in loose:
+        with open(_abs(server, rel), 'rb') as f:
+            entries[bundle.entry_name(rel)] = f.read()
+    if bundle.BUNDLE_REL not in manifest['changed'] + manifest['added']:
+        keep(bundle.BUNDLE_REL)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    bundle.write(path, entries)
+    for rel in loose:
+        if rel in manifest['added']:
+            manifest['added'].remove(rel)       # new this run: it lives on in the bundle only
+        elif rel not in manifest['changed']:
+            keep(rel)
+        os.remove(_abs(server, rel))
+        log(f'  packed  {rel} into {bundle.BUNDLE}')
+    cars = _abs(server, f'plugins/{bundle.PLUGIN}/cars')
+    if os.path.isdir(cars) and not os.listdir(cars):
+        os.rmdir(cars)
 
 
 def last_run(server):
@@ -283,6 +315,7 @@ def undo(server, log=print):
     with open(os.path.join(run, 'manifest.json'), encoding='utf-8') as f:
         manifest = json.load(f)
     for rel in manifest['changed']:
+        os.makedirs(os.path.dirname(_abs(server, rel)), exist_ok=True)
         shutil.copy2(os.path.join(run, *rel.split('/')), _abs(server, rel))
         log(f'  restored {rel}')
     for rel in manifest['added']:

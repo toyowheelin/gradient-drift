@@ -70,6 +70,29 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private const float SpacingGain = 2f;
     private const float SpacingEaseSeconds = 4f;
 
+    // LeadPlayers: a bot (or train) with a player close behind it on the line waits for them. Its
+    // pace goes to the top of the range with the player within LeadNearMeters of its tail, down to
+    // the floor as they drop back to LeadFarMeters; further back, or not chasing, spacing as usual.
+    private const float LeadNearMeters = 5f;
+    private const float LeadFarMeters = 40f;
+    private const float LeadEaseSeconds = 1.5f;
+    private const float LeadMinSpeedMs = 5f;
+    private const float CarLengthMeters = 4.5f;
+
+    // ChasePlayers: a bot chases a player who pulls in within ChaseOptInMeters of its nose (default
+    // about 25 ft, the owner's opt-in), until they are ChaseOptOutMeters ahead. Its pace comes from the
+    // Intelligent Driver Model (Treiber, Hennecke, Helbing 2000), the standard car-following law of
+    // traffic simulation, with the constants drift_env trains with (IDM_*): desired gap
+    // s* = ChaseGapMeters + v * ChaseTimeGapSeconds + v * dv / (2 sqrt(IdmAccel * IdmBrake)), the
+    // acceleration it gives turned into a speed ChaseResponseSeconds ahead, and that into the pace,
+    // up to ChasePaceMaxPercent of the policy's top pace.
+    // A tandem policy: how much older than its arrival a player's car status is, about half a ping
+    // (training saw the lead 0.04 - 0.2 s late, drift_env.CHASE_DELAY_S)
+    private const float ChaseLeadLatencyS = 0.05f;
+    private const float IdmAccel = 4f;
+    private const float IdmBrake = 3f;
+    private const float IdmFreeSpeed = 1.5f;
+
     // Telemetry SessionId of a row that carries only the human car (no AI car was out that tick).
     private const byte HumanOnlySessionId = 255;
 
@@ -125,10 +148,30 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private Vector3 _aheadPositionBefore;     // the car in front's position the follower was kept clear of
     private readonly Dictionary<AiState, (Vector3 Position, long TimeMs)> _followerLast = new();
     private readonly List<(DriftCarState State, float Arc)> _spaced = new();
+    private readonly List<float> _playerArcs = new();
+    private readonly List<float> _playerSpeeds = new();     // along the line, m/s, as _playerArcs
+    private readonly List<byte> _playerIds = new();         // their session ids, as _playerArcs
+    // A tandem policy (ReadsChase): each moving player's recent states, by session id, what a bot
+    // chasing them sees (ChaseInputs); times in seconds from _chaseEpochMs.
+    private readonly Dictionary<byte, LeadTrack> _leadTracks = new();
+    // this tick: each spaced bot's session id, and the car ahead it chases (ChasePlayers), if any
+    private readonly Dictionary<DriftCarState, byte> _spacedIds = new();
+    private readonly Dictionary<DriftCarState, (byte LeadId, bool IsBot, float Gap, float LeadSpeed)> _chaseTargets = new();
+    private readonly HashSet<byte> _chaseClaimed = new();
+    private bool _recordBotLeads;
+    private readonly List<(DriftCarState Chaser, int Depth)> _chaseDepths = new();
+    private readonly List<(DriftCarState State, byte LeadId, bool IsBot, float Gap, float LeadSpeed, bool Kept)> _chaseOffers = new();
+    private long _chaseEpochMs = -1;
     private int[] _gapOrder = new int[8];
-    private readonly float[] _observation = new float[DriftPolicy.ObservationSize];
+    private readonly float[] _observation = new float[DriftPolicy.ObservationSize + DriftPolicy.MaxHistoryInputs];
 
     private DriftTelemetry? _telemetry;
+    // EnableScorecard; when it was last written (server ms), and the cars touching this tick.
+    private BotScorecard? _scorecard;
+    private readonly string _trackName;
+    private long _scorecardWrittenMs;
+    private readonly List<(byte SessionId, float X, float Z, float Heading)> _touchBots = new();
+    private readonly List<(byte SessionId, float X, float Z, float Heading)> _touchPlayers = new();
     private long _tickCounter;
     private float _muFront, _muRear;     // each axle's peak friction this tick (AxleFriction)
     // The car being driven this tick, and every car seen so far by model: its own numbers for an
@@ -137,6 +180,11 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private CarSpec _defaultCar;
     private readonly Dictionary<string, CarSpec> _carSpecs = new();
     private readonly float _skill = 1f;           // how good a driver the bots are (BotSkill), for a policy that reads it
+    // Each bot's own style (BotStyles.cs), by session id, worked out the first time it is taken over;
+    // each AI entry's place among the AI entries this tick, and the entry list's DRIVERNAMEs.
+    private readonly Dictionary<byte, BotStyle> _styles = new();
+    private readonly Dictionary<byte, int> _aiEntryOf = new();
+    private readonly string?[] _entryNames;
     private readonly Random _skillRandom = new();
     private int _failedUpdates;
     private readonly BotNames? _botNames;
@@ -154,6 +202,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _entryCarManager = entryCarManager;
         _acServer = acServer;
         _configuration = configuration;
+        if (_configuration.TrainSize > 1)
+        {
+            // retired in v0.3.0: bots form trains by chasing each other
+            Log.Warning("GradientDrift: TrainSize is retired and ignored - bots form tandem trains by chasing each other (ChasePlayers and ChaseBots); take TrainSize out of extra_cfg.yml");
+            _configuration.TrainSize = 1;
+        }
         VerboseLog.On = configuration.VerboseLogging;
         WarnIfOtherAssettoServer();
         _timing = new PluginTiming(configuration.LogTimingIntervalSeconds > 0f || !configuration.VerboseLogging
@@ -167,18 +221,27 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             p => _spline.WorldToSpline(p).PointId);
         _sessionManager = sessionManager;
         _aiParams = serverConfiguration.Extra.AiParams;
+        _entryNames = new string?[serverConfiguration.EntryList.Cars.Count];
+        for (int i = 0; i < _entryNames.Length; i++)
+        {
+            _entryNames[i] = serverConfiguration.EntryList.Cars[i].DriverName?.Trim();
+        }
         (_lapArc, _lapOrder, _lapLength) = LapDistances(spline.Points);
         if (_configuration.HoldBotSpacing && _lapArc == null)
         {
             Log.Warning("GradientDrift: the AI line is not one closed loop - HoldBotSpacing does nothing");
         }
 
+        // the data files below come from GradientDriftPlugin.bundle.zip beside the plugin where there is no loose copy
+        PluginData.Init(Path.GetDirectoryName(GetType().Assembly.Location) ?? "");
         string trackName = Path.GetFileName(serverConfiguration.Server.Track);
+        _trackName = trackName;
         _roadMeshPoints = LoadRoadMesh(trackName + RoadMeshFileSuffix);
         _roadMeshTree = _roadMeshPoints.Length > 0 ? new MeshKdTree(_roadMeshPoints) : null;
 
         TrackTriangle[] sensorTriangles = TrackGeometry.Load(trackName + TrackGeometry.SensorFileSuffix);
-        TrackTriangle[] collisionTriangles = TrackGeometry.Load(trackName + TrackGeometry.CollisionFileSuffix);
+        TrackTriangle[] collisionTriangles = TrackGeometry.Load(trackName + TrackGeometry.CollisionFileSuffix,
+            trackName + TrackGeometry.CollisionGripFileSuffix);
         TriangleGrid? sensorGrid = null;
         if (sensorTriangles.Length > 0 && collisionTriangles.Length > 0)
         {
@@ -190,6 +253,11 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         if (policy != null && !ApplyPolicySettings(policy))
         {
             policy = null;
+        }
+        if (_configuration.SurfaceGrip && !PluginData.Exists(trackName + TrackGeometry.CollisionGripFileSuffix))
+        {
+            Log.Warning("GradientDrift: the policy drives with SurfaceGrip but {Path} is not there - every surface grips 1 (setup writes it with the track's other files)",
+                PluginData.Describe(trackName + TrackGeometry.CollisionGripFileSuffix));
         }
         // the sensors after the policy file's settings (it may set the pins' height)
         if (sensorGrid != null && _collisionGrid != null)
@@ -288,30 +356,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     {
         foreach ((string name, float value) in policy.PluginSettings)
         {
-            bool usable = float.IsFinite(value) && name switch
-            {
-                "MaxSteerAngleDeg" => value > 0f && value <= 90f,
-                "WrongWayEntryThresholdDeg" => value > 0f && value <= 180f,
-                "WrongWayEntryTicks" => value >= 1f && value <= 1000f && value == MathF.Round(value),
-                "WrongWayExitSlipDeg" => value > 0f && value <= 180f,
-                "WrongWayExitYawRateDegS" => value > 0f,
-                "EnableRearThrustLimit" => value == 0f || value == 1f,
-                "EnableRearBrakeLimit" => value == 0f || value == 1f,
-                "EnableRearFrictionCircle" => value == 0f || value == 1f,
-                "MaxSteerRateDegS" => value >= 0f,
-                "EnableTireLoadSensitivity" => value == 0f || value == 1f,
-                "FrontTireLoadSensitivityPerKn" => value <= 0f && value > -1f,
-                "RearTireLoadSensitivityPerKn" => value <= 0f && value > -1f,
-                "FrontTrackMeters" => value > 0.5f && value < 3f,
-                "RearTrackMeters" => value > 0.5f && value < 3f,
-                "RollStiffnessFrontShare" => value > 0f && value < 1f,
-                "CgHeightMeters" => value > 0.1f && value < 2f,
-                "ProximityPinHeightOffsetMeters" => value > -0.4f && value < 1f,
-                "DisableBrakes" => value == 0f || value == 1f,
-                "FrontBrakeOnly" => value == 0f || value == 1f,
-                "CarOutlineContact" => value == 0f || value == 1f,
-                _ => false,
-            };
+            bool usable = DriftPolicy.CanApplySetting(name, value);
             if (!usable)
             {
                 Log.Warning("GradientDrift: the policy was trained with a setting this build cannot apply ({Name} = {Value}) - the stock AI drives",
@@ -330,6 +375,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _configuration.DisableBrakes = false;
         _configuration.FrontBrakeOnly = false;
         _configuration.CarOutlineContact = false;
+        _configuration.RoundTireCurve = false;
+        _configuration.RearSpinGripShare = 1f;
+        _configuration.SurfaceGrip = false;
 
         foreach ((string name, float value) in policy.PluginSettings)
         {
@@ -395,6 +443,15 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 case "CarOutlineContact":
                     _configuration.CarOutlineContact = value == 1f;
                     break;
+                case "RoundTireCurve":
+                    _configuration.RoundTireCurve = value == 1f;
+                    break;
+                case "RearSpinGripShare":
+                    _configuration.RearSpinGripShare = value;
+                    break;
+                case "SurfaceGrip":
+                    _configuration.SurfaceGrip = value == 1f;
+                    break;
             }
             VerboseLog.Information("GradientDrift: {Name} = {Value}, from the policy file", name, value);
         }
@@ -455,14 +512,16 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     }
 
     // The policy has only been asked for paces inside its training range: the setting is held
-    // there, and 0 (or anything not a number) means the top of it, the fastest it was trained
-    // for. In the policy's units: a fraction of the course's flat-out speed (BotPacePercent / 100),
-    // or km/h for gen4.
+    // there. 0 (or anything not a number) means 100% of the reference held inside that range for a
+    // policy whose paces are fractions (a policy trained up to 120% is not asked for its very top,
+    // where it has the least practice), and the top for a gen4 one (km/h). In the policy's units:
+    // a fraction of the course's flat-out speed (BotPacePercent / 100), or km/h for gen4.
     private static float PaceFor(DriftPolicy policy, float configured)
     {
+        float unset = policy.PaceIsFraction ? Math.Clamp(1f, policy.PaceLow, policy.PaceHigh) : policy.PaceHigh;
         float used = float.IsFinite(configured) && configured > 0f
             ? Math.Clamp(configured, policy.PaceLow, policy.PaceHigh)
-            : policy.PaceHigh;
+            : unset;
         float scale = policy.PaceIsFraction ? 100f : 1f;
         string unit = policy.PaceIsFraction ? "% of the course's flat-out speed" : " km/h";
         if (float.IsFinite(configured) && configured > 0f && used != configured)
@@ -540,15 +599,15 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     // need it.
     private static Vector3[] LoadRoadMesh(string path)
     {
-        if (!File.Exists(path))
+        if (!PluginData.Exists(path))
         {
             VerboseLog.Information("GradientDrift: no road mesh file at {Path} (only used where the ground ray finds nothing)",
-                Path.GetFullPath(path));
+                PluginData.Describe(path));
             return Array.Empty<Vector3>();
         }
 
         var points = new List<Vector3>();
-        foreach (string line in File.ReadLines(path).Skip(1))
+        foreach (string line in PluginData.ReadLines(path).Skip(1))
         {
             string[] parts = line.Split(',');
             if (parts.Length == 3
@@ -560,14 +619,21 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             }
         }
 
-        VerboseLog.Information("GradientDrift: loaded road mesh ({Count} points) from {Path}", points.Count, Path.GetFullPath(path));
+        VerboseLog.Information("GradientDrift: loaded road mesh ({Count} points) from {Path}", points.Count, PluginData.Describe(path));
         return points.ToArray();
     }
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        StartScorecard();
         if (_policy == null)
         {
+            if (_scorecard != null)
+            {
+                _scorecard.Note("no usable policy: the stock AI drove all session (the reason is at the top of the server log)");
+                _scorecard.Write(final: true);
+                _scorecard = null;
+            }
             return Task.CompletedTask;
         }
 
@@ -631,6 +697,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         {
             _acServer.Value.Update -= OnUpdate;
         }
+        _sessionManager.SessionChanged -= OnSessionChanged;
+        _scorecard?.Write(final: true);
 
         // Cleared before it is closed, so a tick still running writes nothing rather than to a
         // closed file.
@@ -638,6 +706,104 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _telemetry = null;
         telemetry?.Dispose();
         base.Dispose();
+    }
+
+    // EnableScorecard: a card for the session running now, and a new one each time it changes.
+    private void StartScorecard()
+    {
+        if (!_configuration.EnableScorecard)
+        {
+            return;
+        }
+        string policy = "none";
+        if (_policy != null)
+        {
+            string hash = "";
+            try
+            {
+                using var stream = File.OpenRead(_policy.SourcePath);
+                hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(stream)).ToLowerInvariant()[..12];
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                hash = "unreadable";
+            }
+            policy = $"{Path.GetFileName(_policy.SourcePath)}, {_policy.TrainedTicks} training ticks, sha256 {hash}";
+        }
+        string version = GetType().Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "?";
+        var scorecard = new BotScorecard(_configuration.ScorecardFolder, _trackName, $"{policy}; plugin {version}",
+            _configuration.ChaseGapMeters);
+        scorecard.Start(DescribeSession(_sessionManager.CurrentSession), _sessionManager.ServerTimeMilliseconds);
+        _scorecardWrittenMs = _sessionManager.ServerTimeMilliseconds;
+        _health.OnStuck = scorecard.Stuck;
+        _scorecard = scorecard;
+        _sessionManager.SessionChanged += OnSessionChanged;
+        Log.Information("GradientDrift: scorecards go to {Path}", scorecard.Folder);
+    }
+
+    private static string DescribeSession(SessionState? session) =>
+        session == null ? "session" : $"{session.Configuration.Type} {session.Configuration.Name}".Trim();
+
+    private void OnSessionChanged(SessionManager sender, SessionChangedEventArgs args)
+    {
+        BotScorecard? scorecard = _scorecard;
+        if (scorecard == null)
+        {
+            return;
+        }
+        scorecard.Write(final: true);
+        scorecard.Start(DescribeSession(args.NextSession), sender.ServerTimeMilliseconds);
+        _scorecardWrittenMs = sender.ServerTimeMilliseconds;
+    }
+
+    // EnableScorecard, once a tick: which bots the policy drives touch another car. Outlines as
+    // ChaseInputs has them (the tandem trainer's), every pair of bots and each bot with each
+    // player; pairs further apart than any two outlines can reach are skipped.
+    private void ScoreTouches(BotScorecard scorecard)
+    {
+        const float ReachM = 7f;
+        _touchBots.Clear();
+        _touchPlayers.Clear();
+        foreach (var (sessionId, aiState) in _driven)
+        {
+            if (_cars.TryGetValue(aiState, out DriftCarState? state) && !state.HeldByStock && state.Heading.HasValue)
+            {
+                _touchBots.Add((sessionId, state.Position.X, state.Position.Z, state.Heading.Value));
+            }
+        }
+        if (_touchBots.Count == 0)
+        {
+            return;
+        }
+        foreach (EntryCar car in _entryCarManager.EntryCars)
+        {
+            if (!car.AiControlled && car.Client?.HasSentFirstUpdate == true)
+            {
+                var status = car.Status;
+                _touchPlayers.Add((car.SessionId, status.Position.X, status.Position.Z, status.Rotation.X + MathF.PI / 2f));
+            }
+        }
+        for (int i = 0; i < _touchBots.Count; i++)
+        {
+            var a = _touchBots[i];
+            for (int j = i + 1; j < _touchBots.Count; j++)
+            {
+                var b = _touchBots[j];
+                if (a.SessionId != b.SessionId && MathF.Abs(a.X - b.X) < ReachM && MathF.Abs(a.Z - b.Z) < ReachM
+                    && ChaseInputs.CarsOverlap(a.X, a.Z, a.Heading, b.X, b.Z, b.Heading))
+                {
+                    scorecard.Touching(a.SessionId, b.SessionId, otherIsBot: true);
+                }
+            }
+            foreach (var p in _touchPlayers)
+            {
+                if (MathF.Abs(a.X - p.X) < ReachM && MathF.Abs(a.Z - p.Z) < ReachM
+                    && ChaseInputs.CarsOverlap(a.X, a.Z, a.Heading, p.X, p.Z, p.Heading))
+                {
+                    scorecard.Touching(a.SessionId, p.SessionId, otherIsBot: false);
+                }
+            }
+        }
     }
 
     // Runs on the server's update thread, after the stock AI has moved every car for this tick.
@@ -667,6 +833,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             {
                 _updatesStopped = true;
                 Log.Error("GradientDrift: {Count} tick updates in a row failed - stopped; the stock AI drives", _failedUpdates);
+                _scorecard?.Note($"the plugin stopped at {DateTime.Now:HH:mm:ss} after {_failedUpdates} failed tick updates in a row: the stock AI drove from then on");
+                _scorecard?.Write(final: false);
             }
         }
     }
@@ -697,11 +865,17 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _driven.Clear();
         _trainSlots.Clear();
         int aiEntry = -1;
+        int players = 0;
         foreach (EntryCar car in _entryCarManager.EntryCars)
         {
+            if (!car.AiControlled && car.Client?.HasSentFirstUpdate == true)
+            {
+                players++;
+            }
             if (car.AiMode != AiMode.None)
             {
                 aiEntry++;         // counted whether a player has the slot or not, so trains keep their places
+                _aiEntryOf[car.SessionId] = aiEntry;
             }
             if (!car.AiControlled || car.Client != null)
             {
@@ -720,6 +894,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             }
         }
 
+        _scorecard?.Tick(nowMs, players);
         FormTrains();
         HoldSpacing(policy, dt);
 
@@ -728,6 +903,10 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         {
             UpdateCar(sessionId, aiState, dt, policy, collision, fan, pins, contactPins, in human);
             aiCarsUpdated++;
+            if (_recordBotLeads)
+            {
+                RecordBotLead(sessionId, aiState);
+            }
             if (_followers.Count > 0)
             {
                 RecordLead(aiState, nowMs);
@@ -738,11 +917,22 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         long followStart = PluginTiming.Now();
         foreach (var (sessionId, aiState, lead, place) in _followers)
         {
+            _scorecard?.Following(sessionId, dt);
             Follow(sessionId, aiState, lead, place, nowMs, dt, collision, in human);
             aiCarsUpdated++;
         }
         _timing.Add(PluginTiming.Part.Followers, followStart);
         _health.Check(_driven, nowMs);
+        if (_scorecard != null)
+        {
+            ScoreTouches(_scorecard);
+            if (nowMs - _scorecardWrittenMs >= Math.Max(1f, _configuration.ScorecardWriteMinutes) * 60_000f)
+            {
+                _scorecardWrittenMs = nowMs;
+                BotScorecard scorecard = _scorecard;
+                Task.Run(() => scorecard.Write(final: false));
+            }
+        }
 
         // No AI car out (AssettoServer spawns them only once a player is on the racing line):
         // still log the human car, so a calibration drive near the pits is not lost. SessionId
@@ -789,13 +979,17 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             if (stockVelocity.Length() < 1.0f)
             {
                 _cars.Remove(aiState);
+                _scorecard?.Waiting(sessionId, dt);
                 return;
             }
+            _scorecard?.TakenOver(sessionId);
 
+            BotStyle style = StyleFor(sessionId);
             state = new DriftCarState(aiState.Status.Position, stockVelocity, spawnCounter)
             {
                 RearSlidingGrip = _rearSlidingGrip,
-                Pace = _basePace,
+                Pace = _basePace > 0f ? style.PaceMiddle : 0f,
+                Style = style,
             };
             PlaceInLargestGap(sessionId, state);
             _cars[aiState] = state;
@@ -908,14 +1102,33 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 state.LateralVelocity, state.YawRate, crossTrackError, radius, nearestPointId, lineAngle,
                 aiState.MaxSpeed, state.Policy, heading, state.PreviousPins, dt, state.WrongWayRecovering,
                 _car.MaxSteerAngleRadians, state.RearSlidingGrip, _courseEdges, state.Pace, state.Policy.PaceOver,
-                _car, _configuration.EnableTireLoadSensitivity, _skill);
+                _car, _configuration.EnableTireLoadSensitivity, state.Style.Skill);
+            if (policy.InputCount > DriftPolicy.ObservationSizeV6)
+            {
+                // the car ahead: all 0 unless this bot is chasing a player (ChasePlayers)
+                Array.Clear(_observation, ChaseInputs.Slot, ChaseInputs.Count);
+                if (policy.ReadsChase && state.ChasingPlayer && _lapArc != null && segmentA >= 0 && segmentA < _lapArc.Length
+                    && _leadTracks.TryGetValue(state.ChaseLeadId, out LeadTrack? lead) && lead.Count > 0)
+                {
+                    float arc = _lapArc[segmentA] + segmentT * Vector3.Distance(_spline.Points[segmentA].Position, _spline.Points[segmentB].Position);
+                    float leadAgeS = (_sessionManager.ServerTimeMilliseconds - _chaseEpochMs) / 1000f - lead.Latest.TimeS;
+                    ChaseInputs.Fill(_observation, lead, position.X, position.Z, heading, arc, crossTrackError,
+                        firstTick ? 0f : (state.OwnSpeed ?? 0f), _lapLength, dt, Math.Clamp(leadAgeS + ChaseLeadLatencyS, 0.04f, 0.2f),
+                        ChaseInputs.AskInput(state.Style.ChaseGapMeters), ref state.ChaseLastGap);
+                }
+                else
+                {
+                    state.ChaseLastGap = float.NaN;
+                }
+            }
 
+            policy.AppendHistory(_observation, state.Policy);
             DriftPolicyAction action = policy.Evaluate(_observation);
             _timing.Add(PluginTiming.Part.Network, networkStart);
             float steerAction = action.Valid ? action.Steer : state.Policy.PreviousSteerAction;
             float speedAction = action.Valid ? action.Speed : state.Policy.PreviousSpeedAction;
             float brakeAction = action.Valid ? action.Brake : state.Policy.PreviousBrakeAction;
-            if (policy.ReadsSkill && _skill < 1f)
+            if (policy.ReadsSkill && state.Style.Skill < 1f)
             {
                 (steerAction, speedAction, brakeAction) = HandicapBySkill(state, firstTick, steerAction, speedAction, brakeAction);
             }
@@ -936,6 +1149,11 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
             float previousOwnSpeed = state.OwnSpeed ?? desiredSpeed;
             (_muFront, _muRear) = AxleFriction(state.OwnSpeed ?? 0f, state.YawRate);
+            if (_configuration.SurfaceGrip)
+            {
+                _muFront *= state.FrontSurfaceGrip > 0f ? state.FrontSurfaceGrip : 1f;
+                _muRear *= state.RearSurfaceGrip > 0f ? state.RearSurfaceGrip : 1f;
+            }
             bool pedal = _configuration.EnableRearFrictionCircle;
             if (pedal && _configuration.DisableBrakes)
             {
@@ -1008,6 +1226,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             float yawRate = state.YawRate;
             float lateralVelocity = state.LateralVelocity;
             float frontSlipAngle = 0f, rearSlipAngle = 0f, fyFront = 0f, fyRear = 0f;
+            bool roundCurve = _configuration.RoundTireCurve;
+            (float frontCurveAngle, float rearCurveAngle) = _car.TireCurveAngles(roundCurve);
 
             for (int subStep = 0; subStep < subStepCount; subStep++)
             {
@@ -1015,13 +1235,13 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 rearSlipAngle = MathF.Atan2(lateralVelocity - _car.DistanceCgToRearAxleM * yawRate, slipAngleSpeed);
 
                 fyFront = frontCapacityN >= 0f
-                    ? LateralForceWithin(frontSlipAngle, frontPeakForceN, _car.FrontPeakSlipAngleRadians, frontCapacityN)
+                    ? LateralForceWithin(frontSlipAngle, frontPeakForceN, frontCurveAngle, frontCapacityN, roundCurve)
                     : LateralTireForce(frontSlipAngle, _muFront,
-                        _car.FrontStaticLoadN, _car.FrontPeakSlipAngleRadians, 1f);
+                        _car.FrontStaticLoadN, frontCurveAngle, 1f, roundCurve);
                 fyRear = rearCapacityN >= 0f
-                    ? LateralForceWithin(rearSlipAngle, rearPeakForceN, _car.RearPeakSlipAngleRadians, rearCapacityN)
+                    ? LateralForceWithin(rearSlipAngle, rearPeakForceN, rearCurveAngle, rearCapacityN, roundCurve)
                     : LateralTireForce(rearSlipAngle, effectiveRearPeakFriction,
-                        _car.RearStaticLoadN, _car.RearPeakSlipAngleRadians, state.RearSlidingGrip);
+                        _car.RearStaticLoadN, rearCurveAngle, state.RearSlidingGrip, roundCurve);
 
                 float yawMomentNm = _car.DistanceCgToFrontAxleM * fyFront * cosSteer - _car.DistanceCgToRearAxleM * fyRear;
                 float yawAngularAccel = yawMomentNm / _car.YawInertiaKgM2;
@@ -1244,6 +1464,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
         state.Position = position;
         state.Velocity = velocity;
+        if (_configuration.SurfaceGrip)
+        {
+            long gripStart = PluginTiming.Now();
+            UpdateSurfaceGrip(collision, state, position);
+            _timing.Add(PluginTiming.Part.Sensors, gripStart);
+        }
         // Clients draw the car with its body at the height they are sent, so each car model is
         // sent at its own CG height above the ground (its car file's CG_HEIGHT_M) rather than the
         // one ride height the bot drives and senses at: a low car no longer floats, a tall one
@@ -1337,6 +1563,10 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         state.PreviousPins = pinRays;
         _timing.Add(PluginTiming.Part.Sensors, sensorStart);
 
+        _scorecard?.Driven(sessionId, dt, state.HeldByStock, row.PolicyActive, new Vector2(velocity.X, velocity.Z).Length(),
+            row.SlipAngle, row.WallPushOutM, row.WrongWayRecovering, state.ScoreChaseGap, state.ChaseLeadIsBot);
+        state.ScoreChaseGap = float.NaN;
+
         if (_telemetry != null)
         {
             row.PosX = position.X;
@@ -1373,10 +1603,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float steer = state.Policy.LastSteerCommandRadians;
         float frontSlipAngle = MathF.Atan2(state.LateralVelocity + _car.DistanceCgToFrontAxleM * state.YawRate, slipAngleSpeed) - steer;
         float rearSlipAngle = MathF.Atan2(state.LateralVelocity - _car.DistanceCgToRearAxleM * state.YawRate, slipAngleSpeed);
+        bool roundCurve = _configuration.RoundTireCurve;
+        (float frontCurveAngle, float rearCurveAngle) = _car.TireCurveAngles(roundCurve);
         float fyFront = LateralTireForce(frontSlipAngle, _muFront,
-            _car.FrontStaticLoadN, _car.FrontPeakSlipAngleRadians, 1f);
+            _car.FrontStaticLoadN, frontCurveAngle, 1f, roundCurve);
         float fyRear = LateralTireForce(rearSlipAngle, _muRear,
-            _car.RearStaticLoadN, _car.RearPeakSlipAngleRadians, state.RearSlidingGrip);
+            _car.RearStaticLoadN, rearCurveAngle, state.RearSlidingGrip, roundCurve);
 
         float rearPeakForceN = _muRear * _car.RearStaticLoadN;
         float thrustMaxN = MathF.Sqrt(MathF.Max(0f, rearPeakForceN * rearPeakForceN - fyRear * fyRear));
@@ -1386,7 +1618,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
         float thrustUsedN = float.IsFinite(thrustNeededN) ? Math.Clamp(thrustNeededN, 0f, thrustMaxN) : 0f;
         float rearSidewaysSpeed = MathF.Abs(state.LateralVelocity - _car.DistanceCgToRearAxleM * state.YawRate);
-        rearSpin = MathF.Abs(rearSlipAngle) >= _car.RearPeakSlipAngleRadians && MathF.Abs(fyRear) > 1f
+        rearSpin = MathF.Abs(rearSlipAngle) >= rearCurveAngle && MathF.Abs(fyRear) > 1f
             ? rearSidewaysSpeed * thrustUsedN / MathF.Abs(fyRear)
             : 0f;
 
@@ -1422,7 +1654,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float frontSlipAngle = MathF.Atan2(state.LateralVelocity + _car.DistanceCgToFrontAxleM * state.YawRate, slipAngleSpeed) - steer;
         float rearSlipAngle = MathF.Atan2(state.LateralVelocity - _car.DistanceCgToRearAxleM * state.YawRate, slipAngleSpeed);
         float fyFront = LateralTireForce(frontSlipAngle, _muFront,
-            _car.FrontStaticLoadN, _car.FrontPeakSlipAngleRadians, 1f);
+            _car.FrontStaticLoadN, _car.TireCurveAngles(_configuration.RoundTireCurve).Front, 1f, _configuration.RoundTireCurve);
 
         float rearPeakForceN = _muRear * _car.RearStaticLoadN;
         float frontAlongN = -fyFront * MathF.Sin(steer);
@@ -1435,6 +1667,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
         float rearAlongN;
         float frontBrakeN;
+        float rearCircleN = rearPeakForceN;     // the rear friction circle's radius (RearSpinGripShare)
         if (pedal >= 0f)
         {
             rearAlongN = pedal * rearPeakForceN * MathF.Sqrt(MathF.Max(0f, 1f - state.RearSlidingGrip * state.RearSlidingGrip));
@@ -1445,6 +1678,16 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             float toLimitN = mass * ((maxSpeed - previousOwnSpeed) / dt - slideLoss) - frontAlongN - leftFootBrakeN;
             rearAlongN = MathF.Max(0f, MathF.Min(rearAlongN, toLimitN));
             frontBrakeN = leftFootBrakeN;
+            // RearSpinGripShare: the circle shrinks with the share of full-throttle thrust used
+            // (not for thrust the engine or the speed limit holds back: those tires aren't spinning)
+            float spinShare = _configuration.RearSpinGripShare;
+            float fullAlongN = rearPeakForceN * MathF.Sqrt(MathF.Max(0f, 1f - state.RearSlidingGrip * state.RearSlidingGrip));
+            if (spinShare > 0f && spinShare < 1f && fullAlongN > 1e-6f)
+            {
+                float spun = 1f - (1f - spinShare) * MathF.Min(1f, rearAlongN / fullAlongN);
+                rearCircleN *= spun;
+                rearAlongN *= spun;
+            }
         }
         else
         {
@@ -1458,7 +1701,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             frontBrakeN = MathF.Max(frontBrakeN, -frontPeakForceN);
             frontCapacityN = MathF.Sqrt(MathF.Max(0f, frontPeakForceN * frontPeakForceN - frontBrakeN * frontBrakeN));
         }
-        rearCapacityN = MathF.Sqrt(MathF.Max(0f, rearPeakForceN * rearPeakForceN - rearAlongN * rearAlongN));
+        rearCapacityN = MathF.Sqrt(MathF.Max(0f, rearCircleN * rearCircleN - rearAlongN * rearAlongN));
 
         // A rear axle at the edge of its circle slips lengthwise by (thrust / sideways force)
         // times its sideways slip.
@@ -1471,6 +1714,29 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         return MathF.Max(0f, previousOwnSpeed + (slideLoss + (rearAlongN + frontBrakeN + frontAlongN) / mass) * dt);
     }
 
+    // This bot's style (BotStyles.cs), worked out once per session id and kept through respawns.
+    private BotStyle StyleFor(byte sessionId)
+    {
+        if (_styles.TryGetValue(sessionId, out BotStyle style))
+        {
+            return style;
+        }
+        DriftPolicy? policy = _policy;
+        bool pace = policy != null && policy.ReadsPace && _basePace > 0f;
+        bool chase = policy != null && policy.ReadsChase;
+        bool skill = policy != null && policy.ReadsSkill;
+        string? name = sessionId < _entryNames.Length ? _entryNames[sessionId] : null;
+        style = BotStyles.For(_configuration, _aiEntryOf.TryGetValue(sessionId, out int aiEntry) ? aiEntry : -1, sessionId, name,
+            pace ? _paceFloor : 0f, pace ? _basePace : 0f, pace ? policy!.PaceHigh : 0f,
+            chase ? ChaseInputs.GapLowM : 0f, chase ? ChaseInputs.GapHighM : float.MaxValue,
+            skill ? policy!.SkillLow : 1f, skill ? policy!.SkillHigh : 1f);
+        _styles[sessionId] = style;
+        VerboseLog.Information("GradientDrift: bot {SessionId} ({Name}) drives with aggression {Aggression:F2}: pace {Pace:F2}, chases from {OptIn:F0} m at up to {Top:F0}%, gap {Gap:F1} m, skill {Skill:F2}",
+            sessionId, name ?? "", style.Aggression, style.PaceMiddle, style.OptInMeters, style.ChaseTopShare * 100f,
+            style.ChaseGapMeters, style.Skill);
+        return style;
+    }
+
     // A driver below full skill (drift_env SKILL_*, as the policy was trained), by d = 1 - skill:
     // a slower reaction - the action applied is the one asked SkillDelayTicks x d ticks earlier
     // (rounded) - then smooth noise on the steering and pedal.
@@ -1478,7 +1744,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float steer, float speed, float brake)
     {
         const float SteerNoise = 0.10f, PedalNoise = 0.20f, NoiseKeep = 0.9f, SkillDelayTicks = 1.5f;
-        float lack = 1f - Math.Clamp(_skill, 0f, 1f);
+        float lack = 1f - Math.Clamp(state.Style.Skill, 0f, 1f);
         float fresh = MathF.Sqrt(1f - NoiseKeep * NoiseKeep);
         // unit-variance uniform noise, as the trainer's
         state.SkillNoiseSteer = NoiseKeep * state.SkillNoiseSteer + fresh * ((float)_skillRandom.NextDouble() - 0.5f) * 3.4641016f;
@@ -1503,24 +1769,43 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
     // Sideways force of an axle that rises with slip angle as LateralTireForce does and stops
     // at capacityN, what the friction circle leaves it. Opposes the slip.
-    private static float LateralForceWithin(float slipAngle, float peakForceN, float peakSlipAngleRadians, float capacityN)
+    private static float LateralForceWithin(float slipAngle, float peakForceN, float peakSlipAngleRadians, float capacityN,
+        bool roundCurve)
     {
-        float forceMagnitude = MathF.Min(peakForceN * (MathF.Abs(slipAngle) / peakSlipAngleRadians), capacityN);
+        float forceMagnitude = MathF.Min(peakForceN * TireCurve(MathF.Abs(slipAngle), peakSlipAngleRadians, roundCurve), capacityN);
         return slipAngle > 0f ? -forceMagnitude : slipAngle < 0f ? forceMagnitude : 0f;
     }
 
-    // Lateral force of one axle: linear in slip angle up to the peak, then falling linearly to
-    // slidingGrip x the peak at twice the peak slip angle, and constant beyond. Opposes the slip.
-    // slidingGrip = 1 keeps the peak force however far the tire slides.
+    // How much of its peak force an axle gives at this slip angle (0 - 1; fast_sim._tire_curve):
+    // a straight line up to the peak, or with RoundTireCurve the brush (Fiala) curve, three times
+    // as steep at first and reaching full sliding at the peak: 3x - 3x^2 + x^3,
+    // x = tan(slip) / tan(peak).
+    private static float TireCurve(float slipMagnitude, float peakSlipAngleRadians, bool roundCurve)
+    {
+        if (slipMagnitude >= peakSlipAngleRadians)
+        {
+            return 1f;
+        }
+        if (roundCurve)
+        {
+            float x = MathF.Tan(slipMagnitude) / MathF.Tan(peakSlipAngleRadians);
+            return x * (3f - 3f * x + x * x);
+        }
+        return slipMagnitude / peakSlipAngleRadians;
+    }
+
+    // Lateral force of one axle: rising with slip angle up to the peak (TireCurve), then falling
+    // linearly to slidingGrip x the peak at twice the peak slip angle, and constant beyond.
+    // Opposes the slip. slidingGrip = 1 keeps the peak force however far the tire slides.
     private static float LateralTireForce(float slipAngle, float peakFriction, float staticLoadN, float peakSlipAngleRadians,
-        float slidingGrip)
+        float slidingGrip, bool roundCurve)
     {
         float peakForceN = peakFriction * staticLoadN;
         float slipMagnitude = MathF.Abs(slipAngle);
         float forceMagnitude;
         if (slipMagnitude < peakSlipAngleRadians)
         {
-            forceMagnitude = peakForceN * (slipMagnitude / peakSlipAngleRadians);
+            forceMagnitude = peakForceN * TireCurve(slipMagnitude, peakSlipAngleRadians, roundCurve);
         }
         else if (slidingGrip >= 1f)
         {
@@ -1628,6 +1913,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         // never more than the car's speed limit (drift_env._step_one asks the same): a long
         // straight's reference can run far past what any bot is allowed to reach
         float askedKmh = state.Pace * MathF.Min(_paceReferenceKmh![askedPointId] * _car.PaceScale, maxSpeedMs * 3.6f);
+        state.LineSpeedMs = speed;
+        state.PaceOneMs = MathF.Min(_paceReferenceKmh![askedPointId] * _car.PaceScale, maxSpeedMs * 3.6f) / 3.6f;
         if (p.PaceTicks == 0)
         {
             p.PaceSpeedAverageMs = speed;
@@ -1753,6 +2040,58 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         }
 
         groundY = 0f;
+        return false;
+    }
+
+    // SurfaceGrip: the grip of the ground under each axle at this tick's pose, for the next tick's
+    // friction (fast_sim.step_post); where no ground is found the last value stays.
+    private void UpdateSurfaceGrip(TriangleGrid collision, DriftCarState state, Vector3 position)
+    {
+        float heading = state.Heading ?? 0f;
+        var forward = new Vector3(MathF.Cos(heading), 0f, MathF.Sin(heading));
+        if (TryFindGroundGrip(collision, position + forward * _car.DistanceCgToFrontAxleM, out float front))
+        {
+            state.FrontSurfaceGrip = front;
+        }
+        if (TryFindGroundGrip(collision, position - forward * _car.DistanceCgToRearAxleM, out float rear))
+        {
+            state.RearSurfaceGrip = rear;
+        }
+    }
+
+    // The grip of the first collision triangle below a point that is not a Wall, cast from 3 m
+    // above it over 12 m (fast_sim.ground_grip). A miss is tried again CrackProbeM to each side:
+    // collision meshes have cracks a few cm wide between triangles.
+    private const float CrackProbeM = 0.15f;
+
+    private static bool TryFindGroundGrip(TriangleGrid collision, Vector3 position, out float grip)
+    {
+        for (int k = 0; k < 5; k++)
+        {
+            float dx = k == 1 ? CrackProbeM : k == 2 ? -CrackProbeM : 0f;
+            float dz = k == 3 ? CrackProbeM : k == 4 ? -CrackProbeM : 0f;
+            float originY = position.Y + 3f;
+            float remaining = 12f;
+            for (int layer = 0; layer < GroundRayMaxWallLayers; layer++)
+            {
+                if (!collision.Raycast(new Vector3(position.X + dx, originY, position.Z + dz), -Vector3.UnitY, remaining, out RaycastHit hit))
+                {
+                    break;
+                }
+                if (hit.Surface != SurfaceType.Wall)
+                {
+                    grip = hit.Grip;
+                    return true;
+                }
+                originY -= hit.Distance + 0.001f;
+                remaining -= hit.Distance + 0.001f;
+                if (remaining <= 0f)
+                {
+                    break;
+                }
+            }
+        }
+        grip = 1f;
         return false;
     }
 
@@ -2319,14 +2658,17 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private void HoldSpacing(DriftPolicy policy, float dt)
     {
         _spaced.Clear();
-        foreach (var (_, aiState) in _driven)
+        _spacedIds.Clear();
+        _recordBotLeads = policy.ReadsPace && policy.ReadsChase && _configuration.ChasePlayers && _configuration.ChaseBots;
+        foreach (var (sessionId, aiState) in _driven)
         {
             if (_cars.TryGetValue(aiState, out DriftCarState? state) && state.SpawnCounter == aiState.SpawnCounter)
             {
                 int point = state.PreviousNearestPointId ?? -1;
-                if (_lapArc != null && point >= 0 && point < _lapArc.Length)
+                if (_lapArc != null && point >= 0 && point < _lapArc.Length && !_spacedIds.ContainsValue(sessionId))
                 {
                     _spaced.Add((state, _lapArc[point]));
+                    _spacedIds[state] = sessionId;
                 }
             }
         }
@@ -2339,21 +2681,55 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float high = byPace ? policy.PaceHigh : policy.RearSlidingGripHigh;
         float middle = byPace ? _basePace : _rearSlidingGrip;
         float halfRange = 0.5f * (high - low);
-        float ease = Math.Min(1f, dt / SpacingEaseSeconds);
+        if (byPace && (_configuration.LeadPlayers || _configuration.ChasePlayers))
+        {
+            FindChasingPlayers(policy);
+        }
+        if (byPace && _configuration.ChasePlayers)
+        {
+            AssignChases();
+        }
         for (int i = 0; i < n; i++)
         {
             DriftCarState state = _spaced[i].State;
-            float target = middle;
+            // this bot's own pace (BotStyles); halfRange stays the server's so spacing pushes every bot alike
+            float own = byPace ? state.Style.PaceMiddle : middle;
+            // spacing and leading a player only slow a bot from its own pace (BotPacePercent, or its
+            // BotStyles pace), never speed it past it: above that it nears the top of the policy's
+            // range, where it has had the least practice (on Drift Playground at 120% the bots ran
+            // wide into the rail at a hairpin exit every lap). Chasing a player keeps its own top.
+            float ceiling = byPace ? MathF.Max(own, low) : high;
+            float target = own;
+            float ease = Math.Min(1f, dt / SpacingEaseSeconds);
             state.GapAheadM = -1f;
             if (spacing)
             {
                 float ahead = GapAhead(i);
                 float behind = GapAhead((i + n - 1) % n);
                 float imbalance = (ahead - behind) / MathF.Max(ahead + behind, 1f);
-                target = Math.Clamp(middle + SpacingGain * imbalance * halfRange, low, high);
+                target = Math.Clamp(own + SpacingGain * imbalance * halfRange, low, ceiling);
                 state.GapAheadM = ahead;
             }
-            if (byPace)
+            float playerGap = byPace ? PlayerGapBehind(state, _spaced[i].Arc) : -1f;
+            bool leading = playerGap >= 0f && playerGap < LeadFarMeters;
+            if (leading)
+            {
+                float behindShare = Math.Clamp((playerGap - LeadNearMeters) / (LeadFarMeters - LeadNearMeters), 0f, 1f);
+                target = ceiling - behindShare * (ceiling - low);
+                ease = Math.Min(1f, dt / LeadEaseSeconds);
+            }
+            if (leading != state.LeadingPlayer)
+            {
+                state.LeadingPlayer = leading;
+                VerboseLog.Information(state.LeadingPlayer
+                    ? "GradientDrift: a bot is leading a player {Gap:F0} m behind it"
+                    : "GradientDrift: a bot stopped leading a player ({Gap:F0} m)", playerGap);
+            }
+            if (byPace && _configuration.ChasePlayers && ChasePlayer(policy, state, _spaced[i].Arc, low, high))
+            {
+                state.RearSlidingGrip = _rearSlidingGrip;
+            }
+            else if (byPace)
             {
                 state.Pace += (target - state.Pace) * ease;
                 state.RearSlidingGrip = _rearSlidingGrip;
@@ -2363,6 +2739,399 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 state.RearSlidingGrip += (target - state.RearSlidingGrip) * ease;
             }
         }
+    }
+
+    // ChasePlayers: whether this bot chases a player ahead of it, and if so its pace from the IDM.
+    // For a tandem policy as drift_env._step_one asks it in training: the gap between the outlines,
+    // the lead's speed along the line, its acceleration fed forward (CACC) and the pace held between
+    // ChasePaceMin of the policy's slowest pace and ChasePaceMaxPercent of its fastest.
+    private bool ChasePlayer(DriftPolicy policy, DriftCarState state, float arc, float low, float high)
+    {
+        // the car ahead AssignChases gave this bot (none: NaN)
+        bool chasing = _chaseTargets.TryGetValue(state, out var target);
+        float gap = chasing ? target.Gap : float.NaN;
+        float leadSpeed = chasing ? target.LeadSpeed : 0f;
+        byte leadId = chasing ? target.LeadId : state.ChaseLeadId;
+        if (chasing != state.ChasingPlayer || leadId != state.ChaseLeadId)
+        {
+            state.ChaseLastGap = float.NaN;
+            state.ChaseStartMs = _sessionManager.ServerTimeMilliseconds;
+        }
+        state.ChaseLeadId = leadId;
+        state.ChaseLeadIsBot = chasing && target.IsBot;
+        if (chasing != state.ChasingPlayer)
+        {
+            state.ChasingPlayer = chasing;
+            VerboseLog.Information(chasing
+                ? (target.IsBot ? "GradientDrift: a bot is chasing a bot {Gap:F0} m ahead of it"
+                    : "GradientDrift: a bot is chasing a player {Gap:F0} m ahead of it")
+                : "GradientDrift: a bot stopped chasing", gap);
+        }
+        if (!chasing || state.PaceOneMs <= 0f)
+        {
+            return false;
+        }
+        float leadAccel = 0f;
+        if (policy.ReadsChase && state.Heading.HasValue && !float.IsNaN(state.Policy.PaceArcM)
+            && _leadTracks.TryGetValue(leadId, out LeadTrack? lead) && lead.Count > 0)
+        {
+            ref readonly LeadSample l = ref lead.Latest;
+            gap = ChaseInputs.OutlineGap(state.Position.X, state.Position.Z, state.Heading.Value, state.Policy.PaceArcM,
+                l.X, l.Z, l.Heading, l.Arc, _lapLength);
+            leadSpeed = ChaseInputs.LineSpeed(lead, _lapLength);
+            leadAccel = ChaseInputs.Accel(lead);
+            low = policy.PaceLow * policy.ChasePaceMin;
+        }
+        float v = MathF.Max(0f, state.LineSpeedMs);
+        float top = MathF.Max(low, high * state.Style.ChaseTopShare);
+        float v0 = MathF.Max(1f, IdmFreeSpeed * top * state.PaceOneMs);
+        float desired = MathF.Max(0f, state.Style.ChaseGapMeters + v * _configuration.ChaseTimeGapSeconds
+            + v * (v - leadSpeed) / (2f * MathF.Sqrt(IdmAccel * IdmBrake)));
+        float ratio = desired / MathF.Max(gap, 0.1f);
+        float accel = MathF.Max(-3f * IdmBrake, IdmAccel * (1f - MathF.Pow(v / v0, 4) - ratio * ratio) + leadAccel);
+        state.Pace = Math.Clamp((v + accel * _configuration.ChaseResponseSeconds) / state.PaceOneMs, low, top);
+        state.ScoreChaseGap = gap;
+        return true;
+    }
+
+    // ChasePlayers, once a tick: which car ahead each bot chases. A bot looks only at the nearest
+    // car ahead of it (a player, or with ChaseBots a bot; a bot ahead blocks a player beyond it),
+    // taken up within ChaseOptInMeters and kept to ChaseOptOutMeters. Every car has at most one
+    // chaser: chases already running keep theirs, then the closest new chaser takes a free car.
+    // A bot is taken up only by a bot out of its ChaseBotCooldownSeconds, if that keeps the line
+    // behind the front car to ChaseTrainMax bots and does not close a loop; a bot-on-bot chase ends
+    // after ChaseBotRunSeconds and starts that cooldown.
+    private void AssignChases()
+    {
+        _chaseTargets.Clear();
+        _chaseClaimed.Clear();
+        _chaseOffers.Clear();
+        long nowMs = _sessionManager.ServerTimeMilliseconds;
+        int n = _spaced.Count;
+        for (int i = 0; i < n; i++)
+        {
+            var (state, arc) = _spaced[i];
+            float best = float.NaN;
+            float leadSpeed = 0f;
+            byte leadId = 0;
+            bool isBot = false;
+            for (int j = 0; j < _playerArcs.Count; j++)
+            {
+                float d = WrapAlongLap(_playerArcs[j] - arc);
+                if (d < 0.5f * _lapLength && (float.IsNaN(best) || d - CarLengthMeters < best))
+                {
+                    best = d - CarLengthMeters;
+                    leadSpeed = _playerSpeeds[j];
+                    leadId = _playerIds[j];
+                    isBot = false;
+                }
+            }
+            if (n >= 2)
+            {
+                // the next bot along the line (_spaced is sorted by distance)
+                var (other, otherArc) = _spaced[(i + 1) % n];
+                float d = WrapAlongLap(otherArc - arc);
+                if (other != state && d < 0.5f * _lapLength && (float.IsNaN(best) || d - CarLengthMeters < best))
+                {
+                    best = d - CarLengthMeters;
+                    leadSpeed = other.LineSpeedMs;
+                    leadId = _spacedIds[other];
+                    isBot = true;
+                }
+            }
+            // NaN: nothing ahead within half a lap
+            if (float.IsNaN(best) || best <= -CarLengthMeters)
+            {
+                continue;
+            }
+            bool kept = state.ChasingPlayer && state.ChaseLeadId == leadId && state.ChaseLeadIsBot == isBot;
+            // this bot's own pick-up range (BotStyles: aggression)
+            float optIn = state.Style.OptInMeters;
+            float optOut = MathF.Max(_configuration.ChaseOptOutMeters, optIn);
+            if (best >= (kept ? optOut : optIn))
+            {
+                continue;
+            }
+            if (isBot)
+            {
+                if (!_configuration.ChaseBots)
+                {
+                    continue;
+                }
+                if (kept && _configuration.ChaseBotRunSeconds > 0f
+                    && nowMs - state.ChaseStartMs > _configuration.ChaseBotRunSeconds * 1000f)
+                {
+                    state.ChaseBotCooldownUntilMs = nowMs + (long)(_configuration.ChaseBotCooldownSeconds * 1000f);
+                    continue;
+                }
+                if (!kept && (nowMs < state.ChaseBotCooldownUntilMs || !TrainHasRoom(state, leadId)))
+                {
+                    continue;
+                }
+            }
+            _chaseOffers.Add((state, leadId, isBot, best, leadSpeed, kept));
+        }
+        // running chases first, then the closest
+        _chaseOffers.Sort((a, b) => a.Kept != b.Kept ? (a.Kept ? -1 : 1) : a.Gap.CompareTo(b.Gap));
+        foreach (var offer in _chaseOffers)
+        {
+            if (_chaseClaimed.Add(offer.LeadId))
+            {
+                _chaseTargets[offer.State] = (offer.LeadId, offer.IsBot, offer.Gap, offer.LeadSpeed);
+            }
+        }
+        // ChaseTrainMax on this tick's chases: two bots joining a line in the same tick each saw
+        // room by last tick's. Front to back (fewest bots ahead first), drop a chaser that would
+        // be one too many; the bots behind it then follow a bot that is not chasing.
+        if (_configuration.ChaseBots && _chaseTargets.Count > 1)
+        {
+            int max = Math.Max(1, _configuration.ChaseTrainMax);
+            _chaseDepths.Clear();
+            foreach (var chaser in _chaseTargets.Keys)
+            {
+                _chaseDepths.Add((chaser, ChaseDepth(chaser)));
+            }
+            _chaseDepths.Sort((a, b) => a.Depth.CompareTo(b.Depth));
+            foreach (var (chaser, _) in _chaseDepths)
+            {
+                if (ChaseDepth(chaser) > max)
+                {
+                    _chaseTargets.Remove(chaser);
+                }
+            }
+        }
+    }
+
+    // How many bots chase in the line from this chaser forward, by this tick's _chaseTargets
+    // (itself included); a loop counts as too many.
+    private int ChaseDepth(DriftCarState chaser)
+    {
+        int depth = 0;
+        DriftCarState? at = chaser;
+        while (at != null && _chaseTargets.TryGetValue(at, out var t))
+        {
+            depth++;
+            if (!t.IsBot || depth > _spaced.Count)
+            {
+                break;
+            }
+            at = null;
+            foreach (var (s, sid) in _spacedIds)
+            {
+                if (sid == t.LeadId)
+                {
+                    at = s;
+                    break;
+                }
+            }
+        }
+        return depth > _spaced.Count ? int.MaxValue : depth;
+    }
+
+    // ChaseBots: whether a bot may take up the bot leadId: the bots chasing in a line ahead of it,
+    // from leadId forward (last tick's chases), stay under ChaseTrainMax, and none of them is it.
+    private bool TrainHasRoom(DriftCarState chaser, byte leadId)
+    {
+        int bots = 1;                // the chaser itself
+        byte id = leadId;
+        for (int steps = 0; steps <= _spaced.Count; steps++)
+        {
+            DriftCarState? lead = null;
+            foreach (var (s, sid) in _spacedIds)
+            {
+                if (sid == id)
+                {
+                    lead = s;
+                    break;
+                }
+            }
+            if (lead == null || lead == chaser)
+            {
+                return lead == null && bots <= Math.Max(1, _configuration.ChaseTrainMax);
+            }
+            if (!lead.ChasingPlayer)
+            {
+                return bots <= Math.Max(1, _configuration.ChaseTrainMax);
+            }
+            bots++;               // the lead is chasing too
+            if (!lead.ChaseLeadIsBot)
+            {
+                return bots <= Math.Max(1, _configuration.ChaseTrainMax);
+            }
+            id = lead.ChaseLeadId;
+        }
+        return false;
+    }
+
+    // LeadPlayers and ChasePlayers, once a tick: where each moving player is along the line, and
+    // their speed along it, if they drive its way.
+    private void FindChasingPlayers(DriftPolicy policy)
+    {
+        _playerArcs.Clear();
+        _playerSpeeds.Clear();
+        _playerIds.Clear();
+        if (_lapArc == null)
+        {
+            return;
+        }
+        foreach (EntryCar car in _entryCarManager.EntryCars)
+        {
+            if (car.AiControlled || car.Client?.HasSentFirstUpdate != true)
+            {
+                continue;
+            }
+            Vector3 velocity = car.Status.Velocity;
+            if (new Vector2(velocity.X, velocity.Z).LengthSquared() < LeadMinSpeedMs * LeadMinSpeedMs)
+            {
+                continue;
+            }
+            int point = _spline.WorldToSpline(car.Status.Position).PointId;
+            if (point < 0 || point >= _lapArc.Length)
+            {
+                continue;
+            }
+            Vector3 forward = _spline.Operations.GetForwardVector(point);
+            float along = forward.X * velocity.X + forward.Z * velocity.Z;
+            if (along > 0f)
+            {
+                _playerArcs.Add(_lapArc[point]);
+                _playerSpeeds.Add(along / MathF.Max(new Vector2(forward.X, forward.Z).Length(), 1e-3f));
+                _playerIds.Add(car.SessionId);
+                if (policy.ReadsChase && _configuration.ChasePlayers)
+                {
+                    var status = car.Status;
+                    RecordLeadTrack(car.SessionId, status.Position, status.Velocity, status.Rotation.X, status.WheelAngle,
+                        status.Gas, (status.StatusFlag & CarStatusFlags.BrakeLightsOn) != 0, point);
+                }
+            }
+        }
+    }
+
+    // A tandem policy: the player's car status as one LeadSample when it is new (its client's
+    // update), in drift_rl's terms (record_ghosts.py / telemetry_ghosts.py columns). The status
+    // carries no brake: the brake lights stand for it (public-server drivers' brake reads 0.86 -
+    // 0.96 when on). The road wheels' angle comes back through the steering visual's byte scale.
+    private void RecordLeadTrack(byte id, Vector3 position, Vector3 velocity3, float yawRotation, float wheelAngle,
+        float gas, bool brake, int point)
+    {
+        long nowMs = _sessionManager.ServerTimeMilliseconds;
+        if (_chaseEpochMs < 0)
+        {
+            _chaseEpochMs = nowMs;
+        }
+        float timeS = (nowMs - _chaseEpochMs) / 1000f;
+        if (!_leadTracks.TryGetValue(id, out LeadTrack? track))
+        {
+            track = new LeadTrack();
+            _leadTracks[id] = track;
+        }
+        if (track.Count > 0)
+        {
+            ref readonly LeadSample last = ref track.Latest;
+            if (timeS - last.TimeS > 1f)
+            {
+                track.Clear();         // a stale history: the player stopped, left or teleported
+            }
+            else if (last.X == position.X && last.Z == position.Z)
+            {
+                return;                // no new update from its client yet
+            }
+        }
+
+        var (a, b, t) = FindInterpolationSegment(position, point);
+        Vector3 forward = Vector3.Lerp(_spline.Operations.GetForwardVector(a), _spline.Operations.GetForwardVector(b), t);
+        Vector3 lineDirection = forward.LengthSquared() > 0.0001f
+            ? Vector3.Normalize(new Vector3(forward.X, 0f, forward.Z))
+            : Vector3.UnitX;
+        Vector3 pathPosition = Vector3.Lerp(_spline.Points[a].Position, _spline.Points[b].Position, t);
+        float heading = yawRotation + MathF.PI / 2f;
+        heading = MathF.Atan2(MathF.Sin(heading), MathF.Cos(heading));
+        Vector2 velocity = new Vector2(velocity3.X, velocity3.Z);
+        float speed = velocity.Length();
+        float slip = speed > 0.5f ? WrapPiF(heading - MathF.Atan2(velocity.Y, velocity.X)) : 0f;
+        float yaw = 0f;
+        if (track.Count > 0)
+        {
+            int back = track.Back(track.Count - 1, 0.1f);
+            ref readonly LeadSample before = ref track[back];
+            float span = timeS - before.TimeS;
+            if (span > 1e-3f)
+            {
+                yaw = WrapPiF(heading - before.Heading) / span;
+            }
+        }
+        float wheelUnits = _configuration.SteeringVisualSign * _configuration.SteeringVisualWheelByteUnitsPerDegree;
+        float steerDeg = MathF.Abs(wheelUnits) > 1e-3f ? (wheelAngle - 127f) / wheelUnits : 0f;
+        track.Add(new LeadSample
+        {
+            TimeS = timeS,
+            X = position.X,
+            Z = position.Z,
+            Heading = heading,
+            Slip = slip,
+            Yaw = yaw,
+            Speed = speed,
+            Arc = _lapArc![a] + t * Vector3.Distance(_spline.Points[a].Position, _spline.Points[b].Position),
+            Cte = CrossTrackErrorCalculator.Compute(position, pathPosition, lineDirection),
+            Steer = steerDeg * MathF.PI / 180f,
+            Pedal = gas / 255f,
+            Brake = brake ? 1f : 0f,
+        });
+    }
+
+    // ChaseBots: a bot as a lead, what a bot chasing it sees, recorded right after this plugin moved
+    // it. (Before that, in HoldSpacing, its status still holds where the stock AI put it this tick,
+    // tens of metres away.)
+    private void RecordBotLead(byte sessionId, AiState aiState)
+    {
+        if (!_cars.TryGetValue(aiState, out DriftCarState? state) || state.SpawnCounter != aiState.SpawnCounter
+            || !_spacedIds.TryGetValue(state, out byte spacedId) || spacedId != sessionId)
+        {
+            return;
+        }
+        int point = state.PreviousNearestPointId ?? -1;
+        if (_lapArc == null || point < 0 || point >= _lapArc.Length)
+        {
+            return;
+        }
+        var status = aiState.Status;
+        RecordLeadTrack(sessionId, status.Position, status.Velocity, status.Rotation.X, status.WheelAngle,
+            status.Gas, (status.StatusFlag & CarStatusFlags.BrakeLightsOn) != 0, point);
+    }
+
+    private static float WrapPiF(float angle)
+    {
+        float shifted = (angle + MathF.PI) % (2f * MathF.PI);
+        if (shifted < 0f)
+            shifted += 2f * MathF.PI;
+        return shifted - MathF.PI;
+    }
+
+    // LeadPlayers: from the nearest player behind this bot (or its train's last car) to that tail,
+    // along the line, roughly bumper to bumper; -1 = none within half a lap, or not leading.
+    private float PlayerGapBehind(DriftCarState state, float arc)
+    {
+        if (!_configuration.LeadPlayers || _playerArcs.Count == 0)
+        {
+            return -1f;
+        }
+        float train = 0f;
+        if (_configuration.TrainSize > 1)
+        {
+            float speed = new Vector2(state.Velocity.X, state.Velocity.Z).Length();
+            train = (_configuration.TrainSize - 1)
+                * MathF.Max(_configuration.TandemMinGapMeters, _configuration.TandemGapSeconds * speed);
+        }
+        float nearest = -1f;
+        foreach (float playerArc in _playerArcs)
+        {
+            float d = WrapAlongLap(arc - playerArc);
+            if (d < 0.5f * _lapLength && (nearest < 0f || d < nearest))
+            {
+                nearest = d;
+            }
+        }
+        return nearest < 0f ? -1f : MathF.Max(0f, nearest - train - CarLengthMeters);
     }
 
     // HoldBotSpacing: a car just taken over goes to the middle of the largest gap between the

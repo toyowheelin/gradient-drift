@@ -32,9 +32,22 @@ scripts.
   server first: setup will not replace a plugin AssettoServer has loaded. A policy beside the same
   plugin that an earlier release shipped is updated to the download's too (setup knows every
   release's policy by its checksum); one no release shipped is kept, since it may have been
-  polished for the track, and setup says so and where the download's is. Plugin settings in
+  polished for the track, and setup says so. `--shipped-policy` puts the download's policy in its
+  place, so every server runs the same one. Plugin settings in
   `extra_cfg.yml` that the new plugin renamed move to their new name with their value; ones it no
   longer has are taken out, since AssettoServer will not start with a setting the plugin lacks.
+- **Refuses a policy the plugin cannot run.** The plugin comes with
+  `GradientDriftPlugin.features.json`, the inputs, add-ons and policy settings that build can run.
+  Setup checks the policy the bots will run against it (a server's own policy, or the one that
+  comes with the plugin) and stops, saying what is missing, instead of installing a pair the plugin
+  would turn down at start (then the stock AI drives).
+- **Keeps the plugin's data in one file.** The policy, the bots' car files and the track's data go
+  into `plugins/GradientDriftPlugin/GradientDriftPlugin.bundle.zip` instead of lying loose in the
+  plugin's folder and the server's. Loose ones already there are packed into it and go to the
+  backup (undo puts them back). The plugin reads a loose file instead of the bundle's copy, so a
+  policy or track file copied in by hand still takes over, and the server log names any loose file
+  it reads in place of the bundle's. A plugin build older than the bundle reads loose files only:
+  then setup leaves them loose. `gradient-drift-setup bundle <server>` only packs.
 - **Exports instead, for a server it cannot reach** (a hosting plan): the files to upload and the
   config edits ([below](#a-server-on-a-hosting-plan-or-any-machine-without-the-game)).
 
@@ -182,6 +195,8 @@ gradient-drift-setup.exe check "D:\servers\my server" --game "C:\Program Files (
 gradient-drift-setup.exe check "D:\servers\my server" --game "..." --details      # each change as before / after
 gradient-drift-setup.exe apply "D:\servers\my server" --game "..." --bots 4       # shows the changes, asks, makes them
 gradient-drift-setup.exe undo  "D:\servers\my server"                             # puts back what the last apply changed
+gradient-drift-setup.exe apply "D:\servers\my server" --shipped-policy           # the download's policy in place of the server's own
+gradient-drift-setup.exe bundle "D:\servers\my server"                            # only packs the plugin's loose data files into one
 ```
 
 Several server folders can be given at once (not with `export`).
@@ -192,7 +207,6 @@ Several server folders can be given at once (not with `export`).
 | `--name NAME` | the bots' name in game, each shown with its slot number (default: the name the server already gives them, else DriftBot) |
 | `--car MODEL`, `--skin NAME` | every bot's car and skin, the existing AI entries put in it too. Without `--car` an existing bot keeps its car and a new one takes an existing bot's, else the car the shipped policy was trained in, else the server's first car |
 | `--car A,B,...`, `--skin X,Y,...` | a car (and skin) per bot slot, the existing AI entries first in the entry list's order; an empty one keeps that bot's car; bots past the list take its last car |
-| `--train-size N` | run the bots as tandem trains of N: the first car of each drives, the others follow it door to door (1 = every bot on its own) |
 | `--pace PERCENT` | how fast they drive, as a share of the track's reference speed round the lap (a policy trained with paces; lower is calmer) |
 | `--plugin FOLDER` | the plugin's files (default: the plugin download's `GradientDriftPlugin/` beside the packaged program, else the repository's build folder) |
 | `--track-data FOLDER` | the tracks' files, a folder per track (default: `tracks/` beside it, else the repository's `drift_rl/tracks`) |
@@ -254,8 +268,8 @@ changed, and no bot is taken away.
   freezes an AI car for 1-3 s when a player touches it. It sets `NamePrefix` to the bot name:
   AssettoServer shows each AI car as `<NamePrefix> <slot number>` (`Traffic 16`), whatever its
   `DRIVERNAME` in the entry list;
-- the plugin's own section with `EnableLearnedPolicy: true`, and `TrainSize` and `BotPacePercent`
-  when given.
+- the plugin's own section with `EnableLearnedPolicy: true`, and `BotPacePercent` when given.
+  `TrainSize` (retired in v0.3.0) is taken out.
 
 **Made first when they are not there:** the track's data, into the track files folder (`tracks/`
 beside the packaged program, else the repository's `drift_rl/tracks`), never into the server; then,
@@ -324,6 +338,8 @@ Set `GRADIENTDRIFT_GUI=0` for the command-line-only build. The result goes in
 | `gradientdrift_setup/plan.py` | The change list for the bots (each change carrying its edit), and what setup cannot fix by editing files. |
 | `gradientdrift_setup/edits.py` | Line-preserving edits to `.ini` and `extra_cfg.yml`. |
 | `gradientdrift_setup/apply.py` | Makes a plan's changes with backups; undo. |
+| `gradientdrift_setup/bundle.py` | The plugin's data in one file (`GradientDriftPlugin.bundle.zip`): which files go in it, reading and writing it. |
+| `gradientdrift_setup/pairing.py` | Whether a plugin build can run a policy, from its `GradientDriftPlugin.features.json`. |
 | `gradientdrift_setup/export.py` | For a hosted server: makes the changes into a copy of its downloaded `cfg/`, and writes the files to upload and `HOW_TO_INSTALL.txt`. |
 | `gradientdrift_setup/cli.py` | The command line; with no arguments it opens the window, or the walk-through in the terminal where it cannot (no Qt, or Linux without a desktop). |
 | `gradientdrift_setup/walk.py` | The walk-through in a terminal: the window's five pages as questions, then the run as one command line. |

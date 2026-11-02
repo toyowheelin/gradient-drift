@@ -92,6 +92,50 @@ AGPL-3.0 program carry the work, given the notices.
   D1 Grand Prix's scoring criteria.
 * Cai et al., "High-speed Autonomous Drifting with Deep Reinforcement Learning", 2020 (reward
   ideas); the analysis of Ken Gushi's drift in Stanford's MARTY (what a held drift looks like).
+* The brush tyre curve (`RoundTireCurve`) - E. Fiala, "Seitenkräfte am rollenden Luftreifen",
+  VDI-Zeitschrift 96, 1954; the form Stanford's drifting work uses (Hindiyeh and Gerdes, "A
+  Controller Framework for Autonomous Drifting: Design, Stability, and Experimental Validation",
+  ASME Journal of Dynamic Systems, Measurement, and Control, 2014). Its full-sliding angle is
+  the car's own tyres.ini `FRICTION_LIMIT_ANGLE` plus `FLEX` x the tire's load.
+* Zhou, Lu, Yang, Li and Mo, "Learning to Drift with Individual Wheel Drive: Maneuvering
+  Autonomous Vehicle at the Handling Limits", Tsinghua University, 2025,
+  <https://arxiv.org/abs/2507.23339> - randomised start states, sideways and at speed (the
+  trainer's `--drift-starts`).
+* Starting from states a demonstrator reached (the trainer's `--ghost-starts`): Nair et al.,
+  "Overcoming Exploration in Reinforcement Learning with Demonstrations", 2018,
+  <https://arxiv.org/abs/1709.10089>; Salimans and Chen, "Learning Montezuma's Revenge from a
+  Single Demonstration", 2018, <https://arxiv.org/abs/1812.03381>.
+* Schmitt et al., "Kickstarting Deep Reinforcement Learning", DeepMind, 2018,
+  <https://arxiv.org/abs/1803.03835> - a new network pulled toward a trained one's actions at
+  first, the pull fading away (the trainer's `--kickstart`).
+* Mysore, Mabsout, Mancuso and Saenko, "Regularizing Action Policies for Smooth Control with
+  Reinforcement Learning" (CAPS), ICRA 2021, <https://arxiv.org/abs/2012.06644> - the trainer's
+  `--caps-temporal` and `--caps-spatial`.
+* Domain randomisation (the trainer's `--dr-axle-grip`, `--dr-peak-slip`, `--obs-noise`): Tobin
+  et al., "Domain Randomization for Transferring Deep Neural Networks from Simulation to the Real
+  World", 2017, <https://arxiv.org/abs/1703.06907>; Peng, Andrychowicz, Zaremba and Abbeel,
+  "Sim-to-Real Transfer of Robotic Control with Dynamics Randomization", ICRA 2018,
+  <https://arxiv.org/abs/1710.06537>.
+* Peng, Ma, Abbeel, Levine and Kanazawa, "AMP: Adversarial Motion Priors for Stylized
+  Physics-Based Character Control", SIGGRAPH 2021, <https://arxiv.org/abs/2104.02180> - the
+  trainer's `--amp` (its least-squares discriminator, gradient penalty and style reward).
+* Kumar, Fu, Pathak and Malik, "RMA: Rapid Motor Adaptation for Legged Robots", RSS 2021,
+  <https://arxiv.org/abs/2107.04034> - adapting from a short history of states and actions (the
+  trainer's `--history-frames`; one network reads the history directly, not RMA's two phases).
+* Mirror symmetry (the trainer's `--mirror`): Yu, Turk and Liu, "Learning Symmetric and
+  Low-Energy Locomotion", SIGGRAPH 2018, <https://arxiv.org/abs/1801.08093>; Mittal et al.,
+  "Symmetry Considerations for Learning Task Symmetric Robot Policies", ICRA 2024,
+  <https://arxiv.org/abs/2403.04359>.
+* Chane-Sane et al., "CaT: Constraints as Terminations for Legged Locomotion Learning", 2024,
+  <https://arxiv.org/abs/2403.18765> - the trainer's `--cat`.
+* OpenAI et al., "Solving Rubik's Cube with a Robot Hand" (Automatic Domain Randomization), 2019,
+  <https://arxiv.org/abs/1910.07113> - the idea behind the trainer's `--adr`, which moves its
+  ranges on the evaluation's results rather than on episodes run at the range's edges.
+* Jaderberg et al., "Population Based Training of Neural Networks", DeepMind, 2017,
+  <https://arxiv.org/abs/1711.09846> - `pbt.py`.
+* Bansal, Pachocki, Sidor, Sutskever and Mordatch, "Emergent Complexity via Multi-Agent
+  Competition", ICLR 2018, <https://arxiv.org/abs/1710.03748> - opponents drawn from the
+  learner's own past (the trainer's `--self-ghosts`).
 
 ### Tandem (chasing another car; the `tandem` branch)
 
