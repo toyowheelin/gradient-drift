@@ -94,12 +94,12 @@ reads the track and the cars from it).
 
 ## How the bot drives
 
-![The policy network: 67 inputs describing how the car is moving, the racing line, its sensors, the asked pace, the car itself and the asked skill are scaled, pass through two layers of 128 units, and come out as steering, pedal and brake, which the plugin turns into the car's next position every server tick.](docs/policy_network.svg)
+![The policy network: 130 inputs describing how the car is moving, the racing line, its sensors, the asked pace, the car itself, the asked skill, the car ahead and the last few ticks are scaled, pass through three layers of 256 units, and come out as steering, pedal and brake, which the plugin turns into the car's next position every server tick.](docs/policy_network.svg)
 
 Every server tick (18 a second on a typical server), for every bot it drives, the plugin does the
 same four things:
 
-1. **Describe the car's situation as 67 numbers.**
+1. **Describe the car's situation as 130 numbers.**
    - how the car is moving: speed, sideways speed, how fast it is rotating, its slip angle;
    - the racing line: where it is and how it bends over the next stretch;
    - its sensors: what 15 rays fanned out ahead and 6 short rays fixed to the body hit (the walls
@@ -107,10 +107,14 @@ same four things:
      course's edges;
    - what it did last tick, the pace it has been asked to drive and how far over that it has been
      lately;
-   - what car it is (weight, wheelbase, grip, power), and how good a driver it has been asked to be.
+   - what car it is (weight, wheelbase, grip, power), and how good a driver it has been asked to be;
+   - the car ahead, when it is following one in tandem: the gap, closing speed, where that car is
+     on the line and what it is doing with its wheel and pedals;
+   - a short memory: nine of these numbers (its speeds, rotation, slip, last actions and how hard
+     each axle was working) as they were over the last few ticks.
 2. **Run them through the network.** Each number is scaled the way it was in training, then
-   multiplied through two layers of 128 units (about 26,000 numbers in all, the whole content of
-   `policy.json`). That takes about 0.1 ms a car.
+   multiplied through three layers of 256 units (about 166,000 numbers in all, the whole content of
+   `policy.json`).
 3. **Read three numbers out:**
 
    | output | what it does |
@@ -136,7 +140,7 @@ different cars, and being rewarded for progress made sideways at a good angle, i
 without hitting anything (reinforcement learning, PPO). The result is frozen into `policy.json`;
 the server only runs it.
 
-The plugin also runs older, smaller policies (46 to 55 inputs, one car). The parts of the vehicle
+The plugin also runs older, smaller policies (46 to 94 inputs). The parts of the vehicle
 model a policy was trained with are listed in its file and the plugin turns on exactly those, so
 each policy drives in the car it learned in.
 
