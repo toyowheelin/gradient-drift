@@ -287,7 +287,7 @@ A release ships one policy, the same on every server. `python tools/ship_policy.
 --release <tag>` puts a policy in place as `GradientDriftPlugin/GradientDriftPlugin.policy.json`
 after checking the plugin can run it, and adds it to setup's list of shipped policies; a `v*` tag
 then builds the one release zip (`release.yml`), which refuses a policy that is not on that list or
-does not fit the plugin.
+does not fit the plugin. The release notes are the tag's section of [CHANGELOG.md](CHANGELOG.md).
 
 ## Training your own policy
 

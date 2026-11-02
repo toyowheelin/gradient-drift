@@ -83,9 +83,30 @@ jobs:
         env:
           PACKAGE: ${{ needs.plugin.outputs.package }}
           ASSETTOSERVER: ${{ needs.plugin.outputs.assettoserver }}
+      - uses: actions/checkout@v5
+        with:
+          path: src
+          sparse-checkout: CHANGELOG.md
+          sparse-checkout-cone-mode: false
+      - name: this release's notes from CHANGELOG.md
+        # the section whose heading is the tag ("## v0.3.0"), up to the next "## " heading
+        run: |
+          python3 - "$GITHUB_REF_NAME" <<'PY'
+          import re, sys
+          tag = sys.argv[1]
+          text = open('src/CHANGELOG.md', encoding='utf-8').read()
+          m = re.search(rf'^## {re.escape(tag)}[ \t]*\n(.*?)(?=^## |\Z)', text, re.S | re.M)
+          if not m or not m.group(1).strip():
+              sys.exit(f'::error::CHANGELOG.md has no "## {tag}" section: write the release notes there first')
+          open('changes.md', 'w', encoding='utf-8').write(m.group(1).strip() + '\n')
+          PY
       - name: draft release
         run: |
-          cat > notes.md <<NOTES
+          cat changes.md > notes.md
+          cat >> notes.md <<NOTES
+
+          ---
+
           Built and tested for AssettoServer $ASSETTOSERVER.
 
           **Download \`$ZIP\`** and unzip it. It has the setup program for Windows (\`windows/\`, a window or the terminal) and for Linux (\`linux/\`, the terminal: the same walk-through as questions), each with the plugin already inside. Run the one for your system on your server folder: it installs the plugin and makes the track data, car files and settings. See [setup/README.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/setup/README.md).
