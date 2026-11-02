@@ -271,9 +271,9 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         span_m = t.span_m
         server_ai = server.server_ai_line()
         rel_ai = os.path.relpath(server_ai, server.folder).replace(os.sep, '/')
-        if t.ai_points < 2 and not t.recorded:
-            p.blockers.append(f"{where} has no usable AI line ({t.ai_note}) and no recorded lap to make one from; "
-                              "AssettoServer needs one to place any AI car")
+        if t.ai_points < 2 and not t.recorded and not t.sides:
+            p.blockers.append(f"{where} has no usable AI line ({t.ai_note}), no recorded lap and no side files "
+                              "(data/side_l.csv, side_r.csv) to make one from; AssettoServer needs one to place any AI car")
         elif t.ai_points >= 2 and not os.path.exists(server_ai):
             ai_copy = Change(rel_ai, f"copy the track's AI line ({t.ai_points} points) from the game install",
                              op=('copy', t.ai_line, rel_ai))
@@ -343,9 +343,9 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     surface_grip = os.path.exists(policy) and policy_setting(policy, 'SurfaceGrip') == 1.0
     to_make = [m for m in missing if not m.endswith('_pace_reference.csv')     # training makes that one
                and (surface_grip or not m.endswith('_collision_grip.csv.gz'))]
-    needs_line = (t is not None and t.exists and t.ai_points < 2 and bool(t.recorded)
+    needs_line = (t is not None and t.exists and t.ai_points < 2 and bool(t.recorded or t.sides)
                   and not os.path.exists(os.path.join(server.folder, rel_ai)))
-    if t is not None and t.exists and (t.ai_points >= 2 or t.recorded) and (to_make or needs_line):
+    if t is not None and t.exists and (t.ai_points >= 2 or t.recorded or t.sides) and (to_make or needs_line):
         p.changes.append(Change('(track data)', f"make {server.track}'s data from the game install into "
                                 f"{os.path.join(home, server.track)}: its geometry, road mesh, AI line (checked, and "
                                 "rebuilt down the middle of the road if it needs it), course and zones; a few minutes",
@@ -356,8 +356,10 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         missing = [m for m in missing if m not in to_make]
         ai_copy = None      # the build puts its line in the server: the game's, or rebuilt if it needed it
         if needs_line:
-            p.notes.append(f"{where} has no AI line of its own: setup makes one from the recorded lap "
-                           f"({os.path.basename(t.recorded)}) and puts it in the server")
+            p.notes.append(f"{where} has no AI line of its own: setup makes one "
+                           + (f"from the recorded lap ({os.path.basename(t.recorded)})" if t.recorded else
+                              "down the middle of the road, from the track's side files (side_l.csv, side_r.csv)")
+                           + " and puts it in the server")
     # the track's data is made per point of one AI line (setup_track.py saves it beside the data as
     # <track>_fast_lane.ai, rebuilt down the middle of the road if the game's needed it): the server
     # must run that line, or the course edges and pace reference do not fit it

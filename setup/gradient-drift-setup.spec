@@ -15,7 +15,7 @@ GUI = os.environ.get('GRADIENTDRIFT_GUI', '1') != '0'
 # track's data itself: they are imported inside functions, so the scan is told about them. The
 # modules numba compiles go in as source files too (module_collection_mode 'pyz+py'): its cache
 # needs the source to stamp against (launcher.py points the cache at a folder the user can write).
-TRACK_TOOLS = ['ai_spline', 'track_files', 'setup_track', 'track_triangles', 'kn5_reader', 'build_road_mesh',
+TRACK_TOOLS = ['ai_spline', 'track_files', 'setup_track', 'track_triangles', 'kn5_reader', 'centre_line', 'build_road_mesh',
                'build_course', 'build_zones', 'line_tools', 'generate_track', 'fast_sim', 'drift_env',
                'sim_target', 'policy', 'sensor_view', 'pace_model', 'check_track', 'cars.acd_to_ini', 'cars.car_numbers']
 COMPILED = ['fast_sim', 'drift_env', 'sim_target']

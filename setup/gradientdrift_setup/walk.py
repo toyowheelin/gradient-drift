@@ -112,6 +112,9 @@ def track_step(st):
         t.say(f'     {t.OK} Model files: {", ".join(facts.model_files) or "none listed"}')
         if facts.ai_points >= 2:
             t.say(f'     {t.OK} AI line: {facts.ai_points} points')
+        elif facts.recorded or facts.sides:
+            t.say(f'     {t.OK} AI line: {facts.ai_note}; setup makes one from '
+                  + ('the recorded lap' if facts.recorded else "the track's side files (the road's edges)"))
         else:
             t.say(f'     {t.BAD} AI line: {facts.ai_note}. AssettoServer needs one for any AI car.')
     t.hint("The plugin also needs data about this track (its walls, road and course). If the server does\n"

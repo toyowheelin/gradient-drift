@@ -10,7 +10,9 @@ reads the layout. The plugin and the trainer load the same two files.
     from the mesh name: Wall (walls, tire stacks), Road, Grass or Unknown.
 <name>_collision.csv.gz - what the game collides with: the car stands on it and is pushed out of its
     walls. SurfaceType Wall for the game's walls, Road for a surface that counts as track
-    (IS_VALID_TRACK=1), Grass for one that does not, Unknown for a key found in neither surfaces file.
+    (IS_VALID_TRACK=1), Grass for one that does not or whose FRICTION is under 0.9 x the main road's
+    (ROAD's, or the most used track key's: verges a track lets count as track), Unknown for a key found
+    in neither surfaces file.
 
 <name>_collision_grip.csv.gz - one row per row of the collision file, in the same order: the
     surface's KEY and its grip, its FRICTION over the FRICTION of the road the layout has most of
@@ -44,6 +46,8 @@ GAME_DEFAULTS = {'ROAD': True, 'GRASS': False, 'KERB': True, 'SAND': False}   # 
 DEFAULT_FRICTION = 1.0
 HEADER = 'X1,Y1,Z1,X2,Y2,Z2,X3,Y3,Z3,SurfaceType\n'
 GRIP_HEADER = 'Key,Grip\n'
+# a track surface with less grip than this share of the main road's is the verge, not the course
+OFF_ROAD_FRICTION_SHARE = 0.9
 
 
 def sensor_surface(name):
@@ -92,6 +96,22 @@ def triangle_area(t):
     bx, by, bz = t[6] - t[0], t[7] - t[1], t[8] - t[2]
     cx, cy, cz = ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx
     return 0.5 * (cx * cx + cy * cy + cz * cz) ** 0.5
+
+
+def off_road_keys(friction, road_count):
+    """The keys that count as track in the game but are not the road: their FRICTION is under
+    OFF_ROAD_FRICTION_SHARE of the road's. The road is ROAD, the game's own road key, when the layout
+    uses it, else the track key with the most triangles (a road is finely meshed, a verge or the
+    ground beyond coarsely). Black Cat County's verges are OFF (0.70, gravel sound) and CUT (0.80),
+    both IS_VALID_TRACK=1: as Road they made its course run on to the walls, 14 - 48 m wide round a
+    road ~12 m wide."""
+    if not road_count:
+        return set()
+    main = 'ROAD' if 'ROAD' in road_count else max(road_count, key=road_count.get)
+    if main not in friction:
+        return set()
+    limit = OFF_ROAD_FRICTION_SHARE * friction[main]
+    return {k for k in road_count if k in friction and friction[k] < limit}
 
 
 def find(folder, name):
@@ -199,6 +219,7 @@ def main(argv=None):
         return 'Unknown', ''
 
     unplaced = collections.Counter()
+    road_count = collections.Counter()
     sensors, collision, collision_keys = [], [], []
     for file, (dx, dy, dz) in layout_files(track, args.layout):
         path = find(track, file)
@@ -215,11 +236,19 @@ def main(argv=None):
             if surface:
                 collision.extend(t + (surface,) for t in moved)
                 collision_keys.extend([key] * len(moved))
+                if surface == 'Road':
+                    road_count[key] += len(moved)
             if surface in (None, 'Wall'):
                 kind = sensor_surface(mesh_name)
                 sensors.extend(t + (kind,) for t in moved)
         print(f'  {file}: {len(sensors) - before[0]} sensor, {len(collision) - before[1]} collision triangles')
 
+    off_road = off_road_keys(friction, road_count)
+    if off_road:
+        main = 'ROAD' if 'ROAD' in road_count else max(road_count, key=road_count.get)
+        print(f"  counted as off the road (grass): {', '.join(f'{k} (FRICTION {friction[k]:g})' for k in sorted(off_road))}, "
+              f"under {OFF_ROAD_FRICTION_SHARE:g} x the main road's ({main}, {friction[main]:g}) though the game counts them as track")
+        collision = [r[:9] + ('Grass',) if k in off_road else r for r, k in zip(collision, collision_keys)]
     os.makedirs(args.output, exist_ok=True)
     for suffix, rows in (('triangles', sensors), ('collision', collision)):
         out_path = os.path.join(args.output, f'{name}_{suffix}.csv.gz')

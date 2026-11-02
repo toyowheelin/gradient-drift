@@ -72,6 +72,8 @@ before installing them.
 - **Scorecard.** `EnableScorecard` logs a short report card per session: slide and spin share,
   wall and car hits, chase time and gap, and time on the stock AI. Counting stops while no player
   is on.
+- **Setup works on more tracks.** Big tracks fit in memory, a track without an AI line gets one
+  from its side files, and low-grip verges the game counts as track are kept off the course.
 - `gradient-drift-setup bundle <server>` only packs a server's loose data files.
 
 ### For developers
