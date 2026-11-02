@@ -100,9 +100,11 @@ foreach (JsonElement c in cases.RootElement.GetProperty("policies").EnumerateArr
         }
         row++;
     }
-    if (worst > tolerance)
+    // a case may allow more: what float32 arithmetic itself moves that network's actions (make_cases.py)
+    float allowed = c.TryGetProperty("action_tolerance", out JsonElement own) ? (float)own.GetDouble() : tolerance;
+    if (worst > allowed)
     {
-        Console.WriteLine($"FAIL {file}: actions differ from Python's by up to {worst:G3} (input row {worstRow}, action {worstAction}; allowed {tolerance:G3}) ({why})");
+        Console.WriteLine($"FAIL {file}: actions differ from Python's by up to {worst:G3} (input row {worstRow}, action {worstAction}; allowed {allowed:G3}) ({why})");
         failures++;
     }
     else
