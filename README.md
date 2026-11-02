@@ -70,7 +70,7 @@ reads the track and the cars from it).
    plugin says so in the server log at start. To build the
    plugin yourself instead, see [Building the plugin](#building-the-plugin).
 2. **Run the setup program** ([`setup/`](setup/README.md)). Point it at the game install and the
-   server folder, then choose the bot car, how many bots, trains and pace. It shows every change
+   server folder, then choose the bot car, how many bots and pace. It shows every change
    before and after, makes them on a yes, keeps the originals, and can undo. It copies in the
    plugin, writes each bot car's numbers, adds the bot entries, sets the AI settings AssettoServer
    needs, and makes the track's data if it's missing.

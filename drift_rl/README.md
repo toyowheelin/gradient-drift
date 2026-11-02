@@ -333,7 +333,7 @@ was trained with.
 | `chase_report.py` | How policies chase a ghost leader in the simulator (gap, angle and line against it, hits) and how they drive alone. |
 | `telemetry_ghosts.py` | Adds a human's laps from the in-game telemetry app's CSV to a track's ghost leaders. |
 | `chase_drops.py` | Why a chaser falls out of its drift: drops against throttle lifts, the front brake, the lead and the gap. |
-| `tandem_report.py` | How the tandem-train followers in a plugin telemetry file behaved. |
+| `tandem_report.py` | How the tandem-train followers in a plugin telemetry file behaved (the replaying followers retired in v0.3.0; for older telemetry). |
 | `judge.py` | Drivers side by side on the same course (bots from the plugin's telemetry, a human from the in-game recorder), lap by lap and zone by zone, with a rough Formula Drift score (line 40, angle 40, style 20, measured rather than judged). |
 | `human_recording.py` | Speed, sideways acceleration, slip, RPM, gear and throttle of a human driver, from an in-game telemetry recording. |
 

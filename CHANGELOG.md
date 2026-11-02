@@ -54,7 +54,8 @@ before installing them.
 - `LeadPlayers`: a bot with a player close behind waits for them.
 - **Retired:** `TrainSize` and its `Tandem*` settings. Followers that replayed a lead car's path
   are gone: chasing bots drive themselves and form trains on their own. The plugin ignores these
-  settings (an old config still starts), and setup takes `TrainSize` out.
+  settings (an old config still starts), and setup takes `TrainSize` out. Setup's `--train-size`
+  option and its trains question are gone.
 
 ### Bots
 
@@ -73,7 +74,8 @@ before installing them.
   wall and car hits, chase time and gap, and time on the stock AI. Counting stops while no player
   is on.
 - **Setup works on more tracks.** Big tracks fit in memory, a track without an AI line gets one
-  from its side files, and low-grip verges the game counts as track are kept off the course.
+  from its side files, and low-grip verges the game counts as track are kept off the course (Black
+  Cat County's course used to run out to the walls).
 - `gradient-drift-setup bundle <server>` only packs a server's loose data files.
 
 ### For developers
