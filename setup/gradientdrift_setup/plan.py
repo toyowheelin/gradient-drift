@@ -21,6 +21,7 @@ PLUGIN_FILES = ['GradientDriftPlugin.dll', 'GradientDriftPlugin.deps.json', 'Gra
 # Add each release's policy here (build-plugin.yml refuses a v* release tag whose policy is missing).
 SHIPPED_POLICIES = {
     'd4388a8477bf5284d0d358e12908eb7293a7018b0140a46fd55f13bac99d2212': 'plugin-v0.1.0',
+    'f2d79acf4c49d444945af0b7078624da2a72f3a080d0b3940fd1ca4fe0f95cf6': 'v0.3.0',
 }
 # Plugin settings a release renamed (old name: new name). A setting the plugin going in does not know
 # at all is taken out of extra_cfg.yml (AssettoServer stops at start on a setting the plugin's

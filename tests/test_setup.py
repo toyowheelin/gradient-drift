@@ -111,6 +111,13 @@ def world(tmp_path, tracks_dir, course_names):
     data = tmp_path / 'track_data'
     shutil.copytree(os.path.join(tracks_dir, track), data / track)
     de.course_pace_reference(str(data), track, fs.load_world(str(data), track=track))
+    # and its surface grip (one row per collision row; a generated course grips 1 everywhere), which
+    # a policy trained with SurfaceGrip needs
+    import gzip
+    with gzip.open(data / track / f'{track}_collision.csv.gz', 'rt') as f:
+        rows = sum(1 for _ in f) - 1
+    with gzip.open(data / track / f'{track}_collision_grip.csv.gz', 'wt') as f:
+        f.write('Key,Grip\n' + '-,1.0000\n' * rows)
 
     game = tmp_path / 'game'
     ai = game / 'content' / 'tracks' / track / 'ai'
