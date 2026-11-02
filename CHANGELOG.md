@@ -18,7 +18,8 @@ before installing them.
 
 - Run the new setup on each server (`gradient-drift-setup apply <server>`). It replaces the plugin
   and the policy together, makes each track's surface grip file, and packs the bots' data into
-  one file. Stop the server first. `undo` puts back what it changed.
+  one file. It also takes out `TrainSize`, now retired. Stop the server first. `undo` puts back
+  what it changed.
 - The bots now drive at 100% pace when `BotPacePercent` is not set. Before, an unset pace meant
   the top of the policy's range, which is 120% for the new policy.
 - A policy you trained or polished yourself is kept, as before. If the new plugin cannot run it,
@@ -49,6 +50,9 @@ before installing them.
 - `ChaseBots`: bots chase bots too, so drift trains form on their own. Each car has at most one
   chaser, and `ChaseTrainMax` caps a train's length.
 - `LeadPlayers`: a bot with a player close behind waits for them.
+- **Retired:** `TrainSize` and its `Tandem*` settings. Followers that replayed a lead car's path
+  are gone: chasing bots drive themselves and form trains on their own. The plugin ignores these
+  settings (an old config still starts), and setup takes `TrainSize` out.
 
 ### Bots
 

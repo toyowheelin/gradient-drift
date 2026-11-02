@@ -4,7 +4,7 @@
                                           else the same five steps as questions in the terminal
     gradient-drift-setup walk             the walk-through in the terminal (Windows and Linux alike)
     gradient-drift-setup check <server folder> [<server folder> ...] [--game <AC install>]
-        [--bots N] [--car MODEL[,MODEL...]] [--skin NAME[,NAME...]] [--name NAME] [--train-size N] [--pace PERCENT]
+        [--bots N] [--car MODEL[,MODEL...]] [--skin NAME[,NAME...]] [--name NAME] [--pace PERCENT]
         [--plugin FOLDER] [--track-data FOLDER] [--shipped-policy] [--details]
     gradient-drift-setup apply <server folder> [the same options] [--yes]
     gradient-drift-setup undo <server folder> [--yes]
@@ -169,8 +169,6 @@ def main(argv=None):
         c.add_argument('--bots', type=int, default=1, help='how many bots in all')
         c.add_argument('--name', default=None,
                        help="the bots' name in game, shown with each one's slot number (default: the server's, else DriftBot)")
-        c.add_argument('--train-size', type=int, default=None,
-                       help='bots to a tandem train (1: every bot on its own; default: leave the server as it is)')
         c.add_argument('--pace', type=float, default=None, metavar='PERCENT',
                        help="the bots' pace, %% of the flat-out speed at each point of the lap (a policy trained with paces)")
         c.add_argument('--plugin', default=None, help="the folder with the plugin's build (GradientDriftPlugin.dll ...)")
@@ -226,7 +224,7 @@ def main(argv=None):
         try:
             plan, files = run_logged(lambda log: export_server(
                 args.servers[0], args.out, game, log=log, **cars_args, bots=args.bots, bot_name=name,
-                plugin_source=plugin, track_data=track_data, train_size=args.train_size, pace_percent=args.pace,
+                plugin_source=plugin, track_data=track_data, pace_percent=args.pace,
                 shipped_policy=args.shipped_policy))
         except ValueError as e:
             print(f"  not exported: {e}")
@@ -243,7 +241,7 @@ def main(argv=None):
     for folder in args.servers:
         server = read_server(folder)
         plan = plan_bot(server, game, **cars_args, bots=args.bots, bot_name=args.name or bot_name_now(server),
-                        plugin_source=plugin, track_data=track_data, train_size=args.train_size,
+                        plugin_source=plugin, track_data=track_data,
                         pace_percent=args.pace, shipped_policy=args.shipped_policy)
         print(describe(plan, args.details))
         if plan.blockers or plan.server.problems:

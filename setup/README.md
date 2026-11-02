@@ -206,7 +206,6 @@ Several server folders can be given at once (not with `export`).
 | `--name NAME` | the bots' name in game, each shown with its slot number (default: the name the server already gives them, else DriftBot) |
 | `--car MODEL`, `--skin NAME` | every bot's car and skin, the existing AI entries put in it too. Without `--car` an existing bot keeps its car and a new one takes an existing bot's, else the car the shipped policy was trained in, else the server's first car |
 | `--car A,B,...`, `--skin X,Y,...` | a car (and skin) per bot slot, the existing AI entries first in the entry list's order; an empty one keeps that bot's car; bots past the list take its last car |
-| `--train-size N` | run the bots as tandem trains of N: the first car of each drives, the others follow it door to door (1 = every bot on its own) |
 | `--pace PERCENT` | how fast they drive, as a share of the track's reference speed round the lap (a policy trained with paces; lower is calmer) |
 | `--plugin FOLDER` | the plugin's files (default: the plugin download's `GradientDriftPlugin/` beside the packaged program, else the repository's build folder) |
 | `--track-data FOLDER` | the tracks' files, a folder per track (default: `tracks/` beside it, else the repository's `drift_rl/tracks`) |
@@ -268,8 +267,8 @@ changed, and no bot is taken away.
   freezes an AI car for 1-3 s when a player touches it. It sets `NamePrefix` to the bot name:
   AssettoServer shows each AI car as `<NamePrefix> <slot number>` (`Traffic 16`), whatever its
   `DRIVERNAME` in the entry list;
-- the plugin's own section with `EnableLearnedPolicy: true`, and `TrainSize` and `BotPacePercent`
-  when given.
+- the plugin's own section with `EnableLearnedPolicy: true`, and `BotPacePercent` when given.
+  `TrainSize` (retired in v0.3.0) is taken out.
 
 **Made first when they are not there:** the track's data, into the track files folder (`tracks/`
 beside the packaged program, else the repository's `drift_rl/tracks`), never into the server; then,

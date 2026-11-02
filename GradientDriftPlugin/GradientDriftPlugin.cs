@@ -202,6 +202,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _entryCarManager = entryCarManager;
         _acServer = acServer;
         _configuration = configuration;
+        if (_configuration.TrainSize > 1)
+        {
+            // retired in v0.3.0: bots form trains by chasing each other
+            Log.Warning("GradientDrift: TrainSize is retired and ignored - bots form tandem trains by chasing each other (ChasePlayers and ChaseBots); take TrainSize out of extra_cfg.yml");
+            _configuration.TrainSize = 1;
+        }
         VerboseLog.On = configuration.VerboseLogging;
         WarnIfOtherAssettoServer();
         _timing = new PluginTiming(configuration.LogTimingIntervalSeconds > 0f || !configuration.VerboseLogging

@@ -8,11 +8,12 @@ EnablePlugins: [GradientDriftPlugin]
 EnableLearnedPolicy: true
 BotSkill: 1
 BotPacePercent: 90
-TrainSize: 3
+ChasePlayers: true
+ChaseBots: true
 ```
 
 Every setting has a working default, so the block can hold only what you want to change. The setup
-program writes `EnablePlugins`, `EnableLearnedPolicy`, `TrainSize` and `BotPacePercent` for you.
+program writes `EnablePlugins`, `EnableLearnedPolicy` and `BotPacePercent` for you.
 Settings are read when the server starts: restart it after a change.
 
 The settings come in two kinds:
@@ -47,11 +48,7 @@ The settings come in two kinds:
 
 | Setting | Default | What it does |
 |---|---|---|
-| `TrainSize` | `1` | Bots per train, in the order of their entries in `entry_list.ini`. The first of each train is driven by the policy; the others follow it, replaying what it did a moment earlier, so they hold its line door to door. **1** means every bot drives alone. |
-| `TandemGapSeconds` | `0.35` | How far each follower runs behind the car in front, in seconds. 0.35 s is a little over a car length at drift speed. |
-| `TandemGapVariation` | `0.25` | The gap wanders by up to this share either way (0.25 = ±25%), slowly and differently for each car, so a train doesn't look robotic. |
-| `TandemMinGapMeters` | `4.8` | Never closer than this to the car in front, nose to nose. A car is about 4.4 m long. |
-| `TandemLateralOffsetMeters` | `0.6` | How far a follower may sit to one side of the lead's line. Each wanders between about a fifth of this and all of it, on a side of its own. |
+| `TrainSize`, `TandemGapSeconds`, `TandemGapVariation`, `TandemMinGapMeters`, `TandemLateralOffsetMeters` | | **Retired in v0.3.0.** Trains of followers replaying a lead car are gone: bots form trains by chasing each other, each driving itself (`ChasePlayers` with `ChaseBots`, below). The plugin still accepts these settings, so an old `extra_cfg.yml` starts, but ignores them (a `TrainSize` above 1 gets a warning in the log). Setup takes `TrainSize` out. |
 | `LeadPlayers` | `false` | A bot (or train) with a player chasing close behind waits for them: its own pace (`BotPacePercent`) with the player right on its tail, slowing to `BotPaceMinPercent` as they drop back to 40 m. Further back, the bots space themselves as usual. Only for a policy that reads its pace (every current one). |
 | `ChasePlayers` | `false` | A bot chases a player who pulls in within `ChaseOptInMeters` (7.5 m, about 25 ft) in front of its nose, until the player gets `ChaseOptOutMeters` (40 m) ahead. Its pace comes from the Intelligent Driver Model, the standard car-following model of traffic simulation, aiming `ChaseGapMeters` behind the player and easing off early when it closes fast. Only for a policy that reads its pace (every current one). With a tandem policy (one trained to chase, with the car-ahead inputs and a residual network) the bot also sees the player, as in training: where they are, their gap between the car outlines, line, slip, steering, throttle and brake lights, and its pace takes in the player's acceleration and may drop to the chase floor the policy was trained with. Test setting on the tandem branch. |
 | `ChaseGapMeters` | `2` | With `ChasePlayers`: the gap the chasing bot aims for behind the player, bumper to bumper, before the speed-dependent margin the model adds. |

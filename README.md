@@ -29,8 +29,8 @@
   <a href="CREDITS.md">Credits</a>
 </p>
 
-A server plugin takes over the server's AI cars and drives them sideways: linked drifts, tandem
-trains, door to door, on the server's own track. The driving comes from a small neural network
+A server plugin takes over the server's AI cars and drives them sideways: linked drifts, and tandem
+trains where bots chase players and each other, on the server's own track. The driving comes from a small neural network
 trained offline, by reinforcement learning, in a simulator of the plugin's own vehicle model. It
 ships as one `policy.json`; nothing learns on the live server.
 
@@ -48,7 +48,7 @@ ships as one `policy.json`; nothing learns on the live server.
 |---|---|
 | 🏁 **Any track** | The shipped policy was trained on seven real tracks and 100 randomly generated courses, so it drives tracks it has never seen. The setup program makes a track's data from your own game install. |
 | 🚗 **Any rear-drive car** | Every bot drives as a drift car (welded diff, an angle kit of at least 50°), with its weight, geometry, tyres, power and gearing from the car's own files. |
-| 🚦 **Several bots** | Spread round the lap, or in tandem trains where followers hold the lead car's line a car length behind. |
+| 🚦 **Several bots** | Spread round the lap, or chasing players and each other in tandem trains (`ChasePlayers`, `ChaseBots`). |
 | 🎛️ **Two dials** | How fast (a share of the track's flat-out drift speed), and how good a driver: from a careful novice who still holds a drift to the best the policy can do. |
 | 🧑 **Close to a human** | On the owner's server the bots rotate the car about as hard and as often as a human drifting the same track (yaw acceleration, direction changes, sideways g, time sliding). |
 
@@ -79,7 +79,7 @@ reads the track and the cars from it).
    why, if it stands aside and leaves the stock AI driving, or which bot is stuck and where.
 4. **Tune it** in the server's `extra_cfg.yml`, then restart the server.
    [`SETTINGS.md`](GradientDriftPlugin/SETTINGS.md) lists every setting; the ones you'll want are
-   `BotSkill`, `BotPacePercent` and `TrainSize`.
+   `BotSkill`, `BotPacePercent`, `ChasePlayers` and `ChaseBots`.
 
 > [!TIP]
 > **Server on a hosting plan?** Run setup on your own PC against the server's downloaded `cfg`

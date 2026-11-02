@@ -118,10 +118,10 @@ public class GradientDriftConfiguration
     //       Skill: 0.6
     public List<BotStyleEntry> BotStyles { get; set; } = new();
 
-    // Tandem trains: bots in order of their entry, this many to a train. The first of each train is
-    // driven by the policy; the others replay what it sent a moment earlier (TandemTrains.cs), so
-    // they follow its line exactly. 1 = every bot drives alone. With HoldBotSpacing the trains are
-    // spread round the lap, each as one.
+    // Retired in v0.3.0 (bots form trains by chasing each other: ChasePlayers, ChaseBots). Still
+    // accepted so an older extra_cfg.yml starts; the plugin sets TrainSize back to 1 at start, so the
+    // replaying followers (TandemTrains.cs) never form. This and the Tandem* settings below go with
+    // that code in a later release.
     public int TrainSize { get; set; } = 1;
 
     // Seconds behind the car in front, per place in the train (0.35 is a little over a car length

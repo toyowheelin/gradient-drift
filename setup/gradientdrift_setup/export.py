@@ -145,7 +145,7 @@ def instructions(plan, files, source):
             "   weight and steering lock. A warning there with \"the stock AI drives\" says what is missing.",
             "",
             "Bots appear only while a player is on the server, near the track's AI line and not idle.",
-            "Players need the bots' cars installed to join. To change the bots' skill, pace or trains later,",
+            "Players need the bots' cars installed to join. To change the bots' skill or pace later,",
             f"edit the --- {PLUGIN_CONFIG_TAG} section of cfg/extra_cfg.yml (SETTINGS.md lists them)",
             "and restart the server."]
     if plan.notes:

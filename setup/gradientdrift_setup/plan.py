@@ -226,13 +226,12 @@ def same_data(a, b):
 
 
 def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_mode='fixed',
-             plugin_source=None, track_data=None, train_size=None, pace_percent=None, slots=None,
+             plugin_source=None, track_data=None, pace_percent=None, slots=None,
              shipped_policy=False):
     """car, skin, slots: the bots' cars (bot_slots); an existing AI entry in another car or skin is
     put in the one asked for. plugin_source: a folder with the plugin's build (GradientDriftPlugin.dll etc.); track_data: a folder
     with a folder of files per track (drift_rl/tracks/), copied in when the server lacks them or has
-    a different copy. train_size: bots to a tandem train (1 = every bot drives on its own; None =
-    leave the server's setting). pace_percent: the bots' pace, % of each point's flat-out speed, for
+    a different copy. pace_percent: the bots' pace, % of each point's flat-out speed, for
     a policy trained with paces (None = leave it). shipped_policy: put the policy that comes with the
     plugin in place of a server's own one (one policy on every server)."""
     p = Plan(server=server)
@@ -537,16 +536,11 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     if bots > 1 and config.get('HoldBotSpacing') is False:
         p.changes.append(Change(x, "spread the bots round the lap", 'HoldBotSpacing: false', 'HoldBotSpacing: true',
                                 op=('yaml_doc', PLUGIN_CONFIG_TAG, 'HoldBotSpacing', 'true')))
-    now_train = int(config.get('TrainSize', 1) or 1)
-    if train_size is not None and train_size != now_train:
-        what = ("let every bot drive on its own" if train_size <= 1
-                else f"run the bots as tandem trains of {train_size}: the first car of each train drives, "
-                     "the others follow it door to door")
-        p.changes.append(Change(x, what, f'TrainSize: {now_train}', f'TrainSize: {train_size}',
-                                op=('yaml_doc', PLUGIN_CONFIG_TAG, 'TrainSize', str(train_size))))
-    size = train_size if train_size is not None else now_train
-    if size > 1 and bots % size:
-        p.notes.append(f"{bots} bots in trains of {size}: the last train has {bots % size}")
+    # tandem trains of replaying followers are retired (v0.3.0): bots chase each other (ChaseBots)
+    if 'TrainSize' in config:
+        p.changes.append(Change(x, "take out TrainSize: replayed tandem trains are retired; bots form trains by "
+                                "chasing each other (ChasePlayers and ChaseBots)", f"TrainSize: {config['TrainSize']}", '',
+                                op=('yaml_doc_remove', PLUGIN_CONFIG_TAG, 'TrainSize')))
     if pace_percent is not None:
         if not paces:
             p.notes.append("the policy has no pace (it was trained without one): the bots' pace is not set")
