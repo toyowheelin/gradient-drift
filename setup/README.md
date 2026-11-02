@@ -19,8 +19,9 @@ scripts.
   AssettoServer's version.
 - **Makes a track's data when it's missing**, from the game install. It takes a few minutes: the
   track's geometry, road mesh, AI line, course and zones, the same as `drift_rl/setup_track.py`.
-  For a track with no AI line of its own it makes one from a recorded lap
-  (`ai/fast_lane.ai.candidate`).
+  For a track with no AI line of its own (or an empty one) it makes one from a recorded lap
+  (`ai/fast_lane.ai.candidate`), or else down the middle of the road from the track's side files
+  (`data/side_l.csv` and `side_r.csv`, which most tracks carry), and puts it in the server.
 - **Refuses a track whose data looks wrong**, before it writes anything to the server: speed
   targets the car cannot drive (more than it can corner at, or a kink in the AI line), the AI line
   running into a wall, or a wall too low for the policy's sensors to feel (`drift_rl/check_track.py`).

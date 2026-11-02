@@ -70,7 +70,7 @@ tracks.
 
 | file | where it comes from |
 |---|---|
-| `<track>_fast_lane.ai` | the track's AI line: `content/tracks/<track>/ai/fast_lane.ai` in the game, renamed |
+| `<track>_fast_lane.ai` | the track's AI line: `content/tracks/<track>/ai/fast_lane.ai` in the game, renamed (or, for a track without one, made from its recorded lap or its `data/side_l.csv` and `side_r.csv`) |
 | `<track>_collision.csv.gz`, `<track>_visual.csv.gz` | the track's model files, read the game's way: what the game collides with (its ground and walls) and what the model shows. `python ../tools/track_triangles.py <game>/content/tracks/<track> tracks/<track>` writes the second as `<track>_triangles.csv.gz`; rename it |
 | `<track>_triangles.csv.gz` | what the bot's sensors see: the walls the game collides with plus the course's markers, `python sensor_view.py --track <track>` (after `build_course.py`). Things the model shows that the car cannot hit are left out. |
 | `<track>_road_mesh.csv` | the road-mesh points the plugin reads, from the AssettoServer folder |

@@ -11,8 +11,10 @@ own folder, tracks/<track>/ (track_files.py), all named after the track folder:
    with and what its model shows (tools/track_triangles.py)
 2. <track>_road_mesh.csv (build_road_mesh.py)
 3. <track>_fast_lane.ai, the AI line: the track's own (its ai/fast_lane.ai, or the recorded
-   fast_lane.ai.candidate when that is all there is), checked and, if it needs it, rebuilt down the
-   middle of the road (line_tools.py). --line keep never rebuilds it, --line rebuild always does.
+   fast_lane.ai.candidate when that is all there is, or, with neither, the middle of the road between
+   the layout's data/side_l.csv and side_r.csv: tools/centre_line.py), checked and, if it needs it,
+   rebuilt down the middle of the road (line_tools.py). --line keep never rebuilds it, --line rebuild
+   always does.
 4. <track>_course_edges.csv and _course_markers.csv (build_course.py), <track>_course_zones.csv
    (build_zones.py)
 5. <track>_triangles.csv.gz, what the sensors see: the walls the game collides with and the
@@ -25,7 +27,7 @@ own folder, tracks/<track>/ (track_files.py), all named after the track folder:
 
 With --server (an AssettoServer folder) it also copies the files the plugin reads into it (and the
 pace reference, once training has made one) and,
-if the line was rebuilt, the line to <server>/content/tracks/<track>/[<layout>/]ai/fast_lane.ai,
+if the line is not the game's (rebuilt, or made from the side files), the line to <server>/content/tracks/<track>/[<layout>/]ai/fast_lane.ai,
 keeping the one there as fast_lane.ai.before_setup. Nothing is ever deleted.
 
 Then train with:  python train_ppo_gpu.py --track <track> ...
@@ -56,14 +58,32 @@ def tools_module(name):
 
 def find_line(track, layout):
     """(path, recorded) of the track's AI line: the layout's, then the track's; a .candidate only
-    when there is no fast_lane.ai."""
+    when there is no fast_lane.ai. An empty or unreadable fast_lane.ai counts as none."""
     folders = ([(layout, 'ai')] if layout else []) + [('ai',)]
     for suffix, recorded in (('', False), ('.candidate', True)):
         for folder in folders:
             path = tf.game_path(track, *folder, 'fast_lane.ai' + suffix)
-            if os.path.exists(path):
+            if os.path.exists(path) and line_points(path) >= 2:
                 return path, recorded
     return None, False
+
+
+def line_points(path):
+    from ai_spline import load_fast_lane
+    try:
+        return len(load_fast_lane(path))
+    except Exception:                   # a truncated or foreign file
+        return 0
+
+
+def find_sides(track, layout):
+    """The data folder holding the layout's side_l.csv and side_r.csv (the road's edges, which most
+    tracks carry for the game's own AI), or None."""
+    for folder in ([(layout, 'data')] if layout else []) + [('data',)]:
+        data = tf.game_path(track, *folder)
+        if all(os.path.exists(tf.game_path(data, f'side_{s}.csv')) for s in 'lr'):
+            return data
+    return None
 
 
 def run(module, args):
@@ -107,12 +127,24 @@ def main(argv=None):
 
     print('3. AI line')
     source, recorded = find_line(track, args.layout)
-    if source is None:
-        sys.exit(f"no ai/fast_lane.ai (or fast_lane.ai.candidate) in {track}"
-                 + (f" or its layout {args.layout}" if args.layout else ""))
     line_path = tf.path(data, 'fast_lane', name)
-    shutil.copyfile(source, line_path)
-    print(f'  from {source}' + (' (a recorded lap: the track has no fast_lane.ai)' if recorded else ''))
+    from_sides = False
+    if source is None:
+        sides = find_sides(track, args.layout)
+        if sides is None:
+            sys.exit(f"no usable ai/fast_lane.ai, fast_lane.ai.candidate or data/side_l.csv and side_r.csv in {track}"
+                     + (f" or its layout {args.layout}" if args.layout else ""))
+        print(f"  the track has no AI line: making one down the middle of the road from {sides}"
+              f"{os.sep}side_l.csv and side_r.csv")
+        try:
+            tools_module('centre_line').build(sides, line_path, collision=tf.path(data, 'collision', name),
+                                              log=lambda line: print(f'  {line}'))
+        except ValueError as e:
+            sys.exit(f"no AI line in {track}, and its side files cannot make one: {e}")
+        from_sides = True     # already the middle of the road: rebuilt only if the check below finds fault
+    else:
+        shutil.copyfile(source, line_path)
+        print(f'  from {source}' + (' (a recorded lap: the track has no fast_lane.ai)' if recorded else ''))
     import numpy as np
     import fast_sim as fs
     import line_tools as lt
@@ -175,7 +207,7 @@ def main(argv=None):
         for kind in kinds:
             shutil.copyfile(tf.path(data, kind, name), os.path.join(args.server, tf.name(kind, name)))
             print(f'  {tf.name(kind, name)}')
-        if rebuilt:
+        if rebuilt or from_sides:
             ai = os.path.join(args.server, 'content', 'tracks', os.path.basename(track), *([args.layout] if args.layout else []), 'ai')
             os.makedirs(ai, exist_ok=True)
             target = os.path.join(ai, 'fast_lane.ai')
@@ -185,10 +217,10 @@ def main(argv=None):
             print(f'  {target}')
 
     print(f'done in {time.time() - t0:.0f} s. Train with: python train_ppo_gpu.py --track {name} ...')
-    if rebuilt and not args.server and not args.for_setup:
-        print(f'The line was rebuilt: the server needs it too, as content/tracks/{os.path.basename(track)}/'
+    if (rebuilt or from_sides) and not args.server and not args.for_setup:
+        print(f'The line is not the game\'s: the server needs it too, as content/tracks/{os.path.basename(track)}/'
               f'{args.layout + "/" if args.layout else ""}ai/fast_lane.ai (copy {line_path}).')
-    return {'name': name, 'line': line_path, 'line_rebuilt': bool(rebuilt)}
+    return {'name': name, 'line': line_path, 'line_rebuilt': bool(rebuilt or from_sides)}
 
 
 if __name__ == '__main__':

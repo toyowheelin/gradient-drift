@@ -299,6 +299,9 @@ class TrackPage(QWizardPage):
             rows.append(f'{OK} Model files: {", ".join(t.model_files) or "none listed"}')
             if t.ai_points >= 2:
                 rows.append(f'{OK} AI line: {t.ai_points} points')
+            elif t.recorded or t.sides:
+                rows.append(f'{OK} AI line: {t.ai_note}; setup makes one from '
+                            + ('the recorded lap' if t.recorded else "the track's side files (the road's edges)"))
             else:
                 rows.append(f'{BAD} AI line: {t.ai_note}. AssettoServer needs one for any AI car; '
                             'recording one by driving a lap is coming in a later version.')

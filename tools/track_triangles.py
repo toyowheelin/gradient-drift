@@ -10,7 +10,9 @@ reads the layout. The plugin and the trainer load the same two files.
     from the mesh name: Wall (walls, tire stacks), Road, Grass or Unknown.
 <name>_collision.csv.gz - what the game collides with: the car stands on it and is pushed out of its
     walls. SurfaceType Wall for the game's walls, Road for a surface that counts as track
-    (IS_VALID_TRACK=1), Grass for one that does not, Unknown for a key found in neither surfaces file.
+    (IS_VALID_TRACK=1), Grass for one that does not or whose FRICTION is under 0.9 x the main road's
+    (ROAD's, or the most used track key's: verges a track lets count as track), Unknown for a key found
+    in neither surfaces file.
 
 <name> is the track folder's name unless --name gives another. Each row: X1,Y1,Z1,X2,Y2,Z2,X3,Y3,Z3,
 SurfaceType in world coordinates (to 0.1 mm), after one header line; gzip-compressed.
@@ -34,6 +36,8 @@ from kn5_reader import parse
 
 GAME_DEFAULTS = {'ROAD': True, 'GRASS': False, 'KERB': True, 'SAND': False}   # the game's system/data/surfaces.ini
 HEADER = 'X1,Y1,Z1,X2,Y2,Z2,X3,Y3,Z3,SurfaceType\n'
+# a track surface with less grip than this share of the main road's is the verge, not the course
+OFF_ROAD_FRICTION_SHARE = 0.9
 
 
 def sensor_surface(name):
@@ -66,6 +70,37 @@ def surfaces(path):
                 valid = ini.get(section, 'IS_VALID_TRACK', fallback='1').strip()
                 found.setdefault(key, valid not in ('0', ''))
     return found
+
+
+def surface_friction(path):
+    """{KEY: FRICTION} from a surfaces.ini, for the keys that give one."""
+    found = {}
+    if path and os.path.exists(path):
+        ini = read_ini(path)
+        for section in ini.sections():
+            if section.upper().startswith('SURFACE_') and ini.has_option(section, 'KEY'):
+                try:
+                    found.setdefault(ini.get(section, 'KEY').strip().upper(),
+                                     float(ini.get(section, 'FRICTION', fallback='').strip()))
+                except ValueError:
+                    pass
+    return found
+
+
+def off_road_keys(friction, road_count):
+    """The keys that count as track in the game but are not the road: their FRICTION is under
+    OFF_ROAD_FRICTION_SHARE of the road's. The road is ROAD, the game's own road key, when the layout
+    uses it, else the track key with the most triangles (a road is finely meshed, a verge or the
+    ground beyond coarsely). Black Cat County's verges are OFF (0.70, gravel sound) and CUT (0.80),
+    both IS_VALID_TRACK=1: as Road they made its course run on to the walls, 14 - 48 m wide round a
+    road ~12 m wide."""
+    if not road_count:
+        return set()
+    main = 'ROAD' if 'ROAD' in road_count else max(road_count, key=road_count.get)
+    if main not in friction:
+        return set()
+    limit = OFF_ROAD_FRICTION_SHARE * friction[main]
+    return {k for k in road_count if k in friction and friction[k] < limit}
 
 
 def find(folder, name):
@@ -150,24 +185,28 @@ def main(argv=None):
     track_surfaces = find(layout_data, 'surfaces.ini') if layout_data and os.path.isdir(layout_data) \
         else find(track, 'data/surfaces.ini')
     keys.update(surfaces(track_surfaces))
+    friction = surface_friction(game_file)
+    friction.update(surface_friction(track_surfaces))
     patterns = [(re.compile(r'^\d+' + re.escape(k)), k) for k in sorted(keys, key=len, reverse=True)]
     wall = re.compile(r'^\d+WALL')
 
     def collision_surface(mesh_name):
-        """Wall / Road / Grass / Unknown for a colliding mesh, None for scenery."""
+        """(Wall / Road / Grass / Unknown, its surfaces.ini KEY) for a colliding mesh, (None, '') for
+        scenery."""
         upper = mesh_name.upper()
         if not upper[:1].isdigit():
-            return None
+            return None, ''
         if wall.match(upper):
-            return 'Wall'
+            return 'Wall', 'WALL'
         for pattern, key in patterns:
             if pattern.match(upper):
-                return 'Road' if keys[key] else 'Grass'
+                return ('Road' if keys[key] else 'Grass'), key
         unplaced[re.sub(r'[._].*', '', upper)] += 1
-        return 'Unknown'
+        return 'Unknown', ''
 
     unplaced = collections.Counter()
-    sensors, collision = [], []
+    road_count = collections.Counter()
+    sensors, collision, collision_keys = [], [], []
     for file, (dx, dy, dz) in layout_files(track, args.layout):
         path = find(track, file)
         if path is None:
@@ -177,16 +216,25 @@ def main(argv=None):
         meshes(parse(path).root, [[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)], found)
         before = len(sensors), len(collision)
         for mesh_name, tris in found:
-            surface = collision_surface(mesh_name)
+            surface, key = collision_surface(mesh_name)
             moved = [(t[0] + dx, t[1] + dy, t[2] + dz, t[3] + dx, t[4] + dy, t[5] + dz,
                       t[6] + dx, t[7] + dy, t[8] + dz) for t in tris]
             if surface:
                 collision.extend(t + (surface,) for t in moved)
+                collision_keys.extend([key] * len(moved))
+                if surface == 'Road':
+                    road_count[key] += len(moved)
             if surface in (None, 'Wall'):
                 kind = sensor_surface(mesh_name)
                 sensors.extend(t + (kind,) for t in moved)
         print(f'  {file}: {len(sensors) - before[0]} sensor, {len(collision) - before[1]} collision triangles')
 
+    off_road = off_road_keys(friction, road_count)
+    if off_road:
+        main = 'ROAD' if 'ROAD' in road_count else max(road_count, key=road_count.get)
+        print(f"  counted as off the road (grass): {', '.join(f'{k} (FRICTION {friction[k]:g})' for k in sorted(off_road))}, "
+              f"under {OFF_ROAD_FRICTION_SHARE:g} x the main road's ({main}, {friction[main]:g}) though the game counts them as track")
+        collision = [r[:9] + ('Grass',) if k in off_road else r for r, k in zip(collision, collision_keys)]
     os.makedirs(args.output, exist_ok=True)
     for suffix, rows in (('triangles', sensors), ('collision', collision)):
         out_path = os.path.join(args.output, f'{name}_{suffix}.csv.gz')

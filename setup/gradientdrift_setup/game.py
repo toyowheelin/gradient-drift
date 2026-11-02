@@ -23,6 +23,7 @@ class TrackFacts:
     lap_m: float = 0.0                                # the AI line's length
     span_m: float = 0.0                               # the diagonal of the box round the AI line, seen from above
     recorded: str = ''                                # a recorded lap (fast_lane.ai.candidate), if any
+    sides: str = ''                                   # the data folder with side_l.csv and side_r.csv, if any
 
 
 def track_facts(game, track, layout):
@@ -49,7 +50,30 @@ def track_facts(game, track, layout):
             t.recorded = game_path(os.path.dirname(ai), 'fast_lane.ai.candidate')
             t.lap_m, t.span_m = ai_line_points(t.recorded)[2:]
         t.ai_note = 'no ai/fast_lane.ai' + (f" (the folder has {', '.join(candidates)})" if candidates else '')
+    if t.ai_points < 2 and not t.recorded:
+        # no line to start from: setup_track.py makes one down the middle of the road from the
+        # road's edges, which most tracks carry for the game's own AI
+        for data in ([game_path(folder, layout, 'data')] if layout else []) + [game_path(folder, 'data')]:
+            if all(os.path.exists(game_path(data, f'side_{s}.csv')) for s in 'lr'):
+                t.sides = data
+                t.lap_m, t.span_m = side_files_size(data)
+                break
     return t
+
+
+def side_files_size(data):
+    """(length in metres, span in metres) of the road's left edge in side_l.csv (X, Y, Z, progress)."""
+    try:
+        with open(game_path(data, 'side_l.csv'), encoding='utf-8-sig', errors='replace') as f:
+            rows = sorted((float(r[3]), float(r[0]), float(r[2])) for r in
+                          (line.split(',') for line in f) if len(r) >= 4)
+    except (OSError, ValueError):
+        return 0.0, 0.0
+    if len(rows) < 2:
+        return 0.0, 0.0
+    lap = sum(math.dist(rows[i][1:], rows[(i + 1) % len(rows)][1:]) for i in range(len(rows)))
+    xs, zs = [r[1] for r in rows], [r[2] for r in rows]
+    return lap, math.hypot(max(xs) - min(xs), max(zs) - min(zs))
 
 
 def ai_line_points(path):
