@@ -49,6 +49,8 @@ before installing them.
   get before it ends.
 - `ChaseBots`: bots chase bots too, so drift trains form on their own. Each car has at most one
   chaser, and `ChaseTrainMax` caps a train's length.
+- Both are on by default, so a server gets tandem without a settings change. Set `ChaseBots: false`
+  to keep bots spaced round the lap and chasing players only, or `ChasePlayers: false` for no chasing.
 - `LeadPlayers`: a bot with a player close behind waits for them.
 - **Retired:** `TrainSize` and its `Tandem*` settings. Followers that replayed a lead car's path
   are gone: chasing bots drive themselves and form trains on their own. The plugin ignores these

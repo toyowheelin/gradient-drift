@@ -48,7 +48,7 @@ ships as one `policy.json`; nothing learns on the live server.
 |---|---|
 | 🏁 **Any track** | The shipped policy was trained on seven real tracks and 100 randomly generated courses, so it drives tracks it has never seen. The setup program makes a track's data from your own game install. |
 | 🚗 **Any rear-drive car** | Every bot drives as a drift car (welded diff, an angle kit of at least 50°), with its weight, geometry, tyres, power and gearing from the car's own files. |
-| 🚦 **Several bots** | Spread round the lap, or chasing players and each other in tandem trains (`ChasePlayers`, `ChaseBots`). |
+| 🚦 **Several bots** | Chasing players and each other in tandem trains (`ChasePlayers`, `ChaseBots`, on by default), or spread round the lap. |
 | 🎛️ **Two dials** | How fast (a share of the track's flat-out drift speed), and how good a driver: from a careful novice who still holds a drift to the best the policy can do. |
 | 🧑 **Close to a human** | On the owner's server the bots rotate the car about as hard and as often as a human drifting the same track (yaw acceleration, direction changes, sideways g, time sliding). |
 

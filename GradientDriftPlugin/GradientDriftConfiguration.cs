@@ -64,7 +64,7 @@ public class GradientDriftConfiguration
     // Tandem with a bot chasing a player: a player who pulls in within ChaseOptInMeters ahead of a
     // bot's nose is chased until they get ChaseOptOutMeters ahead. The bot's pace comes from the
     // Intelligent Driver Model, aiming ChaseGapMeters behind them. A policy that reads its pace only.
-    public bool ChasePlayers { get; set; } = false;
+    public bool ChasePlayers { get; set; } = true;
     public float ChaseGapMeters { get; set; } = 2f;
     // How far ahead of a bot's nose a player is taken up (about 25 ft by default, the owner's opt-in),
     // and how far ahead they get before it gives up, metres along the line.
@@ -85,7 +85,7 @@ public class GradientDriftConfiguration
     // chasing). A bot-on-bot chase lasts at most ChaseBotRunSeconds; that bot then drops back and
     // takes up no bot for ChaseBotCooldownSeconds, so trains break up and form again. Chasing a
     // player is never timed.
-    public bool ChaseBots { get; set; } = false;
+    public bool ChaseBots { get; set; } = true;
     public int ChaseTrainMax { get; set; } = 3;
     public float ChaseBotRunSeconds { get; set; } = 60f;
     public float ChaseBotCooldownSeconds { get; set; } = 30f;
