@@ -8,6 +8,12 @@ when releasing.
 Settings named here are described in
 [GradientDriftPlugin/SETTINGS.md](GradientDriftPlugin/SETTINGS.md).
 
+## Unreleased
+
+- The bots can fit in with the players drifting with them (`AdaptToPlayers`, off by default): each
+  bot's pace and chase gap move toward the players' while they are on, inside the policy's trained
+  range, and go back to the settings when the server is empty. Nothing is learned or kept.
+
 ## v0.3.0
 
 The largest release so far: a new policy that drives in tandem, bots that can chase you and each

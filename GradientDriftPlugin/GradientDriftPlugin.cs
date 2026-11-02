@@ -151,6 +151,13 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private readonly List<float> _playerArcs = new();
     private readonly List<float> _playerSpeeds = new();     // along the line, m/s, as _playerArcs
     private readonly List<byte> _playerIds = new();         // their session ids, as _playerArcs
+    // AdaptToPlayers (PlayerAdaptation.cs): null when off. The players seen drifting this tick, for
+    // their gaps to the car ahead: where, heading, along the line, speed along it.
+    private readonly PlayerAdaptation? _adapt;
+    private readonly List<(byte Id, float X, float Z, float Heading, float Arc, float Speed)> _adaptPlayers = new();
+    private float _adaptLogS;
+    private bool _adapting;
+    private bool _adaptPlayersOn;
     // A tandem policy (ReadsChase): each moving player's recent states, by session id, what a bot
     // chasing them sees (ChaseInputs); times in seconds from _chaseEpochMs.
     private readonly Dictionary<byte, LeadTrack> _leadTracks = new();
@@ -325,6 +332,20 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     VerboseLog.Information("GradientDrift: spacing keeps the bots at {Floor}% of flat-out speed or faster (BotPaceMinPercent)",
                         _paceFloor * 100f);
                 }
+            }
+        }
+        if (_configuration.AdaptToPlayers)
+        {
+            if (_policy != null && _policy.ReadsPace && _policy.PaceIsFraction && _paceReferenceKmh != null && _lapArc != null)
+            {
+                _adapt = new PlayerAdaptation(_configuration.AdaptToPlayersStrength, _configuration.AdaptToPlayersLearnSeconds,
+                    _configuration.AdaptToPlayersForgetSeconds, _configuration.AdaptToPlayersAverageSeconds);
+                VerboseLog.Information("GradientDrift: AdaptToPlayers on: the bots' pace{Gap} follow the players drifting with them (strength {Strength})",
+                    _policy.ReadsChase ? " and chase gap" : "", _configuration.AdaptToPlayersStrength);
+            }
+            else
+            {
+                Log.Warning("GradientDrift: AdaptToPlayers needs a policy that reads its pace as a share of the track's pace reference - it is off");
             }
         }
     }
@@ -2681,7 +2702,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float high = byPace ? policy.PaceHigh : policy.RearSlidingGripHigh;
         float middle = byPace ? _basePace : _rearSlidingGrip;
         float halfRange = 0.5f * (high - low);
-        if (byPace && (_configuration.LeadPlayers || _configuration.ChasePlayers))
+        if (byPace && (_configuration.LeadPlayers || _configuration.ChasePlayers || _adapt != null))
         {
             FindChasingPlayers(policy);
         }
@@ -2689,9 +2710,18 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         {
             AssignChases();
         }
+        if (_adapt != null)
+        {
+            AdaptToPlayers(policy, dt);
+        }
         for (int i = 0; i < n; i++)
         {
             DriftCarState state = _spaced[i].State;
+            if (_adapt != null && _spacedIds.TryGetValue(state, out byte styleId) && _styles.TryGetValue(styleId, out BotStyle baseStyle))
+            {
+                state.Style = _adapt.Apply(baseStyle, _basePace, low, high, _configuration.ChaseGapMeters,
+                    policy.ReadsChase ? ChaseInputs.GapLowM : 0f, policy.ReadsChase ? ChaseInputs.GapHighM : float.MaxValue);
+            }
             // this bot's own pace (BotStyles); halfRange stays the server's so spacing pushes every bot alike
             float own = byPace ? state.Style.PaceMiddle : middle;
             // spacing and leading a player only slow a bot from its own pace (BotPacePercent, or its
@@ -2963,6 +2993,96 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         return false;
     }
 
+    // AdaptToPlayers: one player's pace now, if they are drifting on the line (PlayerAdaptation).
+    private void ObserveForAdaptation(EntryCar car, int point, float arc, float lineSpeed)
+    {
+        var status = car.Status;
+        Vector2 velocity = new Vector2(status.Velocity.X, status.Velocity.Z);
+        float speed = velocity.Length();
+        if (speed < PlayerAdaptation.MinSpeedMs)
+        {
+            return;
+        }
+        float heading = WrapPiF(status.Rotation.X + MathF.PI / 2f);
+        float slip = WrapPiF(heading - MathF.Atan2(velocity.Y, velocity.X));
+        Vector3 line = _spline.Points[point].Position;
+        float offLine = new Vector2(status.Position.X - line.X, status.Position.Z - line.Z).Length();
+        if (!PlayerAdaptation.Drifting(slip) || offLine > PlayerAdaptation.MaxOffLineMeters)
+        {
+            return;
+        }
+        float oneMs = _paceReferenceKmh![point] * _defaultCar.PaceScale / 3.6f;
+        if (oneMs > 1f)
+        {
+            _adapt!.PaceSample(lineSpeed / oneMs);
+        }
+        _adaptPlayers.Add((car.SessionId, status.Position.X, status.Position.Z, heading, arc, lineSpeed));
+    }
+
+    // AdaptToPlayers, once a tick after FindChasingPlayers: each drifting player's gap to the car
+    // just ahead of it (a bot or another player) while they follow it at about its speed, then the
+    // averages and the log line.
+    private void AdaptToPlayers(DriftPolicy policy, float dt)
+    {
+        if (policy.ReadsChase)
+        {
+            foreach (var p in _adaptPlayers)
+            {
+                float best = PlayerAdaptation.GapMaxMeters + CarLengthMeters;
+                float lx = 0f, lz = 0f, lh = 0f, larc = 0f, lspeed = 0f;
+                bool found = false;
+                foreach (var (other, otherArc) in _spaced)
+                {
+                    float d = WrapAlongLap(otherArc - p.Arc);
+                    if (d > 0f && d < best && other.Heading.HasValue)
+                    {
+                        best = d;
+                        (lx, lz, lh, larc, lspeed) = (other.Position.X, other.Position.Z, other.Heading.Value, otherArc, other.LineSpeedMs);
+                        found = true;
+                    }
+                }
+                foreach (var q in _adaptPlayers)
+                {
+                    float d = WrapAlongLap(q.Arc - p.Arc);
+                    if (q.Id != p.Id && d > 0f && d < best)
+                    {
+                        best = d;
+                        (lx, lz, lh, larc, lspeed) = (q.X, q.Z, q.Heading, q.Arc, q.Speed);
+                        found = true;
+                    }
+                }
+                if (!found || MathF.Abs(p.Speed - lspeed) > PlayerAdaptation.GapSpeedMatchMs)
+                {
+                    continue;
+                }
+                float gap = ChaseInputs.OutlineGap(p.X, p.Z, p.Heading, p.Arc, lx, lz, lh, larc, _lapLength);
+                if (gap > 0f && gap < PlayerAdaptation.GapMaxMeters)
+                {
+                    _adapt!.GapSample(gap - MathF.Max(0f, p.Speed) * _configuration.ChaseTimeGapSeconds);
+                }
+            }
+        }
+        int seen = _adapt!.PaceSamplesThisTick;
+        if (_adapt.EndTick(dt, _adaptPlayersOn))
+        {
+            _adapting = false;
+            VerboseLog.Information("GradientDrift: AdaptToPlayers: the server is empty - the bots are back on the settings");
+        }
+        if (!_adapting && seen > 0)
+        {
+            _adapting = true;
+            _adaptLogS = 0f;
+            VerboseLog.Information("GradientDrift: AdaptToPlayers: players drifting - the bots start fitting in");
+        }
+        _adaptLogS += dt;
+        if (_adapting && _adaptLogS >= 60f)
+        {
+            _adaptLogS = 0f;
+            VerboseLog.Information("GradientDrift: AdaptToPlayers: players' pace {Pace:F2} (bots' setting {Base:F2}, weight {PaceWeight:F2}), chase ask {Gap:F1} m (setting {BaseGap:F1}, weight {GapWeight:F2})",
+                _adapt.Pace, _basePace, _adapt.PaceWeight, _adapt.Gap, _configuration.ChaseGapMeters, _adapt.GapWeight);
+        }
+    }
+
     // LeadPlayers and ChasePlayers, once a tick: where each moving player is along the line, and
     // their speed along it, if they drive its way.
     private void FindChasingPlayers(DriftPolicy policy)
@@ -2970,6 +3090,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _playerArcs.Clear();
         _playerSpeeds.Clear();
         _playerIds.Clear();
+        _adaptPlayers.Clear();
+        _adaptPlayersOn = false;
         if (_lapArc == null)
         {
             return;
@@ -2980,6 +3102,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             {
                 continue;
             }
+            _adaptPlayersOn = true;
             Vector3 velocity = car.Status.Velocity;
             if (new Vector2(velocity.X, velocity.Z).LengthSquared() < LeadMinSpeedMs * LeadMinSpeedMs)
             {
@@ -2997,6 +3120,10 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 _playerArcs.Add(_lapArc[point]);
                 _playerSpeeds.Add(along / MathF.Max(new Vector2(forward.X, forward.Z).Length(), 1e-3f));
                 _playerIds.Add(car.SessionId);
+                if (_adapt != null)
+                {
+                    ObserveForAdaptation(car, point, _playerArcs[^1], _playerSpeeds[^1]);
+                }
                 if (policy.ReadsChase && _configuration.ChasePlayers)
                 {
                     var status = car.Status;

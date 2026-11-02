@@ -113,5 +113,42 @@ foreach (JsonElement c in cases.RootElement.GetProperty("policies").EnumerateArr
     }
 }
 
+// AdaptToPlayers (PlayerAdaptation.cs): bots move to the players while they drift, keep their
+// differences, stay in the trained range, and are back on the settings once the server is empty
+{
+    const float dt = 0.05f;
+    var adapt = new PlayerAdaptation(1f, 60f, 120f, 60f);
+    var fast = new BotStyle(0.5f, 1.0f, 2f, 1f, 7.5f, 1.1f);
+    var slow = fast with { PaceMiddle = 0.9f };
+    void Expect(bool ok, string what)
+    {
+        Console.WriteLine((ok ? "ok   " : "FAIL ") + "AdaptToPlayers: " + what);
+        if (!ok) failures++;
+    }
+    Expect(adapt.Apply(fast, 1f, 0.8f, 1.2f, 2f, 0.5f, 6f) == fast, "nothing seen yet: the style is the settings'");
+    for (int t = 0; t < 1200; t++)          // 60 s of players drifting at pace 1.1, following at a 4 m ask
+    {
+        adapt.PaceSample(1.1f);
+        adapt.PaceSample(3f);                // not a drifting pace: thrown away
+        adapt.GapSample(4f);
+        adapt.EndTick(dt, true);
+    }
+    var a = adapt.Apply(fast, 1f, 0.8f, 1.2f, 2f, 0.5f, 6f);
+    var b = adapt.Apply(slow, 1f, 0.8f, 1.2f, 2f, 0.5f, 6f);
+    Expect(MathF.Abs(adapt.PaceWeight - 1f) < 1e-3f && MathF.Abs(a.PaceMiddle - 1.1f) < 1e-3f && MathF.Abs(b.PaceMiddle - 1.0f) < 1e-3f,
+        $"after 60 s the pace follows the players and the bots keep their difference ({a.PaceMiddle:F3}, {b.PaceMiddle:F3})");
+    Expect(MathF.Abs(a.ChaseGapMeters - 4f) < 1e-3f, $"chase gap follows the players ({a.ChaseGapMeters:F2} m)");
+    Expect(adapt.Apply(fast, 1f, 0.8f, 1.05f, 2f, 0.5f, 3f) is { PaceMiddle: 1.05f, ChaseGapMeters: 3f }, "held inside the trained range");
+    bool forgotten = false;
+    for (int t = 0; t < 1200; t++)          // 60 s with players on but none drifting: held
+        forgotten |= adapt.EndTick(dt, true);
+    Expect(!forgotten && adapt.PaceWeight > 0.99f, "players on but not drifting: kept");
+    int forgets = 0;
+    for (int t = 0; t < 2400 + 20; t++)     // 120 s with the server empty
+        forgets += adapt.EndTick(dt, false) ? 1 : 0;
+    Expect(forgets == 1 && adapt.PaceWeight == 0f && float.IsNaN(adapt.Pace) && adapt.Apply(fast, 1f, 0.8f, 1.2f, 2f, 0.5f, 6f) == fast,
+        "server empty for AdaptToPlayersForgetSeconds: back on the settings, averages dropped");
+}
+
 Console.WriteLine(failures == 0 ? "plugin checks passed" : $"{failures} plugin check(s) failed");
 return failures == 0 ? 0 : 1;

@@ -93,6 +93,34 @@ BotStyles:
     Skill: 0.6
 ```
 
+### Fitting in with the players
+
+With `AdaptToPlayers` on, the bots drive more like whoever is drifting with them, for as long as
+they are on. The plugin watches the players and moves each bot's **pace** toward the players' pace
+(their speed along the line against the track's pace reference) and, with a tandem policy, its
+**chase gap** toward the gap players keep when they follow a car. Nothing is learned and nothing is
+kept: these are numbers the policy already reads, held inside the range it was trained for, and when
+the server is empty the bots ease back to the settings and the plugin forgets what it saw. Each
+bot keeps its own style (above): every bot moves by the same amount.
+
+Only players drifting on the line count: sliding at 12 to 75 degrees, within 5 m of the AI line,
+driving its way. A gap counts only while a player follows a car closely (under 15 m) at about its
+speed. Players spinning, crashing, off the line or cruising are left out. With `VerboseLogging` on,
+the log says when the bots start fitting in, the players' pace and gap once a minute, and when the
+server empties.
+
+| Setting | Default | What it does |
+|---|---|---|
+| `AdaptToPlayers` | `false` | Turns it on. |
+| `AdaptToPlayersStrength` | `1` | How far the bots move toward the players, 0 to 1. **1** means all the way, **0.5** halfway. |
+| `AdaptToPlayersLearnSeconds` | `60` | Seconds of drifting players seen before the bots move all the way. They move part of the way sooner. |
+| `AdaptToPlayersForgetSeconds` | `120` | Seconds with nobody on the server before the bots are back on the settings. |
+| `AdaptToPlayersAverageSeconds` | `60` | Seconds the players' pace and gap are averaged over. |
+
+Note: the pace can rise to the top of the policy's range when fast players are on, which is faster
+than spacing and leading ever ask for. If bots run wide at the top end, lower `AdaptToPlayersStrength`.
+Drift angle does not adapt: the policy has no input for it yet.
+
 ### How the bots look (cosmetic only)
 
 None of these change how a bot drives; they change what players see and hear.

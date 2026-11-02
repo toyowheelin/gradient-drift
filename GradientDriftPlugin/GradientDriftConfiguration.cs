@@ -106,6 +106,23 @@ public class GradientDriftConfiguration
     public float BotSkillSpread { get; set; } = 0f;
     public int BotStyleSeed { get; set; } = 0;
 
+    // AdaptToPlayers: while players drift with the bots, each bot's pace and chase gap move toward
+    // theirs (PlayerAdaptation.cs): the players' speed along the line against the track's pace
+    // reference, and the gap they keep when following a car. Drifting players on the line count,
+    // not ones spinning, off the line or driving straight. It only moves numbers the policy already
+    // reads, inside the range it was trained over: no learning, nothing kept. When the server is
+    // empty the bots ease back to the settings over AdaptToPlayersForgetSeconds and the averages
+    // are dropped. Off by default.
+    public bool AdaptToPlayers { get; set; } = false;
+    // 0 - 1: how far the bots move to the players (1 = all the way, 0.5 = halfway).
+    public float AdaptToPlayersStrength { get; set; } = 1f;
+    // Seconds of drifting players seen before the bots move all the way (they move a share sooner).
+    public float AdaptToPlayersLearnSeconds { get; set; } = 60f;
+    // Seconds with no players on before the bots are back on the settings.
+    public float AdaptToPlayersForgetSeconds { get; set; } = 120f;
+    // Seconds the players' pace and gap are averaged over (a running average).
+    public float AdaptToPlayersAverageSeconds { get; set; } = 60f;
+
     // Styles set by hand, over the draws. Each entry names a bot by its entry-list DRIVERNAME, or
     // without a Name applies to the AI entries in order. Any of Aggression (0 - 1, 0.5 = the
     // settings), ChaseGapMeters and Skill; a value left out is drawn or the server's. E.g.
