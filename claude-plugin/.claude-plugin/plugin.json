@@ -1,0 +1,7 @@
+{
+  "name": "gradient-drift-tuning",
+  "description": "Tune Gradient Drift bots to your own AssettoServer with Claude.",
+  "version": "0.1.0",
+  "repository": "https://github.com/toyowheelin/gradient-drift",
+  "license": "AGPL-3.0"
+}

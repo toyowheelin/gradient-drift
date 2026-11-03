@@ -1,0 +1,11 @@
+{
+  "name": "gradient-drift",
+  "owner": { "name": "toyowheelin" },
+  "plugins": [
+    {
+      "name": "gradient-drift-tuning",
+      "source": "./claude-plugin",
+      "description": "Lets Claude tune Gradient Drift bots to your own AssettoServer: reads the plugin's log and scorecards, changes extra_cfg.yml one setting at a time with backups."
+    }
+  ]
+}
