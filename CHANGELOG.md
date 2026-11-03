@@ -13,6 +13,11 @@ Settings named here are described in
 - The bots can fit in with the players drifting with them (`AdaptToPlayers`, off by default): each
   bot's pace and chase gap move toward the players' while they are on, inside the policy's trained
   range, and go back to the settings when the server is empty. Nothing is learned or kept.
+- A Claude Code plugin for server owners (`claude-plugin/`, skill `tune-drift-bots`): Claude reads
+  the plugin's log and scorecards and tunes `extra_cfg.yml` one setting at a time, with a backup
+  each time. See [claude-plugin/README.md](claude-plugin/README.md).
+- Trainer reports for choosing and checking policies: `pick_policy.py` ranks candidate policies on
+  one fixed set of scenarios, and `chase_report.py --by-lead` splits a chase by who drove the lead.
 
 ## v0.3.0
 

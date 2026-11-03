@@ -63,6 +63,8 @@ jobs:
           Use the one for the machine you run setup on (the one with the game installed); you can
           delete the other. Each has the plugin already in its GradientDriftPlugin folder, and setup
           installs it on the server, with the track data, car files and settings the bots need.
+          For a hosted server (no game there), download the server's cfg folder, point setup at
+          the folder holding it and use Export: it writes the files to upload. See setup/README.md.
 
           The plugin ($PACKAGE) is the same for Windows and Linux servers (tested on Windows only).
           It is built and tested for AssettoServer $ASSETTOSERVER; on another version it says so in
@@ -109,7 +111,7 @@ jobs:
 
           Built and tested for AssettoServer $ASSETTOSERVER.
 
-          **Download \`$ZIP\`** and unzip it. It has the setup program for Windows (\`windows/\`, a window or the terminal) and for Linux (\`linux/\`, the terminal: the same walk-through as questions), each with the plugin already inside. Run the one for your system on your server folder: it installs the plugin and makes the track data, car files and settings. See [setup/README.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/setup/README.md).
+          **Download \`$ZIP\`** and unzip it. It has the setup program for Windows (\`windows/\`, a window or the terminal) and for Linux (\`linux/\`, the terminal: the same walk-through as questions), each with the plugin already inside. Run the one for your system on the PC with the game, pointed at your server folder: it installs the plugin and makes the track data, car files and settings. For a hosted server, download its \`cfg\` folder, point setup at the folder holding it and export the files to upload. See [setup/README.md]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/setup/README.md).
 
           The plugin is one build for Windows and Linux servers (a .NET plugin; tested on Windows only, Linux untested). On another AssettoServer version it warns in the server log at start.
 

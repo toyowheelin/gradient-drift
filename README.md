@@ -54,8 +54,8 @@ ships as one `policy.json`; nothing learns on the live server.
 
 **Limits:** tested on Windows servers only (the same plugin download should run on Linux too, as
 a .NET plugin with no native code, but nobody has tried it yet); rear-drive cars only;
-and the bots don't see each other or the players, so a car that spins can be driven through by
-the one behind.
+and cars don't collide with each other: a chasing bot sees the car it follows, but nothing stops
+cars passing through each other, so a car that spins can be driven through by the one behind.
 
 ## Quick start
 
@@ -168,8 +168,9 @@ each policy drives in the car it learned in.
 ## What the plugin does on a server
 
 - **Nothing reachable from outside.** It opens no ports and adds no web pages, chat commands or
-  client messages; players cannot send it anything. It reads the other cars' positions only to
-  keep bots away from them.
+  client messages; players cannot send it anything. It reads the other cars' positions and speeds
+  only to place the bots, chase or wait for a car, and (with `AdaptToPlayers`) match the players'
+  pace.
 - **Reads numbers, writes nothing.** At start it reads its policy, the bot cars' files and the
   track's data, all from one file setup writes
   (`plugins/GradientDriftPlugin/GradientDriftPlugin.bundle.zip`), or loose
@@ -324,7 +325,7 @@ result on that track's server only: the steps and what to check are in
 <summary><h2>The name</h2></summary>
 
 **gradient-drift** is a pun on gradient descent, the method that trains the network: training
-works out which way each of the network's ~26,000 numbers should move to do better and nudges
+works out which way each of the network's ~166,000 numbers should move to do better and nudges
 them that way, millions of times (PPO, the algorithm used, is a *policy-gradient* method). Claude
 suggested it: asked for a name with a bit of flavour that kept the machine-learning angle, it gave
 a short list and picked this one as its favourite, and the owner chose it on 2026-10-07. It reads
@@ -357,10 +358,11 @@ built).
 > research conducted by Stanford, Toyota, and Sony AI."*
 > — Gemini
 
-Every paper it names is linked in [CREDITS.md](CREDITS.md). The current release is a solo drifter
-trained with PPO. Residual RL drove the first policies, and the asymmetric critic, GT Sophy's
-rules and the TRI tandem work belong to the tandem bots, which are still in progress. The project
-uses those groups' published methods and is not affiliated with them.
+Every paper it names is linked in [CREDITS.md](CREDITS.md). The current policy is trained with
+PPO and drives in tandem: an asymmetric (privileged) critic, chase practice in hard situations as
+GT Sophy trained, and a gap that opens through the lead's transitions as the TRI / Stanford tandem
+cars do. Residual RL drove the first policies. The project uses those groups' published
+methods and is not affiliated with them.
 
 ## Licence
 

@@ -3,7 +3,7 @@
 ## Supported versions
 
 Only the latest release gets security fixes. Releases come as one download per `v*` tag; the
-current line is v0.2.x. If you are on an older release, update to the latest one first and check
+current line is v0.3.x. If you are on an older release, update to the latest one first and check
 whether the problem is still there.
 
 | Version          | Supported |
