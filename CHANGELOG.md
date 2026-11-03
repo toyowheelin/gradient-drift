@@ -10,6 +10,9 @@ Settings named here are described in
 
 ## Unreleased
 
+- Players joining a server with the bots see "Drift bots by Gradient Drift" and a link to the
+  project in chat, just above AssettoServer's own "Powered by AssettoServer" line
+  (`JoinMessage`; set it to `""` to turn it off, or to any text of your own).
 - The bots can fit in with the players drifting with them (`AdaptToPlayers`, off by default): each
   bot's pace and chase gap move toward the players' while they are on, inside the policy's trained
   range, and go back to the settings when the server is empty. Nothing is learned or kept.
