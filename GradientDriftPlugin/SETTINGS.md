@@ -12,7 +12,8 @@ ChaseBots: false
 ```
 
 Every setting has a working default, so the block can hold only what you want to change. The setup
-program writes `EnablePlugins`, `EnableLearnedPolicy` and `BotPacePercent` for you.
+program writes `EnablePlugins`, `EnableLearnedPolicy` and `BotPacePercent` for you, turns
+`HoldBotSpacing` back on for several bots, and takes the retired `TrainSize` out.
 Settings are read when the server starts: restart it after a change.
 
 The settings come in two kinds:
@@ -40,7 +41,7 @@ The settings come in two kinds:
 | `BotSkill` | `1` | How good a driver the bots are, 0 to 1. **1** is the best the policy can do. **0** is a driver a track day would still let out with others: holds a drift and rarely spins, but at a shallower angle, on a more cautious line, with slower and sloppier hands. Only for a policy trained with a skill input (gen9 and later); others ignore it. Kept inside the range the policy was trained for. |
 | `BotPacePercent` | `0` | How fast the bots are asked to go, as a percentage of the track's flat-out drift speed at each point of the lap. 90 means 90% everywhere, on any track. Lower means calmer bots that brake more into corners and slide a little less. Kept inside the policy's trained range (80 to 120 for the newest policies, 80 to 100 for older ones); **0** (or not set) means 100, held inside that range; before v0.3.0 it meant the top of the range. Spacing and leading a player only ever slow a bot from this pace, never speed it past it. Needs the track's `<track>_pace_reference.csv` in the server folder (setup puts it there). |
 | `BotPaceMinPercent` | `85` | With several bots out, spacing speeds some up and slows others down (see `HoldBotSpacing`). This is the slowest it may ask for. Below about 85% the bots slide noticeably less, so the default keeps them above that. 0 means the bottom of the policy's range. |
-| `HoldBotSpacing` | `true` | With more than one bot out, spreads them evenly round the lap. A bot the plugin takes over is placed in the middle of the biggest gap near a player, then a bot that is catching the one ahead is slowed a little to keep the gaps even (never sped past `BotPacePercent`). The bots don't see each other: if one spins, the car behind can drive through it. |
+| `HoldBotSpacing` | `true` | With more than one bot out, spreads them evenly round the lap. A bot the plugin takes over is placed in the middle of the biggest gap near a player, then a bot that is catching the one ahead is slowed a little to keep the gaps even (never sped past `BotPacePercent`). Spaced bots don't see each other (only a chasing bot sees the car it chases), and cars don't collide: if one spins, the car behind can drive through it. |
 | `RearSlidingGrip` | `0.5` | How much sideways grip the rear tyres keep once sliding. Current policies are trained at exactly 0.55, so for them any value is moved to 0.55 (with a warning in the log). Only matters for an older policy trained over a range of grips. |
 
 ### Tandem
@@ -49,7 +50,7 @@ The settings come in two kinds:
 |---|---|---|
 | `TrainSize`, `TandemGapSeconds`, `TandemGapVariation`, `TandemMinGapMeters`, `TandemLateralOffsetMeters` | | **Retired in v0.3.0.** Trains of followers replaying a lead car are gone: bots form trains by chasing each other, each driving itself (`ChasePlayers` with `ChaseBots`, below). The plugin still accepts these settings, so an old `extra_cfg.yml` starts, but ignores them (a `TrainSize` above 1 gets a warning in the log). Setup takes `TrainSize` out. |
 | `LeadPlayers` | `false` | A bot with a player chasing close behind waits for them: its own pace (`BotPacePercent`) with the player right on its tail, slowing to `BotPaceMinPercent` as they drop back to 40 m. Further back, the bots space themselves as usual. Only for a policy that reads its pace (every current one). |
-| `ChasePlayers` | `true` | A bot chases a player who pulls in within `ChaseOptInMeters` (7.5 m, about 25 ft) in front of its nose, until the player gets `ChaseOptOutMeters` (40 m) ahead. Its pace comes from the Intelligent Driver Model, the standard car-following model of traffic simulation, aiming `ChaseGapMeters` behind the player and easing off early when it closes fast. Only for a policy that reads its pace (every current one). With a tandem policy (one trained to chase, with the car-ahead inputs and a residual network) the bot also sees the player, as in training: where they are, their gap between the car outlines, line, slip, steering, throttle and brake lights, and its pace takes in the player's acceleration and may drop to the chase floor the policy was trained with. On by default since v0.3.0; it does nothing for an older policy that doesn't read its pace. |
+| `ChasePlayers` | `true` | A bot chases a player who pulls in within `ChaseOptInMeters` (7.5 m, about 25 ft) in front of its nose, until the player gets `ChaseOptOutMeters` (40 m) ahead. Its pace comes from the Intelligent Driver Model, the standard car-following model of traffic simulation, aiming `ChaseGapMeters` behind the player and easing off early when it closes fast. Only for a policy that reads its pace (every current one). With a tandem policy (one trained to chase, as the shipped one is: with the car-ahead inputs, in one network or through an added residual network) the bot also sees the player, as in training: where they are, their gap between the car outlines, line, slip, steering, throttle and brake lights, and its pace takes in the player's acceleration and may drop to the chase floor the policy was trained with. A policy that reads its pace but was not trained to chase follows by pace alone, blind to the car ahead. On by default since v0.3.0; it does nothing for an older policy that doesn't read its pace. |
 | `ChaseGapMeters` | `2` | With `ChasePlayers`: the gap the chasing bot aims for behind the player, bumper to bumper, before the speed-dependent margin the model adds. |
 | `ChaseOptInMeters` | `7.5` | With `ChasePlayers`: how far ahead of a bot's nose, along the line, a player has to be for the bot to start chasing them. Bigger has bots join a tandem from further back. |
 | `ChaseOptOutMeters` | `40` | With `ChasePlayers`: how far ahead the player has to get before the bot stops chasing. |
@@ -138,7 +139,7 @@ developer settings), whatever car it is. Each car's own gearing is not used for 
 
 ### Logging
 
-The plugin writes no files unless you turn on telemetry. Everything else goes to the server's log
+The plugin writes no files unless you turn on telemetry or the scorecard. Everything else goes to the server's log
 and console, and only when there is something to say: a line or two at start (the policy loaded), a warning
 when the plugin cannot drive the bots (the stock AI drives then) or when a bot is stuck or held
 stopped for 30 seconds, and a line when it moves again. Nothing while the bots drive normally.
@@ -167,9 +168,11 @@ has never seen. To change the car or the sensors, change them in the trainer and
 Many are replaced at start, without anything in the YAML:
 
 - **By the policy file** (`plugin_settings` in `policy.json`): the steering lock and steering speed,
-  the rear thrust, brake and friction-circle models, tyre load sensitivity and its numbers, and the
-  wrong-way recovery thresholds. The plugin switches on only the features a policy was trained with,
-  so an older policy keeps driving the car it knew.
+  the brakes (`FrontBrakeOnly`, `DisableBrakes`), the rear thrust, brake and friction-circle models
+  and `RearSpinGripShare`, tyre load sensitivity and its numbers, the tyre curve (`RoundTireCurve`),
+  `SurfaceGrip`, the height of the wall sensors, and the wrong-way recovery thresholds. The plugin
+  switches on only the features a policy was trained with, so an older policy keeps driving the car
+  it knew.
 
   A new setting a policy file can carry goes in `DriftPolicy.CanApplySetting` and the apply switch of `ApplyPolicySettings`; then run
   `python tools/plugin_features.py`, which writes `GradientDriftPlugin.features.json` (what policy

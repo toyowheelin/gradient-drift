@@ -68,6 +68,7 @@ gradient-drift-<version>/
 │   ├── GradientDriftPlugin/      <- the plugin: the files setup installs
 │   │   ├── GradientDriftPlugin.dll
 │   │   ├── GradientDriftPlugin.deps.json
+│   │   ├── GradientDriftPlugin.features.json
 │   │   └── GradientDriftPlugin.policy.json
 │   └── ...
 └── linux/
@@ -204,7 +205,7 @@ Several server folders can be given at once (not with `export`).
 | option | what it sets |
 |---|---|
 | `--bots N` | bots in all, existing ones included (setup never takes a bot away) |
-| `--name NAME` | the bots' name in game, each shown with its slot number (default: the name the server already gives them, else DriftBot) |
+| `--name NAME` | the bots' name in game (default: the name the server already gives them, else DriftBot): each new bot's `DRIVERNAME`, numbered when there are several, and AssettoServer's `NamePrefix` |
 | `--car MODEL`, `--skin NAME` | every bot's car and skin, the existing AI entries put in it too. Without `--car` an existing bot keeps its car and a new one takes an existing bot's, else the car the shipped policy was trained in, else the server's first car |
 | `--car A,B,...`, `--skin X,Y,...` | a car (and skin) per bot slot, the existing AI entries first in the entry list's order; an empty one keeps that bot's car; bots past the list take its last car |
 | `--pace PERCENT` | how fast they drive, as a share of the track's reference speed round the lap (a policy trained with paces; lower is calmer) |
@@ -246,7 +247,7 @@ the server yourself, through your host's file manager or FTP:
 
 Each change is shown before and after.
 
-**`entry_list.ini`:** a `[CAR_n]` per new bot, with `AI=fixed` (a slot only a bot drives; with
+**`entry_list.ini`:** a `[CAR_n]` per new bot, with the bot name as `DRIVERNAME` and `AI=fixed` (a slot only a bot drives; with
 `AI=auto` a player who picks that car takes the bot's slot, and the server has a bot fewer), and
 `MODEL=`/`SKIN=` of an existing AI entry whose slot was given another car. Player slots are never
 changed, and no bot is taken away.
@@ -265,11 +266,13 @@ changed, and no bot is taken away.
   and `MaxAiSafetyDistanceMeters` to half the even gap between bots, or no point of the AI line
   is far enough from a player and other bots for a bot to spawn. It sets
   `MinCollisionStopTimeSeconds` and `MaxCollisionStopTimeSeconds` to 0: AssettoServer otherwise
-  freezes an AI car for 1-3 s when a player touches it. It sets `NamePrefix` to the bot name:
-  AssettoServer shows each AI car as `<NamePrefix> <slot number>` (`Traffic 16`), whatever its
-  `DRIVERNAME` in the entry list;
-- the plugin's own section with `EnableLearnedPolicy: true`, and `BotPacePercent` when given.
-  `TrainSize` (retired in v0.3.0) is taken out.
+  freezes an AI car for 1-3 s when a player touches it. It sets `NamePrefix` to the bot name.
+  The plugin shows each bot under its entry list `DRIVERNAME` (`ShowEntryListNames`, on by
+  default); AssettoServer's own name for an AI car, `<NamePrefix> <slot number>` (`Traffic 16`),
+  is what shows for a bot with no `DRIVERNAME` or with that setting off;
+- the plugin's own section with `EnableLearnedPolicy: true`, `BotPacePercent` when given, and
+  `HoldBotSpacing: true` where it was off and there are several bots. `TrainSize` (retired in
+  v0.3.0) is taken out.
 
 **Made first when they are not there:** the track's data, into the track files folder (`tracks/`
 beside the packaged program, else the repository's `drift_rl/tracks`), never into the server; then,
