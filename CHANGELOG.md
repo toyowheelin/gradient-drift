@@ -20,7 +20,8 @@ Settings named here are described in
   the plugin's log and scorecards and tunes `extra_cfg.yml` one setting at a time, with a backup
   each time. See [claude-plugin/README.md](claude-plugin/README.md).
 - Trainer reports for choosing and checking policies: `pick_policy.py` ranks candidate policies on
-  one fixed set of scenarios, and `chase_report.py --by-lead` splits a chase by who drove the lead.
+  one fixed set of scenarios, `chase_report.py --by-lead` splits a chase by who drove the lead, and
+  `replay_live.py` replays every bot of a server run, each in its own car.
 
 ## v0.3.0
 

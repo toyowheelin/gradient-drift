@@ -101,7 +101,8 @@ Starting from a policy, give its network's shape: the shipped one has three laye
 short-history input (`--hidden 256 --layers 3 --history-frames 4 --history-every 2`). Without
 them the run does not start: without `--layers 3` the trainer stops and says so, and without the
 history options it fails loading the policy's 130 inputs. A run that starts
-from the shipped policy without `--chase` makes a policy that does not chase: see
+from the shipped policy without `--chase` makes a policy with no chase training (its bots follow a
+car by pace alone, blind to it): see
 [Polishing the shipped policy for one track](#polishing-the-shipped-policy-for-one-track) for a
 run that keeps everything the shipped policy can do.
 
@@ -167,8 +168,8 @@ Copy `runs/mine/policy.json` into the server's `plugins/GradientDriftPlugin/` fo
 `GradientDriftPlugin.policy.json` (keep the old one), and restart the server. No rebuild is needed.
 
 > [!IMPORTANT]
-> A policy with paces also needs `tracks/<track>/<track>_pace_reference.csv` in the server folder,
-> and one trained on a car pool needs each bot car's file
+> A policy with paces also needs the track's `<track>_pace_reference.csv` (from `tracks/<track>/`)
+> in the server folder, and one trained on a car pool needs each bot car's file
 > (`plugins/GradientDriftPlugin/cars/<model>.json`). The setup program writes both. It also
 > measures each car's pace scale on the server's track (how fast it goes flat out there against
 > the reference car), so a slow car is not asked for a fast one's speed.
@@ -245,8 +246,9 @@ python train_ppo_gpu.py --sim cpu --init-policy ../GradientDriftPlugin/GradientD
   policy's 130 inputs without the history options).
 - `--chase 0.6 --chase-scenarios --privileged-critic --lead-speed 0.95 1.0 1.05` keep its tandem
   driving (the leads replayed at 95 - 105% of their speed). Without `--chase`
-  the new policy has no chase training, and the plugin does not let it chase (`ChasePlayers` and
-  `ChaseBots` do nothing). The chase gap law (`--chase-time-gap` and the rest) comes from the
+  the new policy has no chase training: the plugin does not give it the car-ahead inputs, so its
+  bots still follow a car (`ChasePlayers`, `ChaseBots`) but by pace alone, blind to where it is and
+  what it does. The chase gap law (`--chase-time-gap` and the rest) comes from the
   shipped policy. Chase training runs on the CPU simulator only (`--sim cpu`).
 - `--car-pool` and `--skill 0 1` keep what the shipped policy can do: drive any car and follow the
   plugin's `BotSkill`. Without them the new policy drives only the plugin's configured car and has
@@ -377,8 +379,9 @@ was trained with.
 | `car_report.py` | Every car in a pool on each track, each asked for its own speed. |
 | `corner_trace.py` | How a policy drives one stretch of a course, point by point (progress speed, pace ask, slip, pedal, brake), against a human's passes through it (`--human`). |
 | `speed_limit.py` | What stops a policy going faster when asked: the tyres or the engine, in corners and between them. |
+| `scorecard_report.py` | The plugin's scorecards (`EnableScorecard`) side by side: a row per session, and with `--bots` a row for each bot under it. |
 | `check_plugin_policy.py` | After a server run: is the plugin running the same network on the same inputs, and is the run inside what the simulator predicts? |
-| `replay_live.py` | After a server run: replays its telemetry tick by tick through the simulator and reports every quantity that disagrees. |
+| `replay_live.py` | After a server run: replays its telemetry tick by tick through the simulator, each bot with its own car (`--cars-dir`), and reports every quantity that disagrees and where on the lap. |
 | `record_ghosts.py` | Records a policy's runs on a track as ghost leaders for chase training (`<track>_ghosts.npz`). |
 | `amp_reference.py` | Human telemetry (the telemetry app's CSV or an AI Car Monitor CSV) as the state pairs `--amp` learns the human's motion from. |
 | `surface_grip.py` | Where on a track's AI line the ground grips differently from the main road (SurfaceGrip), as lap progress. |

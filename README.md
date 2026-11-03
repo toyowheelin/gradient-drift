@@ -49,7 +49,7 @@ ships as one `policy.json`; nothing learns on the live server.
 | 🏁 **Any track** | The shipped policy was trained on seven real tracks and 100 randomly generated courses, so it drives tracks it has never seen. The setup program makes a track's data from your own game install. |
 | 🚗 **Any rear-drive car** | Every bot drives as a drift car (welded diff, an angle kit of at least 50°), with its weight, geometry, tyres, power and gearing from the car's own files. |
 | 🚦 **Several bots** | Chasing players and each other in tandem trains (`ChasePlayers`, `ChaseBots`, on by default), or spread round the lap. |
-| 🎛️ **Two dials** | How fast (a share of the track's flat-out drift speed), and how good a driver: from a careful novice who still holds a drift to the best the policy can do. |
+| 🎛️ **Dials, no retraining** | How fast (a share of the track's flat-out drift speed), how good a driver (from a careful novice who still holds a drift to the best the policy can do), and how close they chase. Each bot can have its own style (`BotStyleSpread`, `BotStyles`), and with `AdaptToPlayers` the bots match the pace and chase gap of the players drifting with them. |
 | 🧑 **Close to a human** | On the owner's server the bots rotate the car about as hard and as often as a human drifting the same track (yaw acceleration, direction changes, sideways g, time sliding). |
 
 **Limits:** tested on Windows servers only (the same plugin download should run on Linux too, as
@@ -93,7 +93,9 @@ the same machine:
    why, if it stands aside and leaves the stock AI driving, or which bot is stuck and where.
 4. **Tune it** in the server's `extra_cfg.yml`, then restart the server.
    [`SETTINGS.md`](GradientDriftPlugin/SETTINGS.md) lists every setting; the ones you'll want are
-   `BotSkill`, `BotPacePercent`, `ChasePlayers` and `ChaseBots`.
+   `BotSkill`, `BotPacePercent`, `ChasePlayers`, `ChaseBots`, `BotStyleSpread` and `AdaptToPlayers`.
+   `EnableScorecard: true` writes a short report of how the bots drove each session, to tune by.
+   The [Claude Code plugin](claude-plugin/README.md) can do the tuning with you.
 
 > [!TIP]
 > **Trying a policy of your own?** Copy it over
@@ -163,16 +165,18 @@ each policy drives in the car it learned in.
 | [`drift_rl/`](drift_rl/README.md) | The simulator, trainer and evaluation tools (Python), for training a policy of your own. |
 | [`claude-plugin/`](claude-plugin/README.md) | A Claude Code plugin for server owners: a skill that lets Claude tune the bots to your server, reading the plugin's log and scorecards and changing settings one at a time with backups. |
 | [`tests/`](tests/README.md) | The regression tests CI runs on every change: golden physics traces, the C# plugin against the Python policy, short drive checks and setup on a made-up server. |
-| `tools/` | `track_triangles.py` writes a track layout's geometry as two triangle files (what its model shows, and what the game collides with) and each colliding surface's grip, using `kn5_reader.py` from KN5 Blender Tools. `ai_car_monitor.py` is an in-game app that logs what a client sees of every car on the server. |
+| `tools/` | `track_triangles.py` writes a track layout's geometry as two triangle files (what its model shows, and what the game collides with) and each colliding surface's grip, using `kn5_reader.py` from KN5 Blender Tools. `centre_line.py` makes an AI line down the middle of a track from its edge files. `ai_car_monitor.py` is an in-game app that logs what a client sees of every car on the server. `plugin_features.py` writes `GradientDriftPlugin.features.json` from the plugin's source, and `ship_policy.py` puts a policy in place for a release. |
 
 ## What the plugin does on a server
 
-- **Nothing reachable from outside.** It opens no ports and adds no web pages, chat commands or
-  client messages; players cannot send it anything. It reads the other cars' positions and speeds
-  only to place the bots, chase or wait for a car, and (with `AdaptToPlayers`) match the players'
-  pace.
-- **Reads numbers, writes nothing.** At start it reads its policy, the bot cars' files and the
-  track's data, all from one file setup writes
+- **Nothing reachable from outside.** It opens no ports and adds no web pages or chat commands;
+  players cannot send it anything. It reads the other cars' positions and speeds only to place the
+  bots, chase or wait for a car, and (with `AdaptToPlayers`) match the players' pace and gap.
+- **One line to players.** Besides the bots' cars and their entry-list names, all it sends players
+  is a line in the welcome message they get on joining, "Drift bots by Gradient Drift" with a link
+  here (`JoinMessage`; `JoinMessage: ""` turns it off).
+- **Reads numbers, writes nothing** unless you turn it on (below). At start it reads its policy,
+  the bot cars' files and the track's data, all from one file setup writes
   (`plugins/GradientDriftPlugin/GradientDriftPlugin.bundle.zip`), or loose
   (`plugins/GradientDriftPlugin/GradientDriftPlugin.policy.json`, `plugins/GradientDriftPlugin/cars/`,
   the track's data files in the server folder; a loose file is read instead of the bundle's copy):
@@ -326,8 +330,9 @@ python train_ppo_gpu.py --sim cpu --init-policy ../GradientDriftPlugin/GradientD
 python drive_report.py runs/<run>/policy.json --track <track>
 ```
 
-This keeps the shipped policy's network (`--hidden`, `--layers`, `--history-*`) but not its chasing:
-a run without `--chase` makes a policy that does not chase. To make the bots drive one track
+This keeps the shipped policy's network (`--hidden`, `--layers`, `--history-*`) but not its chase
+training: a run without `--chase` makes a policy blind to the car ahead, whose bots follow a car
+by pace alone. To make the bots drive one track
 better, train the shipped policy further on that track, chasing included, and put the result on
 that track's server only: the steps and what to check are in
 [Polishing the shipped policy for one track](drift_rl/README.md#polishing-the-shipped-policy-for-one-track).
