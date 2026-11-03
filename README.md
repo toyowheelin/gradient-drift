@@ -207,6 +207,13 @@ tools need from the game content installed on their own machine.
 The [releases](https://github.com/toyowheelin/gradient-drift/releases) carry the plugin built. To build it yourself: it
 compiles against AssettoServer's own source, so you need that too.
 
+> [!NOTE]
+> Building gives you the plugin only. A server needs more than the plugin for bots to drive: AI
+> entries in `entry_list.ini`, AI turned on with the `AiParams` bots need, each bot car's file,
+> and the track's data, all made by the [setup program](setup/README.md). On a new server, build,
+> then run setup pointed at your build (step 4) and it does all of that. Copying the files in by
+> hand only fits a server setup has already prepared, when you are updating its plugin.
+
 **You need:** the [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0) and
 [git](https://git-scm.com/).
 
@@ -260,24 +267,24 @@ result is in `bin/Debug/net8.0/`. The files the server needs are:
 | `GradientDriftPlugin.policy.json` | the trained policy, copied in from the source folder |
 | `GradientDriftPlugin.features.json` | what policies this build can run, for setup's check (the plugin itself does not read it) |
 
-**4. Install it on the server.** The [setup program](setup/README.md) does this for you: point its
-`--plugin` option (or the window's **Plugin build** field) at the `bin/Debug/net8.0/` folder. To do it by
-hand, stop the server first (Windows keeps the files locked while it runs), then copy the
-files into the server's `plugins/GradientDriftPlugin/` folder, making the folder if it's new. On
-Windows, from the AssettoServer folder:
+**4. Install it on the server.** Run the [setup program](setup/README.md) with its `--plugin` option
+(or the window's **Plugin build** field) pointed at the `bin/Debug/net8.0/` folder. On a new server
+this is the way to do it: setup installs your build along with everything else the bots need (see
+the note above), and on a server it already set up it replaces the plugin with your build.
+
+To update the plugin by hand on a server setup has already prepared, stop the server first
+(Windows keeps the files locked while it runs), then copy the files into the server's
+`plugins/GradientDriftPlugin/` folder. On Windows, from the AssettoServer folder:
 
 ```
 copy GradientDriftPlugin\bin\Debug\net8.0\GradientDriftPlugin.* "D:\servers\my server\plugins\GradientDriftPlugin\"
 ```
 
-A server set up by hand also needs the plugin turned on in `cfg/extra_cfg.yml` (setup writes this
-too; see [`SETTINGS.md`](GradientDriftPlugin/SETTINGS.md)):
-
-```yaml
-EnablePlugins: [GradientDriftPlugin]
---- !GradientDriftConfiguration
-EnableLearnedPolicy: true
-```
+Setup has already turned the plugin on in `cfg/extra_cfg.yml` on such a server
+(`EnablePlugins: [GradientDriftPlugin]` and a `--- !GradientDriftConfiguration` block; see
+[`SETTINGS.md`](GradientDriftPlugin/SETTINGS.md)). Setting up a server entirely by hand, without
+setup, is not covered here: [What it changes](setup/README.md#what-it-changes) lists every change
+setup makes, if you want to follow it.
 
 **5. Check it loaded.** Start the server and look for `GradientDrift: policy loaded from ...` in its
 log. If the plugin stands aside, a warning there says why, and the stock AI drives. After that the
