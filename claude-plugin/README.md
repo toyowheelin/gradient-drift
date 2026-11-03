@@ -23,3 +23,6 @@ to make.
 
 Turn on `EnableScorecard` in the plugin settings (Claude offers to) so there is something to measure.
 Settings are explained in [SETTINGS.md](../GradientDriftPlugin/SETTINGS.md).
+
+This plugin is part of Gradient Drift and is not made, affiliated with or endorsed by Anthropic.
+Claude and Claude Code are Anthropic's products; you use them under your own account and its terms.
