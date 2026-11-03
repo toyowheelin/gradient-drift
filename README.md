@@ -59,8 +59,16 @@ the one behind.
 
 ## Quick start
 
-**You need** AssettoServer v0.0.54, and the game installed on the machine you run setup on (setup
-reads the track and the cars from it).
+**You need** a server running AssettoServer v0.0.54, and a PC with the game installed to run the
+setup program on (setup reads the track and the cars from the game's files). They don't have to be
+the same machine:
+
+- **Your own server** (on the PC with the game, or in a server folder that PC can open): setup
+  makes the changes in the server folder itself.
+- **A hosted server** (a hosting plan, or any machine without the game): download the server's
+  `cfg` folder to your PC, and setup exports the files to upload through your host's file manager
+  or FTP, with the config edits written out too. See
+  [A server on a hosting plan](setup/README.md#a-server-on-a-hosting-plan-or-any-machine-without-the-game).
 
 1. **Download the release**: one zip, `gradient-drift-<version>.zip`, from the
    [latest release](https://github.com/toyowheelin/gradient-drift/releases/latest). Unzip it
@@ -69,11 +77,17 @@ reads the track and the cars from it).
    built for one AssettoServer version, named in its title and README; on another version the
    plugin says so in the server log at start. To build the
    plugin yourself instead, see [Building the plugin](#building-the-plugin).
-2. **Run the setup program** ([`setup/`](setup/README.md)). Point it at the game install and the
-   server folder, then choose the bot car, how many bots and pace. It shows every change
-   before and after, makes them on a yes, keeps the originals, and can undo. It copies in the
-   plugin, writes each bot car's numbers, adds the bot entries, sets the AI settings AssettoServer
-   needs, and makes the track's data if it's missing.
+2. **Run the setup program** ([`setup/`](setup/README.md)) on the PC with the game. Point it at the
+   game install and the server folder (for a hosted server, the folder you downloaded its `cfg`
+   into), then choose the bot car, how many bots and pace. It shows every change before and after.
+   It copies in the plugin, writes each bot car's numbers, adds the bot entries, sets the AI
+   settings AssettoServer needs, and makes the track's data if it's missing.
+   - **Your own server:** it makes the changes on a yes, keeps the originals, and can undo.
+   - **A hosted server:** click **Export for a hosted server...** on the last page (or run
+     `export` from the command line). Stop the server and upload everything in the export's
+     `upload` folder into the server's folder, keeping the folders. For the three config files you
+     can instead make the edits `HOW_TO_INSTALL.txt` lists by hand in your host's panel. Setup
+     can't read a hosted server's AssettoServer version, so check your host runs v0.0.54.
 3. **Start the server** and drive. The plugin's log lines start `GradientDrift:`: one when the
    policy loads, then nothing while the bots drive well. It warns only when something is wrong:
    why, if it stands aside and leaves the stock AI driving, or which bot is stuck and where.
@@ -82,10 +96,6 @@ reads the track and the cars from it).
    `BotSkill`, `BotPacePercent`, `ChasePlayers` and `ChaseBots`.
 
 > [!TIP]
-> **Server on a hosting plan?** Run setup on your own PC against the server's downloaded `cfg`
-> folder and upload what it exports: see
-> [A server on a hosting plan](setup/README.md#a-server-on-a-hosting-plan-or-any-machine-without-the-game).
->
 > **Trying a policy of your own?** Copy it over
 > `plugins/GradientDriftPlugin/GradientDriftPlugin.policy.json` (keep the old one) and restart. No
 > rebuild is needed. A loose policy there is read instead of the one in setup's
