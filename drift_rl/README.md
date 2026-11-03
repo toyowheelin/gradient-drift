@@ -231,7 +231,8 @@ python record_ghosts.py --track <track> --policy ../GradientDriftPlugin/Gradient
 python train_ppo_gpu.py --sim cpu --init-policy ../GradientDriftPlugin/GradientDriftPlugin.policy.json \
     --hidden 256 --layers 3 --history-frames 4 --history-every 2 \
     --track <track> --generated 20 --car-pool cars/car_pool.json --skill 0 1 \
-    --chase 0.6 --chase-scenarios --privileged-critic --cat 0.25 \
+    --chase 0.6 --chase-scenarios --privileged-critic --lead-speed 0.95 1.0 1.05 --cat 0.25 \
+    --drift-starts 0.3 --ghost-starts 0.5 \
     --reward weave_penalty=5 --reward swing_penalty=4 --reward zone_bonus_per_m=0.5 --reward path_progress=1 \
     --reward chase_proximity_per_m=3 --reward chase_gain_per_m=0.5 --reward chase_transition_pay=1 \
     --reward chase_contact_penalty=5 --reward chase_contact_ends=0 \
@@ -242,7 +243,8 @@ python train_ppo_gpu.py --sim cpu --init-policy ../GradientDriftPlugin/GradientD
 - `--hidden 256 --layers 3 --history-frames 4 --history-every 2` is the shipped policy's network.
   Without them the run does not start (the trainer asks for `--layers 3`, and fails loading the
   policy's 130 inputs without the history options).
-- `--chase 0.6 --chase-scenarios --privileged-critic` keep its tandem driving. Without `--chase`
+- `--chase 0.6 --chase-scenarios --privileged-critic --lead-speed 0.95 1.0 1.05` keep its tandem
+  driving (the leads replayed at 95 - 105% of their speed). Without `--chase`
   the new policy has no chase training, and the plugin does not let it chase (`ChasePlayers` and
   `ChaseBots` do nothing). The chase gap law (`--chase-time-gap` and the rest) comes from the
   shipped policy. Chase training runs on the CPU simulator only (`--sim cpu`).
@@ -257,8 +259,13 @@ python train_ppo_gpu.py --sim cpu --init-policy ../GradientDriftPlugin/GradientD
   symmetry, tyre randomisation, self-play leads and a style reward from a human's driving
   (`--caps-*`, `--mirror`, `--adr` with `--dr-*`, `--self-ghosts`, `--amp`; see
   [2. Train](#2-train)); add them to stay closer to it.
+- `--drift-starts 0.3 --ghost-starts 0.5` start some episodes already sideways, as the shipped
+  policy trained.
 - `--generated 20` keeps some practice on other shapes in the run. 30M ticks is a short polish;
   Ctrl-C stops a run early and keeps what it has.
+
+Every option here is one the shipped policy was trained with, on the project's training PC. What
+has not been run yet is this exact combination: the shipped policy polished on one track.
 
 **5. Compare** the new policy with the shipped one on the track, on the same measures as step 2:
 
