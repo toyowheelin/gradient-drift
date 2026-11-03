@@ -93,9 +93,17 @@ and the AI line, as
 Start from the shipped policy, or continue a run of your own:
 
 ```
-python train_ppo_gpu.py --sim cpu --init-policy ../GradientDriftPlugin/GradientDriftPlugin.policy.json --track <track> --steps 20000000 --name mine
+python train_ppo_gpu.py --sim cpu --init-policy ../GradientDriftPlugin/GradientDriftPlugin.policy.json --hidden 256 --layers 3 --history-frames 4 --history-every 2 --track <track> --steps 20000000 --name mine
 python train_ppo_gpu.py --sim cpu --resume runs/mine/checkpoint.pt --steps 40000000 --name mine2
 ```
+
+Starting from a policy, give its network's shape: the shipped one has three layers of 256 and a
+short-history input (`--hidden 256 --layers 3 --history-frames 4 --history-every 2`). Without
+them the run does not start: without `--layers 3` the trainer stops and says so, and without the
+history options it fails loading the policy's 130 inputs. A run that starts
+from the shipped policy without `--chase` makes a policy that does not chase: see
+[Polishing the shipped policy for one track](#polishing-the-shipped-policy-for-one-track) for a
+run that keeps everything the shipped policy can do.
 
 | option | what it does |
 |---|---|
@@ -134,9 +142,10 @@ x1.25. Everything after `--` goes to the trainer.
 updates before the driving network moves, so expect the evaluation return to dip for the first
 few million ticks.
 
-`--init-policy` also keeps the old policy's paces, sliding grip and plugin settings. It does not keep
-its car pool, its skill range or its reward (the policy file does not record the reward): give
-those again, as the shipped policy's are in
+`--init-policy` also keeps the old policy's paces, sliding grip, plugin settings and chase gap law.
+It does not keep its network shape (`--hidden`, `--layers`, `--history-frames`), its car pool, its
+skill range, its chase training (`--chase` and its options) or its reward (the policy file does not
+record the reward): give those again, as the shipped policy's are in
 [Polishing the shipped policy for one track](#polishing-the-shipped-policy-for-one-track).
 
 ## 3. See what it does
@@ -197,7 +206,7 @@ it better there. Three things decide whether it works.
   the simulator where it goes wrong on the server.
 - **It forgets other tracks.** A policy polished on one track drives others worse, so it belongs on
   that track's server only. Keep the shipped policy everywhere else.
-- **The simulator is not the server.** Check the result with a server run (step 5) before you keep
+- **The simulator is not the server.** Check the result with a server run ([5. Check a server run](#5-check-a-server-run)) before you keep
   it.
 
 **1. Make the track's data** ([1. Track data](#1-track-data)), and a car pool from your cars if
@@ -209,39 +218,71 @@ the server runs more than one car model ([Cars](#cars)).
 python drive_report.py ../GradientDriftPlugin/GradientDriftPlugin.policy.json --track <track>
 ```
 
-**3. Train from the shipped policy** on that track:
+**3. Record ghost leaders on the track** for the chase practice (the shipped policy driving it;
+a few minutes):
+
+```
+python record_ghosts.py --track <track> --policy ../GradientDriftPlugin/GradientDriftPlugin.policy.json
+```
+
+**4. Train from the shipped policy** on that track:
 
 ```
 python train_ppo_gpu.py --sim cpu --init-policy ../GradientDriftPlugin/GradientDriftPlugin.policy.json \
+    --hidden 256 --layers 3 --history-frames 4 --history-every 2 \
     --track <track> --generated 20 --car-pool cars/car_pool.json --skill 0 1 \
-    --reward weave_penalty=5 --reward swing_penalty=4 --steps 30000000 --name <track>_polished
+    --chase 0.6 --chase-scenarios --privileged-critic --cat 0.25 \
+    --reward weave_penalty=5 --reward swing_penalty=4 --reward zone_bonus_per_m=0.5 --reward path_progress=1 \
+    --reward chase_proximity_per_m=3 --reward chase_gain_per_m=0.5 --reward chase_transition_pay=1 \
+    --reward chase_contact_penalty=5 --reward chase_contact_ends=0 \
+    --reward wall_proximity_penalty=0.1 --reward spin_recovery_penalty=0.2 \
+    --steps 30000000 --name <track>_polished
 ```
 
+- `--hidden 256 --layers 3 --history-frames 4 --history-every 2` is the shipped policy's network.
+  Without them the run does not start (the trainer asks for `--layers 3`, and fails loading the
+  policy's 130 inputs without the history options).
+- `--chase 0.6 --chase-scenarios --privileged-critic` keep its tandem driving. Without `--chase`
+  the new policy has no chase training, and the plugin does not let it chase (`ChasePlayers` and
+  `ChaseBots` do nothing). The chase gap law (`--chase-time-gap` and the rest) comes from the
+  shipped policy. Chase training runs on the CPU simulator only (`--sim cpu`).
 - `--car-pool` and `--skill 0 1` keep what the shipped policy can do: drive any car and follow the
   plugin's `BotSkill`. Without them the new policy drives only the plugin's configured car and has
   no skill dial. Leave `--car-pool` out only if every bot is that one car.
-- `--reward weave_penalty=5 --reward swing_penalty=4` are the reward changes the project's own
-  policies train with. Without them the run uses the trainer's default reward, which lets the car
-  weave to shed speed.
-- `--generated 20` keeps some practice on other shapes in the run. 30M ticks is what the project's
-  own one-track trials use; Ctrl-C stops a run early and keeps what it has.
+- The `--reward` options and `--cat 0.25` are the shipped policy's reward. Without them the run uses
+  the trainer's default reward, which lets the car weave to shed speed and pays nothing for
+  chasing well.
+- Its paces, sliding grip and physics settings (`RoundTireCurve`, `SurfaceGrip` and the rest) come
+  from the shipped policy on their own. The shipped policy was also trained with smoothness, mirror
+  symmetry, tyre randomisation, self-play leads and a style reward from a human's driving
+  (`--caps-*`, `--mirror`, `--adr` with `--dr-*`, `--self-ghosts`, `--amp`; see
+  [2. Train](#2-train)); add them to stay closer to it.
+- `--generated 20` keeps some practice on other shapes in the run. 30M ticks is a short polish;
+  Ctrl-C stops a run early and keeps what it has.
 
-**4. Compare** the new policy with the shipped one on the track, on the same measures as step 2:
+**5. Compare** the new policy with the shipped one on the track, on the same measures as step 2:
 
 ```
 python drive_report.py ../GradientDriftPlugin/GradientDriftPlugin.policy.json runs/<track>_polished/policy.json --track <track>
 ```
 
 Keep it only if it is better where the shipped one went wrong and no worse off the course, on the
-walls or spinning. Otherwise stay with the shipped policy and look at the track data again.
+walls or spinning. Check the chase too, against the same leads:
 
-**5. Put it on that track's server only** ([4. Use it on a server](#4-use-it-on-a-server)): copy
+```
+python chase_report.py ../GradientDriftPlugin/GradientDriftPlugin.policy.json runs/<track>_polished/policy.json --track <track>
+```
+
+Otherwise stay with the shipped policy and look at the track data again.
+
+**6. Put it on that track's server only** ([4. Use it on a server](#4-use-it-on-a-server)): copy
 `runs/<track>_polished/policy.json` into the server's `plugins/GradientDriftPlugin/` as
 `GradientDriftPlugin.policy.json` (keep the old one), and copy `tracks/<track>/<track>_pace_reference.csv`
 into the server folder too, since the trainer may have remade it. Restart, check the log's
 `GradientDrift: policy loaded from` line, and run the server with telemetry to check it
-([5. Check a server run](#5-check-a-server-run)). A later plugin update copies the shipped policy
-over it again: copy yours back afterwards.
+([5. Check a server run](#5-check-a-server-run)). When setup later updates the plugin it keeps a
+policy no release shipped, and says so; `--shipped-policy` puts the release's back. Setup also
+checks the plugin can run your policy before it installs a plugin beside it.
 
 ## Cars
 
