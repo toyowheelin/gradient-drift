@@ -204,7 +204,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
     public GradientDriftPlugin(EntryCarManager entryCarManager, Lazy<ACServer> acServer,
         GradientDriftConfiguration configuration, ACServerConfiguration serverConfiguration, AiSpline spline,
-        SessionManager sessionManager)
+        SessionManager sessionManager, CSPServerExtraOptions cspServerExtraOptions)
     {
         _entryCarManager = entryCarManager;
         _acServer = acServer;
@@ -224,6 +224,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _botNames = configuration.ShowEntryListNames
             ? new BotNames(entryCarManager, serverConfiguration, configuration.BotNation)
             : null;
+        string joinMessage = configuration.JoinMessage?.Trim() ?? "";
+        if (joinMessage.Length > 0)
+        {
+            // AssettoServer appends its own "\n_____\nPowered by AssettoServer ..." after this
+            cspServerExtraOptions.WelcomeMessageSending += (_, args) => args.Builder.Append('\n').Append(joinMessage);
+        }
         _health = new BotHealth(s => _cars.TryGetValue(s, out DriftCarState? c) && !c.HeldByStock,
             p => _spline.WorldToSpline(p).PointId);
         _sessionManager = sessionManager;

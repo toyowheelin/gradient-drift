@@ -190,6 +190,10 @@ public class GradientDriftConfiguration
     public bool ShowEntryListNames { get; set; } = true;
     public string BotNation { get; set; } = "";
 
+    // A line added to the welcome message each player gets on joining, just above AssettoServer's
+    // own "Powered by AssettoServer" line (the game shows it in chat). Empty = no line.
+    public string JoinMessage { get; set; } = "Drift bots by Gradient Drift https://github.com/toyowheelin/gradient-drift";
+
     // Every this many seconds, a line in the server log with the time the plugin took on the
     // server's update thread: milliseconds a tick, split into the network, the sensors (rays,
     // ground and wall checks), telemetry and the tandem followers, the worst tick, and the share
