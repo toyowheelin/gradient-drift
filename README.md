@@ -320,14 +320,16 @@ in short, from `drift_rl/`:
 python setup_track.py <game>/content/tracks/<track>
 
 # train, starting from the shipped policy
-python train_ppo_gpu.py --sim cpu --init-policy ../GradientDriftPlugin/GradientDriftPlugin.policy.json --track <track> --car-pool cars/car_pool.json --skill 0 1 --reward weave_penalty=5 --reward swing_penalty=4 --steps 30000000 --name <run>
+python train_ppo_gpu.py --sim cpu --init-policy ../GradientDriftPlugin/GradientDriftPlugin.policy.json --hidden 256 --layers 3 --history-frames 4 --history-every 2 --track <track> --car-pool cars/car_pool.json --skill 0 1 --reward weave_penalty=5 --reward swing_penalty=4 --steps 30000000 --name <run>
 
 # how it drives (list more policies to compare)
 python drive_report.py runs/<run>/policy.json --track <track>
 ```
 
-To make the bots drive one track better, train the shipped policy further on that track and put the
-result on that track's server only: the steps and what to check are in
+This keeps the shipped policy's network (`--hidden`, `--layers`, `--history-*`) but not its chasing:
+a run without `--chase` makes a policy that does not chase. To make the bots drive one track
+better, train the shipped policy further on that track, chasing included, and put the result on
+that track's server only: the steps and what to check are in
 [Polishing the shipped policy for one track](drift_rl/README.md#polishing-the-shipped-policy-for-one-track).
 
 <details>
