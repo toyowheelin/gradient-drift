@@ -325,7 +325,7 @@ class CarPage(QWizardPage):
         self.all_car.setToolTip('Puts every bot in this car (and its skin); change single slots in the list below.')
         self.all_car.activated.connect(self.set_all)
         self.name = QLineEdit('DriftBot')
-        self.name.setToolTip('The bots\' name in game: AssettoServer shows each as this name and its slot number.')
+        self.name.setToolTip('The bots\' name in game: each new bot gets it as its entry-list name, numbered when there are several.')
         self.count = QSpinBox()
         self.count.setRange(1, 12)
         self.count.setToolTip('Bots in all, existing ones included (setup does not take bots away). '
