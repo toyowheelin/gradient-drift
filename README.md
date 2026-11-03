@@ -204,8 +204,10 @@ tools need from the game content installed on their own machine.
 
 ## Building the plugin
 
-The [releases](https://github.com/toyowheelin/gradient-drift/releases) carry the plugin built. To build it yourself: it
-compiles against AssettoServer's own source, so you need that too.
+Normally you don't need this: the [release](https://github.com/toyowheelin/gradient-drift/releases/latest)
+carries the plugin built, and setup installs it for you along with everything else (the
+[Quick start](#quick-start)). Build it yourself only to run changes of your own or an unreleased
+version. It compiles against AssettoServer's own source, so you need that too.
 
 > [!NOTE]
 > Building gives you the plugin only. A server needs more than the plugin for bots to drive: AI
