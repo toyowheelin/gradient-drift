@@ -168,7 +168,7 @@ def main(argv=None):
         c.add_argument('--skin', default=None, help='the skin, or one per bot slot like --car')
         c.add_argument('--bots', type=int, default=1, help='how many bots in all')
         c.add_argument('--name', default=None,
-                       help="the bots' name in game, shown with each one's slot number (default: the server's, else DriftBot)")
+                       help="the bots' name in game, given to each new bot, numbered when there are several (default: the server's, else DriftBot)")
         c.add_argument('--pace', type=float, default=None, metavar='PERCENT',
                        help="the bots' pace, %% of the flat-out speed at each point of the lap (a policy trained with paces)")
         c.add_argument('--plugin', default=None, help="the folder with the plugin's build (GradientDriftPlugin.dll ...)")

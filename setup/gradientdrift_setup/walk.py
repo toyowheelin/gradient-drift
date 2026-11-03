@@ -184,7 +184,7 @@ def bots_step(st):
         t.say(f'     {t.BAD} The game install has no ' + ', '.join(f'content{_sep()}cars{_sep()}{m}' for m in missing) + '.')
     else:
         t.say(f'     {t.OK} ' + ('All found' if len(models) > 1 else 'Found') + ' in the game install.')
-    name = t.ask_text("Bots' name in game (each shows as this and its slot number):",
+    name = t.ask_text("Bots' name in game (new bots get it, numbered when there are several):",
                       st.get('bot_name') or bot_name_now(s))
     t.hint('How fast the bots drive, as a share of the flat-out speed round the lap (a policy trained with\n'
            'paces). Lower is calmer.')

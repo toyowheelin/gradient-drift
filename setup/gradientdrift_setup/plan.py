@@ -517,12 +517,13 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
             if a.get('MinAiSafetyDistanceMeters', 20) > gap:
                 ai_param('MinAiSafetyDistanceMeters', a.get('MinAiSafetyDistanceMeters', 20), gap,
                          f"room to spawn {bots} bots round the {lap_m:.0f} m lap: the least gap too")
-    # AssettoServer names AI cars '<NamePrefix> <slot>' and ignores the entry list's DRIVERNAME
+    # the plugin shows each bot under its entry list DRIVERNAME (ShowEntryListNames, on by default);
+    # AssettoServer's own name for an AI car, '<NamePrefix> <slot>', shows for one without it
     name_now = str(a.get('NamePrefix', 'Traffic'))
     if bot_name and name_now != bot_name:
         quoted = bot_name if re.fullmatch(r'[A-Za-z0-9_ .-]+', bot_name) else '"' + bot_name.replace('\\', '\\\\').replace('"', '\\"') + '"'
-        p.changes.append(Change(x, f"name the bots '{bot_name} <slot number>' in game (AssettoServer uses this, "
-                                "not the entry list's names)", f'AiParams.NamePrefix: {name_now}',
+        p.changes.append(Change(x, f"name the bots '{bot_name} <slot number>' where a bot has no entry-list name "
+                                "(the plugin shows each bot's DRIVERNAME)", f'AiParams.NamePrefix: {name_now}',
                                 f'AiParams.NamePrefix: {quoted}', op=('yaml_child', 'AiParams', 'NamePrefix', quoted)))
     for key in ('MinCollisionStopTimeSeconds', 'MaxCollisionStopTimeSeconds'):
         if a.get(key, 1 if key.startswith('Min') else 3) != 0:
