@@ -360,7 +360,7 @@ def main():
                          'moves toward the bottom of --chase-gap while evaluation hits stay under --adr-hits and back '
                          'when over twice that, and the --dr-axle-grip / --dr-peak-slip / --obs-noise ranges grow '
                          'from 0 toward the given values while the training cars\' drift stays over --adr-drift')
-    ap.add_argument('--adr-hits', type=float, default=0.12, help='ADR: chase hits share that lets the gap close')
+    ap.add_argument('--adr-hits', type=float, default=0.12, help='ADR: chase hits share that lets the gap close (with --chase-touch-push: episodes with a touch that upset the lead)')
     ap.add_argument('--adr-drift', type=float, default=0.55, help='ADR: training drift share that lets the ranges grow')
     ap.add_argument('--adr-step', type=float, default=0.1, help='ADR: share of each range moved per evaluation')
     args = ap.parse_args()
@@ -1100,9 +1100,10 @@ def main():
         """--adr after an evaluation: the closest asked gap and the randomisation ranges move one step."""
         if args.chase > 0.0 and last_chase and adr['gap_low'] is not None:
             lo, span = args.chase_gap[0], chase_low_start - args.chase_gap[0]
-            if last_chase['hits'] <= args.adr_hits:
+            hits = last_chase['upsets'] if args.chase_touch_push else last_chase['hits']
+            if hits <= args.adr_hits:
                 adr['gap_low'] = max(lo, adr['gap_low'] - args.adr_step * span)
-            elif last_chase['hits'] > 2.0 * args.adr_hits:
+            elif hits > 2.0 * args.adr_hits:
                 adr['gap_low'] = min(chase_low_start, adr['gap_low'] + args.adr_step * span)
         drift = row.get('train_drift_fraction')
         if drift is not None and np.isfinite(drift) and (args.dr_axle_grip or args.dr_peak_slip or args.obs_noise):
@@ -1261,6 +1262,8 @@ def main():
             last_chase.update({'return': float(np.mean(ev['return'][had])) if had.any() else float('nan'),
                                'gap': cmean('chase_mean_gap_m'), 'in_band': cmean('chase_in_band_fraction'),
                                'hits': float(np.mean(ev['contacts'][had] > 0)) if had.any() else 0.0,
+                               # with the push, a touch the lead shrugs off is not a hit that holds the gap back
+                               'upsets': float(np.mean(ev['lead_upsets'][had] > 0)) if had.any() else 0.0,
                                'slip': cmean('chase_slip_diff_deg'), 'line': cmean('chase_line_diff_m')})
         if last_eval['return'] > best_eval:
             best_eval = last_eval['return']
@@ -1541,7 +1544,7 @@ def main():
                       + (f"  pace-error {last_eval['pace_abs_error_pct']:.1f}% (signed {last_eval['pace_error_pct']:+.1f}%)"
                          if pace_range != (0.0, 0.0) else "")
                       + (f"  | chase return {last_chase['return']:.1f} gap {last_chase['gap']:.1f}m "
-                         f"in-band {last_chase['in_band']:.0%} hits {last_chase['hits']:.1%} "
+                         f"in-band {last_chase['in_band']:.0%} hits {last_chase['hits']:.1%} upsets {last_chase['upsets']:.1%} "
                          f"slip-diff {last_chase['slip']:.1f} line-diff {last_chase['line']:.2f} |" if last_chase else "")
                       + (f"  kickstart {kick_w:.2f} (off by {kick_err:.3f})" if kick_w > 0.0 else "")
                       + (f"  amp style {amp_log.get('style', 0):.2f} D human {amp_log.get('d_human', 0):+.2f} cars {amp_log.get('d_cars', 0):+.2f}"
