@@ -277,8 +277,9 @@ ACT_SIZE = 3
  E_PACE_ABS_ERROR, E_WEAVES, E_SWINGS, E_CHASE_TICKS, E_CHASE_BAND_TICKS, E_CHASE_GAP, E_CHASE_HERE_TICKS,
  E_CHASE_SLIP_DIFF, E_CHASE_LINE_DIFF, E_CONTACTS, E_CHASE_DRIFT_TICKS,
  E_CONTACT_CLOSING, E_CONTACT_TAPS, E_CONTACT_TICKS, E_CONTACT_CRASHES,
- E_CONTACT_REAR_END, E_CONTACT_DOOR, E_CONTACT_NOSE_SIDE, E_TOUCH_THEN_CRASH) = range(54)
-EP_SIZE = 54
+ E_CONTACT_REAR_END, E_CONTACT_DOOR, E_CONTACT_NOSE_SIDE, E_TOUCH_THEN_CRASH,
+ E_LEAD_UPSETS, E_LEAD_SPINS, E_SWING_ZONE_TICKS, E_LEAD_KICK) = range(58)
+EP_SIZE = 58
 # how hard a touch was, for the statistics: the closing speed along the line when it starts (the
 # lead is a replayed ghost, so nothing pushes back and there is no force to read; closing speed is
 # what an impact would scale with). Under TAP_CLOSING_MS (3.6 km/h) it counts as a tap.
@@ -294,6 +295,18 @@ TOUCH_CRASH_WINDOW_S = 3.0
 # cannot move, so the push is the chaser's half of an equal-mass collision at the contact point,
 # with this restitution (0 = the cars stay together, 1 = they bounce apart), no friction.
 TOUCH_RESTITUTION = 0.2
+# ... and since chase_touch_push also moves the lead: its share of the same collision (equal mass and
+# yaw inertia, the chaser's numbers) knocks it off its recorded run, and it returns to it as a
+# critically damped spring of this natural frequency (Hz; ~1 s to settle), its offset never more than
+# LEAD_OFFSET_MAX_M - a replayed driver that feels the hit and gathers the car up again
+LEAD_RETURN_HZ = 0.5
+LEAD_OFFSET_MAX_M = 3.0
+LEAD_OFFSET_MAX_RAD = 0.6
+# the lead's heading this far ahead (its own future, the reward only) tells when it is swinging into a
+# transition (more than SWING_ZONE_MIN_RAD of rotation to come), and where its body will be for
+# chase_swing_zone_per_s
+SWING_ZONE_AHEAD_S = (0.4, 0.8)
+SWING_ZONE_MIN_RAD = 0.35
 # a tick counts as braking with the brake action (brake_fraction) from this much of it
 BRAKE_STAT_MIN = 0.05
 # Slip-angle bands of the statistics, degrees. "drift" (20-50) is the band every table up to
@@ -309,7 +322,7 @@ SLIDE_MIN_DEG, HIGH_ANGLE_MIN_DEG, SLIDE_MAX_DEG = 20.0, 40.0, 80.0
 # speed its pace asked for (pace x the course's reference speed where the car was), averaged the
 # same way (m/s), seconds since its last transition, and which way the course was turning there
 # (fast_sim co[:, 9]; 2 = no transition yet)]
-N_COUNTERS = 37       # ... [12, 13] the steering and pedal noise of a lower skill (SKILL_*), [14 - 19] its last two asked actions,
+N_COUNTERS = 45       # ... [12, 13] the steering and pedal noise of a lower skill (SKILL_*), [14 - 19] its last two asked actions,
 # [20 - 22] the way the car last rotated at swing_rate_degs or more (+1 / -1, 0 = not yet), seconds since, and which
 # way the course was turning there, [23 - 28] the chase: the lead's ghost (1 + its index; 0 = no lead), the ghost's
 # clock, its sample at that time, the asked gap (chase_gap), how late the lead is seen, the gap last seen,
@@ -327,6 +340,11 @@ C_CHASE_SHIFT = 34
 C_CONTACT = 35
 # [36] 1 + the episode time (s) the last touch started, until it is counted as a crash or ages out
 C_TOUCH_T = 36
+# [37 - 42] EnvConfig.chase_touch_push: how far a push has knocked the lead off its recorded run
+# (x, z in m, heading in rad) and how fast that offset is changing (m/s, m/s, rad/s); it eases back
+# (LEAD_RETURN_HZ) as a driver who was bumped gathers the car up again. [43] the yaw rate the touch
+# under way has kicked into the lead so far, deg/s (chase_lead_upset_*)
+C_LEAD_OX, C_LEAD_OZ, C_LEAD_OH, C_LEAD_VX, C_LEAD_VZ, C_LEAD_W, C_LEAD_KICK = range(37, 44)
 # a steering reversal for the statistics: the steering action turning back by more than this
 # (fraction of full lock) in one tick
 STEER_REVERSAL_MIN = 0.05
@@ -544,6 +562,18 @@ class RewardConfig:
     # signed curvature, fast_sim co[:, 10]; held to 0.7 - 1.4), for progress and the pace, and the
     # speed asked rises with the root of it, as a corner's speed does with its radius. 0 = off.
     path_progress: float = 0.0
+    # CONTACT THAT MATTERS (needs EnvConfig.chase_touch_push, which pushes both cars): rather than
+    # every touch, charge what a touch does to the lead - the yaw rate it kicks into the lead's car,
+    # free up to chase_lead_upset_free_degs (a tap a driver shrugs off), then
+    # chase_lead_upset_per_degs per deg/s past it; a kick of chase_lead_spin_degs or more would spin
+    # the lead: chase_lead_spin_penalty, and the lead is lost (a crash). And while the lead is swinging
+    # into a transition, chase_swing_zone_per_s for every second this car sits where the lead's body is
+    # about to be (SWING_ZONE_AHEAD_S): a chaser parked there blocks the lead's swing. 0 = off.
+    chase_lead_upset_free_degs: float = 10.0
+    chase_lead_upset_per_degs: float = 0.0
+    chase_lead_spin_degs: float = 45.0
+    chase_lead_spin_penalty: float = 0.0
+    chase_swing_zone_per_s: float = 0.0
 
     def vector(self):
         return np.array(list(asdict(self).values()), dtype=np.float64)
@@ -558,7 +588,8 @@ class RewardConfig:
  R_WEAVE_GAP, R_SWING, R_SWING_RATE, R_SWING_WINDOW, R_CHASE_PROX, R_CHASE_FAR, R_CHASE_ANGLE,
  R_CHASE_SLIP_FREE, R_CHASE_SLIP_ZERO, R_CHASE_LINE, R_CHASE_LINE_FREE, R_CHASE_LINE_ZERO,
  R_CHASE_CONTACT, R_CHASE_REAR_END, R_CHASE_GAIN, R_CHASE_SWITCH_PAY, R_CHASE_SLOT, R_CHASE_LINE_SHIFT,
- R_CHASE_CONTACT_ENDS, R_PATH_PROGRESS) = range(61)
+ R_CHASE_CONTACT_ENDS, R_PATH_PROGRESS, R_LEAD_UPSET_FREE, R_LEAD_UPSET, R_LEAD_SPIN_DEGS, R_LEAD_SPIN,
+ R_SWING_ZONE) = range(66)
 
 
 @dataclass
@@ -1076,39 +1107,120 @@ def _body_zone(x, z, h, px, pz):
 
 
 @njit(cache=True)
-def _touch_push(s, p, lx, lz, lh, lead_vx, lead_vz):
-    """EnvConfig.chase_touch_push: the chaser's half of an equal-mass collision with the lead at
-    the point of its body nearest the lead's centre (TOUCH_RESTITUTION, no friction). Changes its
-    forward and sideways speed and its yaw rate; only while the two close on each other."""
+def _touch_push(s, p, lx, lz, lh, lead_vx, lead_vz, c):
+    """EnvConfig.chase_touch_push: an equal-mass collision with the lead at the point of this car's
+    body nearest the lead's centre (TOUCH_RESTITUTION, no friction). This car's forward and sideways
+    speed and yaw rate change; the lead takes the opposite impulse, which knocks it off its recorded
+    run (counters c, C_LEAD_*) and kicks a yaw rate into it. Only while the two close on each other.
+    Returns that yaw-rate kick, deg/s (0 when nothing happened)."""
     h = s[fs.S_HEADING]
-    c, sn = math.cos(h), math.sin(h)
+    cs, sn = math.cos(h), math.sin(h)
     nx, nz = s[fs.S_X] - lx, s[fs.S_Z] - lz           # from the lead to this car
     dist = math.sqrt(nx * nx + nz * nz)
     if dist < 1e-6:
-        return
+        return 0.0
     nx /= dist
     nz /= dist
     # contact point: this body's point nearest the lead's centre, relative to its centre
-    f = (lx - s[fs.S_X]) * c + (lz - s[fs.S_Z]) * sn
-    l = -(lx - s[fs.S_X]) * sn + (lz - s[fs.S_Z]) * c
+    f = (lx - s[fs.S_X]) * cs + (lz - s[fs.S_Z]) * sn
+    l = -(lx - s[fs.S_X]) * sn + (lz - s[fs.S_Z]) * cs
     f = max(-CAR_REAR_M, min(CAR_FRONT_M, f))
     l = max(-CAR_HALF_WIDTH_M, min(CAR_HALF_WIDTH_M, l))
-    rx, rz = f * c - l * sn, f * sn + l * c
+    rx, rz = f * cs - l * sn, f * sn + l * cs
     fwd, lat, w = s[fs.S_OWN_SPEED], s[fs.S_LATV], s[fs.S_YAW]
-    vx = fwd * c - lat * sn - w * rz
-    vz = fwd * sn + lat * c + w * rx
-    vn = (vx - lead_vx) * nx + (vz - lead_vz) * nz
+    vx = fwd * cs - lat * sn - w * rz
+    vz = fwd * sn + lat * cs + w * rx
+    lvx = lead_vx + c[C_LEAD_VX]
+    lvz = lead_vz + c[C_LEAD_VZ]
+    vn = (vx - lvx) * nx + (vz - lvz) * nz
     if vn >= 0.0:
-        return                                        # already moving apart
+        return 0.0                                    # already moving apart
     mass = (p[fs.P_FRONT_STATIC_LOAD_N] + p[fs.P_REAR_STATIC_LOAD_N]) / 9.80665
     inertia = p[fs.P_YAW_INERTIA_KGM2]
     rn = rx * nz - rz * nx
-    # the lead (same mass) takes half: 1/m_eff = 2/m, plus this car's turning about the point
-    j = -(1.0 + TOUCH_RESTITUTION) * vn / (2.0 / mass + rn * rn / inertia)
+    # the same point seen from the lead's centre (the lead: this car's mass and inertia)
+    qx, qz = s[fs.S_X] + rx - lx, s[fs.S_Z] + rz - lz
+    qn = qx * nz - qz * nx
+    j = -(1.0 + TOUCH_RESTITUTION) * vn / (2.0 / mass + rn * rn / inertia + qn * qn / inertia)
     dvx, dvz = j * nx / mass, j * nz / mass
-    s[fs.S_OWN_SPEED] = max(0.0, fwd + dvx * c + dvz * sn)
-    s[fs.S_LATV] = lat - dvx * sn + dvz * c
+    s[fs.S_OWN_SPEED] = max(0.0, fwd + dvx * cs + dvz * sn)
+    s[fs.S_LATV] = lat - dvx * sn + dvz * cs
     s[fs.S_YAW] = w + rn * j / inertia
+    # the lead: the opposite impulse
+    c[C_LEAD_VX] -= dvx
+    c[C_LEAD_VZ] -= dvz
+    dw = -qn * j / inertia
+    c[C_LEAD_W] += dw
+    return abs(dw) * (180.0 / math.pi)
+
+
+@njit(cache=True)
+def _lead_offset_step(c, dt):
+    """The lead's knock off its recorded run (C_LEAD_*) easing back to it: a critically damped
+    spring at LEAD_RETURN_HZ (semi-implicit Euler)."""
+    if c[C_LEAD_OX] == 0.0 and c[C_LEAD_OZ] == 0.0 and c[C_LEAD_OH] == 0.0 \
+            and c[C_LEAD_VX] == 0.0 and c[C_LEAD_VZ] == 0.0 and c[C_LEAD_W] == 0.0:
+        return
+    w0 = 2.0 * math.pi * LEAD_RETURN_HZ
+    _spring(c, C_LEAD_OX, C_LEAD_VX, LEAD_OFFSET_MAX_M, w0, dt)
+    _spring(c, C_LEAD_OZ, C_LEAD_VZ, LEAD_OFFSET_MAX_M, w0, dt)
+    _spring(c, C_LEAD_OH, C_LEAD_W, LEAD_OFFSET_MAX_RAD, w0, dt)
+
+
+@njit(cache=True)
+def _spring(c, o, v, lim, w0, dt):
+    c[v] += (-w0 * w0 * c[o] - 2.0 * w0 * c[v]) * dt
+    c[o] = max(-lim, min(lim, c[o] + c[v] * dt))
+    if abs(c[o]) < 1e-4 and abs(c[v]) < 1e-3:
+        c[o] = 0.0
+        c[v] = 0.0
+
+
+@njit(cache=True)
+def _lead_offset_clear(c):
+    for j in range(C_LEAD_OX, C_LEAD_KICK + 1):
+        c[j] = 0.0
+
+
+@njit(cache=True)
+def _lead_offset(c, lx, lz, lh, larc, lap):
+    """The lead where it is now: its recorded state plus the knock a push gave it (C_LEAD_*)."""
+    ox, oz, oh = c[C_LEAD_OX], c[C_LEAD_OZ], c[C_LEAD_OH]
+    if ox == 0.0 and oz == 0.0 and oh == 0.0:
+        return lx, lz, lh, larc
+    a = larc + ox * math.cos(lh) + oz * math.sin(lh)
+    if a >= lap:
+        a -= lap
+    elif a < 0.0:
+        a += lap
+    return lx + ox, lz + oz, lh + oh, a
+
+
+@njit(cache=True)
+def _in_swing_zone(s, gh, g, n, k, t, rate, lx, lz, lh, lap):
+    """True while the lead is swinging into a transition (its recorded heading turns more than
+    SWING_ZONE_MIN_RAD within SWING_ZONE_AHEAD_S) and this car's body overlaps where the lead's body is
+    about to be: the lead's car turned to that heading about a point near its front (the rear
+    swings), at its place now."""
+    pf = 0.5 * CAR_FRONT_M
+    for m in range(len(SWING_ZONE_AHEAD_S)):
+        tf = t + SWING_ZONE_AHEAD_S[m] * rate
+        kf = _ghost_index(gh, g, n, tf, k)
+        if kf < 0:
+            return False
+        fh = _lead_state(gh, g, kf, tf, lap)[2]
+        k0 = _ghost_index(gh, g, n, t, k)
+        if k0 < 0:
+            return False
+        dh = fs.wrap_pi(fh - _lead_state(gh, g, k0, t, lap)[2])
+        if abs(dh) < SWING_ZONE_MIN_RAD:
+            continue
+        h2 = lh + dh
+        cx = lx + pf * (math.cos(lh) - math.cos(h2))
+        cz = lz + pf * (math.sin(lh) - math.sin(h2))
+        if _cars_overlap(s[fs.S_X], s[fs.S_Z], s[fs.S_HEADING], cx, cz, h2):
+            return True
+    return False
 
 
 @njit(cache=True)
@@ -1246,6 +1358,7 @@ def _chase_obs(s, c, obs, gh, gh_len, lap, dt, cte, rate):
     if k < 0:
         return
     lx, lz, lh, ls, ly, lv, larc, lcte = _lead_state(gh, g, k, t, lap)
+    lx, lz, lh, larc = _lead_offset(c, lx, lz, lh, larc, lap)
     k0 = max(0, k - CHASE_LEAD_SPEED_TICKS)
     lv_line = lv
     if k > k0:
@@ -1358,6 +1471,8 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     lx = 0.0
     lz = 0.0
     lh = 0.0
+    swing = False
+    spun = False
     lead_v_ahead = 0.0
     breathe = 0.0
     inside = 0.0
@@ -1373,16 +1488,22 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         k = _ghost_index(gh, g, gh_len[g], t_g, k)
         if k < 0:
             counters[i, C_GHOST] = 0.0
+            _lead_offset_clear(counters[i])
         else:
             counters[i, C_GHOST_T] = t_g
             counters[i, C_GHOST_K] = k
             lx, lz, lh, ls, ly, lv, larc, lcte = _lead_state(gh, g, k, t_g, lap)
+            _lead_offset_step(counters[i], dt)
+            lx, lz, lh, larc = _lead_offset(counters[i], lx, lz, lh, larc, lap)
             gap = _outline_gap(s[S_X], s[S_Z], s[S_HEADING], s[S_ARC], lx, lz, lh, larc, lap)
             if gap < CHASE_LOST_M:
                 counters[i, C_GHOST] = 0.0
+                _lead_offset_clear(counters[i])
             else:
                 chasing = True
                 contact = _cars_overlap(s[S_X], s[S_Z], s[S_HEADING], lx, lz, lh)
+                if not contact and (env_cfg[21] > 0.5 or rw[R_SWING_ZONE] > 0.0):
+                    swing = _in_swing_zone(s, gh, g, gh_len[g], k, t_g, rate, lx, lz, lh, lap)
                 lead_q = _drift_quality(abs(ls) * (180.0 / math.pi), rw)
                 here = _ghost_here(gh, g, k, s[S_ARC], lap)
                 k0 = max(0, k - CHASE_LEAD_SPEED_TICKS)
@@ -1605,6 +1726,29 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         counters[i, C_CHASE_OFF] = off
         if contact and counters[i, C_CONTACT] == 0.0:
             r -= rw[R_CHASE_CONTACT] + rw[R_CHASE_REAR_END] * max(0.0, closing) ** 2
+        if contact and env_cfg[21] > 0.5:
+            # the push (both cars). The lead's upset = the largest yaw rate the touch has put into it;
+            # a light touch (under R_LEAD_UPSET_FREE) costs nothing more, past it each deg/s costs,
+            # and R_LEAD_SPIN_DEGS is a spin: penalty, and the lead is gone.
+            if counters[i, C_CONTACT] == 0.0:
+                counters[i, C_LEAD_KICK] = 0.0
+            _touch_push(s, p, lx, lz, lh, lead_vx, lead_vz, counters[i])
+            upset = abs(counters[i, C_LEAD_W]) * (180.0 / math.pi)
+            was = counters[i, C_LEAD_KICK]
+            if upset > was:
+                over_was = max(0.0, was - rw[R_LEAD_UPSET_FREE])
+                over = max(0.0, min(upset, rw[R_LEAD_SPIN_DEGS]) - rw[R_LEAD_UPSET_FREE])
+                r -= rw[R_LEAD_UPSET] * (over - over_was)
+                counters[i, C_LEAD_KICK] = upset
+                ep[i, E_LEAD_KICK] += upset - was
+                if was <= rw[R_LEAD_UPSET_FREE] < upset:
+                    ep[i, E_LEAD_UPSETS] += 1.0
+                if was < rw[R_LEAD_SPIN_DEGS] <= upset:
+                    r -= rw[R_LEAD_SPIN]
+                    ep[i, E_LEAD_SPINS] += 1.0
+                    spun = True
+        if swing:
+            r -= rw[R_SWING_ZONE] * dt
     front_over = abs(d[fs.D_FrontSlipAngleDeg]) - rw[R_FRONT_SLIP_FREE]
     if front_over > 0.0:
         r -= rw[R_FRONT_SLIP_PEN] * front_over
@@ -1756,8 +1900,8 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
             counters[i, C_TOUCH_T] = 1.0 + e[E_TIME_S]
         if contact:
             e[E_CONTACT_TICKS] += 1.0
-            if env_cfg[21] > 0.5:
-                _touch_push(s, p, lx, lz, lh, lead_vx, lead_vz)
+        if swing:
+            e[E_SWING_ZONE_TICKS] += 1.0
     if counters[i, C_TOUCH_T] > 0.0:
         since = e[E_TIME_S] - (counters[i, C_TOUCH_T] - 1.0)
         if (s[fs.S_SPIN_RECOVERING] > 0.5 or (reason > 0.0 and reason != 6.0)) and since <= TOUCH_CRASH_WINDOW_S:
@@ -1771,8 +1915,13 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
             e[E_CONTACT_CRASHES] += 1.0
             counters[i, C_GHOST] = 0.0          # a crash: the lead is gone
             counters[i, C_CONTACT] = 0.0
+            _lead_offset_clear(counters[i])
     else:
         counters[i, C_CONTACT] = 0.0
+    if spun:
+        counters[i, C_GHOST] = 0.0              # the push spun the lead: it is gone
+        counters[i, C_CONTACT] = 0.0
+        _lead_offset_clear(counters[i])
 
     # ---- start the next tick, build its observation ----
     ndt = _sample_dt(rnd[i, 0], rnd[i, 1], env_cfg, dt)
@@ -1823,6 +1972,7 @@ def priv_batch(states, mids, counters, ep, gh, gh_len, lap, priv):
         rate = _ghost_rate(c, el)
         cte = mids[i, M_CTE]
         lx, lz, lh, ls, ly, lv, larc, lcte = _lead_state(gh, g, k, t, lap)
+        lx, lz, lh, larc = _lead_offset(c, lx, lz, lh, larc, lap)
         gap = _outline_gap(s[S_X], s[S_Z], s[S_HEADING], s[S_ARC], lx, lz, lh, larc, lap)
         b = _breathe(gh, g, gh_len[g], k, t)
         target = CHASE_GAP_M[0] + c[C_CHASE_ASK] * (CHASE_GAP_M[1] - CHASE_GAP_M[0]) + CHASE_BREATHE_M * b
@@ -1985,6 +2135,10 @@ def finalize_episode_stats(raw):
         'contact_door': raw[:, E_CONTACT_DOOR],
         'contact_nose_side': raw[:, E_CONTACT_NOSE_SIDE],
         'touch_then_crash': raw[:, E_TOUCH_THEN_CRASH],
+        'lead_upsets': raw[:, E_LEAD_UPSETS],
+        'lead_spins': raw[:, E_LEAD_SPINS],
+        'swing_zone_fraction': raw[:, E_SWING_ZONE_TICKS] / np.maximum(raw[:, E_CHASE_TICKS], 1.0),
+        'lead_kick_degs': raw[:, E_LEAD_KICK] / np.maximum(raw[:, E_CONTACTS], 1.0),
         'chase_drift_fraction': raw[:, E_CHASE_DRIFT_TICKS] / np.maximum(raw[:, E_CHASE_TICKS], 1.0),
     }
 

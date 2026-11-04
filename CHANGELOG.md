@@ -10,6 +10,12 @@ Settings named here are described in
 
 ## Unreleased
 
+- Bots can feel other cars' mass (`CarContactPush`, off by default): a bot that touches a player
+  or another bot takes its share of the collision, pushed back or along and turned by an
+  off-centre hit; two bots that touch are both pushed.
+- Bot aggression (`BotStyles`, `BotStyleSpread`) now also sets the time gap a chasing bot holds:
+  the pushiest bots (aggression 1) drop `ChaseTimeGapSeconds` and follow door to door, the calmest
+  keep twice it.
 - Players joining a server with the bots see "Drift bots by Gradient Drift" and a link to the
   project in chat, just above AssettoServer's own "Powered by AssettoServer" line
   (`JoinMessage`; set it to `""` to turn it off, or to any text of your own).

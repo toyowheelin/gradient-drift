@@ -12,9 +12,11 @@ namespace GradientDriftPlugin;
 //   Skill           BotSkill for this bot
 //   OptInMeters     how far ahead a car may be for this bot to take it up (ChaseOptInMeters)
 //   ChaseTopShare   ChasePaceMaxPercent / 100 for this bot
-//   Aggression      what the pace, the opt-in and the chase top came from (0 - 1; 0.5 = the settings)
+//   TimeGapShare    its share of ChaseTimeGapSeconds (the speed-dependent part of the gap it holds)
+//   Aggression      what the pace, the opt-in, the chase top and the time gap came from (0 - 1;
+//                   0.5 = the settings)
 internal readonly record struct BotStyle(float Aggression, float PaceMiddle, float ChaseGapMeters, float Skill,
-    float OptInMeters, float ChaseTopShare);
+    float OptInMeters, float ChaseTopShare, float TimeGapShare = 1f);
 
 // One entry of the BotStyles setting. A missing value is drawn (BotStyleSpread) or the server's.
 public class BotStyleEntry
@@ -23,8 +25,9 @@ public class BotStyleEntry
     // (the first entry without a name to the first AI entry, and so on).
     public string? Name { get; set; }
     // 0 - 1: 0 calm (slowest pace spacing allows, takes up a car only close ahead, chases no
-    // faster than its own top pace), 0.5 the server's settings, 1 pushy (top pace, takes up a car
-    // from far back, chases at up to 10% over ChasePaceMaxPercent).
+    // faster than its own top pace, twice the time gap), 0.5 the server's settings, 1 pushy (top
+    // pace, takes up a car from far back, chases at up to 10% over ChasePaceMaxPercent, no time gap:
+    // it holds just its chase gap at any speed, door to door).
     public float? Aggression { get; set; }
     // The gap this bot is asked to hold when chasing, metres bumper to bumper (0.5 - 6 for the
     // policies so far; outside that the nearest end is used).
@@ -38,6 +41,9 @@ internal static class BotStyles
     // Aggression from 0 to 1 moves the opt-in distance from OptInLow to OptInHigh times the setting
     // and the chase top pace by ChaseTopSwing either way.
     private const float OptInLow = 0.4f, OptInHigh = 1.6f, ChaseTopSwing = 0.10f;
+    // ... and the time gap (ChaseTimeGapSeconds) from CalmTimeGapShare times the setting at 0 to none at 1:
+    // the time gap is what holds a chaser ~7 m back at drifting speed, so the pushiest bots drop it.
+    private const float CalmTimeGapShare = 2f;
     // BotStyleSpread 1: the chase gap is drawn from the setting / GapSpreadFactor to x GapSpreadFactor.
     private const float GapSpreadFactor = 2f;
 
@@ -71,7 +77,8 @@ internal static class BotStyles
         float pace = k >= 0f ? paceBase + k * (paceHigh - paceBase) : paceBase + k * (paceBase - paceLow);
         float optIn = cfg.ChaseOptInMeters * (OptInLow + aggression * (OptInHigh - OptInLow));
         float top = cfg.ChasePaceMaxPercent / 100f * (1f + k * ChaseTopSwing);
-        return new BotStyle(aggression, pace, gap, skill, optIn, top);
+        float timeGap = k >= 0f ? 1f - k : 1f - k * (CalmTimeGapShare - 1f);
+        return new BotStyle(aggression, pace, gap, skill, optIn, top, timeGap);
     }
 
     private static BotStyleEntry? Find(List<BotStyleEntry>? entries, int aiEntry, string? name)

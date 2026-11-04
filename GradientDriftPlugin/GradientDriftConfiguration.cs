@@ -86,6 +86,13 @@ public class GradientDriftConfiguration
     // takes up no bot for ChaseBotCooldownSeconds, so trains break up and form again. Chasing a
     // player is never timed.
     public bool ChaseBots { get; set; } = true;
+
+    // Bots feel other cars' mass: a bot that overlaps a player's car or another bot takes its share
+    // of an equal-restitution collision (CarContact, the tandem trainer's chase_touch_push) - it is
+    // pushed back or along and an off-centre hit turns it; between two bots both are pushed. The
+    // player's own game already gives the player its share. Off: a bot drives through the hit as if
+    // nothing were there (only the player's car reacts).
+    public bool CarContactPush { get; set; } = false;
     public int ChaseTrainMax { get; set; } = 3;
     public float ChaseBotRunSeconds { get; set; } = 60f;
     public float ChaseBotCooldownSeconds { get; set; } = 30f;

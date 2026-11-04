@@ -72,7 +72,7 @@ jobs:
         # tests/plugin: the plugin's own loader and network on the shipped policy, made-up ones of
         # every shape it runs (their actions against drift_rl/policy.py's) and broken ones
         run: |
-          python3 -m pip install --quiet "numpy<2.5"
+          python3 -m pip install --quiet "numpy<2.5" numba
           python3 gradient-drift/tests/plugin/make_cases.py plugin-cases
           cp -r gradient-drift/tests/plugin AssettoServer/PluginChecks
           dotnet run --project AssettoServer/PluginChecks/PluginChecks.csproj -- "$PWD/plugin-cases"
