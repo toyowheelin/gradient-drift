@@ -899,7 +899,7 @@ def main():
         # an input whose meaning changed since that policy was trained (its name differs): no
         # weight, as if new (gen4's km/h pace -> the fraction of the course's flat-out speed)
         old_names = list(p0.meta.get('obs_names') or [])
-        changed = [j for j in range(min(n_old, len(old_names))) if old_names[j] != de.OBS_NAMES[j]
+        changed = [j for j in range(min(n_old, len(old_names), len(de.OBS_NAMES))) if old_names[j] != de.OBS_NAMES[j]
                    and de.OBS_NAMES[j] in de.NEW_INPUT_NORM]
         for j in changed:
             weights[0][0][:, j] = 0.0
