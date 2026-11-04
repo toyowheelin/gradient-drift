@@ -179,6 +179,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private long _scorecardWrittenMs;
     private readonly List<(byte SessionId, float X, float Z, float Heading)> _touchBots = new();
     private readonly List<(byte SessionId, float X, float Z, float Heading)> _touchPlayers = new();
+    private readonly List<(DriftCarState State, CarContact.Body Body)> _contactBots = new();
     private long _tickCounter;
     private float _muFront, _muRear;     // each axle's peak friction this tick (AxleFriction)
     // The car being driven this tick, and every car seen so far by model: its own numbers for an
@@ -833,6 +834,89 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         }
     }
 
+    // CarContactPush, once a tick after every bot has moved: each pair of overlapping cars (two bots,
+    // or a bot and a player) collides (CarContact). A bot's new speeds and yaw rate are its own
+    // state's, so they act from the next tick, as the trainer's push does.
+    private void ResolveCarContacts()
+    {
+        const float ReachM = 7f;
+        _contactBots.Clear();
+        foreach (var (_, aiState) in _driven)
+        {
+            if (_cars.TryGetValue(aiState, out DriftCarState? state) && !state.HeldByStock && state.Heading.HasValue
+                && state.OwnSpeed.HasValue)
+            {
+                CarSpec car = CarFor(aiState, _policy!);
+                _contactBots.Add((state, new CarContact.Body
+                {
+                    X = state.Position.X, Z = state.Position.Z, Heading = state.Heading.Value,
+                    Forward = state.OwnSpeed.Value, Lateral = state.LateralVelocity, YawRate = state.YawRate,
+                    MassKg = car.MassKg, InertiaKgM2 = car.YawInertiaKgM2,
+                }));
+            }
+        }
+        if (_contactBots.Count == 0)
+        {
+            return;
+        }
+        var bodies = new CarContact.Body[_contactBots.Count];
+        for (int i = 0; i < bodies.Length; i++)
+        {
+            bodies[i] = _contactBots[i].Body;
+        }
+        bool[] hit = new bool[bodies.Length];
+        for (int i = 0; i < bodies.Length; i++)
+        {
+            for (int j = i + 1; j < bodies.Length; j++)
+            {
+                if (MathF.Abs(bodies[i].X - bodies[j].X) < ReachM && MathF.Abs(bodies[i].Z - bodies[j].Z) < ReachM
+                    && ChaseInputs.CarsOverlap(bodies[i].X, bodies[i].Z, bodies[i].Heading, bodies[j].X, bodies[j].Z, bodies[j].Heading))
+                {
+                    CarContact.Collide(ref bodies[i], ref bodies[j]);
+                    hit[i] = hit[j] = true;
+                }
+            }
+        }
+        foreach (EntryCar car in _entryCarManager.EntryCars)
+        {
+            if (car.AiControlled || car.Client?.HasSentFirstUpdate != true)
+            {
+                continue;
+            }
+            var status = car.Status;
+            float heading = status.Rotation.X + MathF.PI / 2f;
+            float cs = MathF.Cos(heading), sn = MathF.Sin(heading);
+            for (int i = 0; i < bodies.Length; i++)
+            {
+                if (MathF.Abs(bodies[i].X - status.Position.X) >= ReachM || MathF.Abs(bodies[i].Z - status.Position.Z) >= ReachM
+                    || !ChaseInputs.CarsOverlap(bodies[i].X, bodies[i].Z, bodies[i].Heading, status.Position.X, status.Position.Z, heading))
+                {
+                    continue;
+                }
+                // the player as the same car (its own mass is not known here), its yaw rate unknown: 0
+                var player = new CarContact.Body
+                {
+                    X = status.Position.X, Z = status.Position.Z, Heading = heading,
+                    Forward = status.Velocity.X * cs + status.Velocity.Z * sn,
+                    Lateral = -status.Velocity.X * sn + status.Velocity.Z * cs,
+                    MassKg = bodies[i].MassKg, InertiaKgM2 = bodies[i].InertiaKgM2,
+                };
+                CarContact.Collide(ref bodies[i], ref player);
+                hit[i] = true;
+            }
+        }
+        for (int i = 0; i < bodies.Length; i++)
+        {
+            if (hit[i])
+            {
+                DriftCarState state = _contactBots[i].State;
+                state.OwnSpeed = bodies[i].Forward;
+                state.LateralVelocity = bodies[i].Lateral;
+                state.YawRate = bodies[i].YawRate;
+            }
+        }
+    }
+
     // Runs on the server's update thread, after the stock AI has moved every car for this tick.
     // AssettoServer skips the rest of a tick whose update throws (no car is sent to anyone) and
     // shuts down after 10 in a row, so nothing from here may reach it: an error is logged, and
@@ -940,6 +1024,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             }
         }
         int policyCars = aiCarsUpdated;
+        if (_configuration.CarContactPush)
+        {
+            long contactStart = PluginTiming.Now();
+            ResolveCarContacts();
+            _timing.Add(PluginTiming.Part.Sensors, contactStart);
+        }
         _aheadLead = null;
         long followStart = PluginTiming.Now();
         foreach (var (sessionId, aiState, lead, place) in _followers)
@@ -1758,9 +1848,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             chase ? ChaseInputs.GapLowM : 0f, chase ? ChaseInputs.GapHighM : float.MaxValue,
             skill ? policy!.SkillLow : 1f, skill ? policy!.SkillHigh : 1f);
         _styles[sessionId] = style;
-        VerboseLog.Information("GradientDrift: bot {SessionId} ({Name}) drives with aggression {Aggression:F2}: pace {Pace:F2}, chases from {OptIn:F0} m at up to {Top:F0}%, gap {Gap:F1} m, skill {Skill:F2}",
+        VerboseLog.Information("GradientDrift: bot {SessionId} ({Name}) drives with aggression {Aggression:F2}: pace {Pace:F2}, chases from {OptIn:F0} m at up to {Top:F0}%, gap {Gap:F1} m + {TimeGap:F2} s, skill {Skill:F2}",
             sessionId, name ?? "", style.Aggression, style.PaceMiddle, style.OptInMeters, style.ChaseTopShare * 100f,
-            style.ChaseGapMeters, style.Skill);
+            style.ChaseGapMeters, _configuration.ChaseTimeGapSeconds * style.TimeGapShare, style.Skill);
         return style;
     }
 
@@ -2821,7 +2911,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float v = MathF.Max(0f, state.LineSpeedMs);
         float top = MathF.Max(low, high * state.Style.ChaseTopShare);
         float v0 = MathF.Max(1f, IdmFreeSpeed * top * state.PaceOneMs);
-        float desired = MathF.Max(0f, state.Style.ChaseGapMeters + v * _configuration.ChaseTimeGapSeconds
+        float desired = MathF.Max(0f, state.Style.ChaseGapMeters + v * _configuration.ChaseTimeGapSeconds * state.Style.TimeGapShare
             + v * (v - leadSpeed) / (2f * MathF.Sqrt(IdmAccel * IdmBrake)));
         float ratio = desired / MathF.Max(gap, 0.1f);
         float accel = MathF.Max(-3f * IdmBrake, IdmAccel * (1f - MathF.Pow(v / v0, 4) - ratio * ratio) + leadAccel);

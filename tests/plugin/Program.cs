@@ -2,7 +2,8 @@
 // tests/plugin/make_cases.py writes, and fails (exit 1) when
 //   - a policy the plugin must run is refused, or gives other actions than the Python policy does
 //     (the trainer's and every tool's copy of the network) for the same inputs, or
-//   - a policy the plugin must refuse (broken, or needing a setting this build cannot apply) loads.
+//   - a policy the plugin must refuse (broken, or needing a setting this build cannot apply) loads, or
+//   - a car-on-car push (CarContact) differs from the trainer's.
 //
 //     dotnet run --project PluginChecks.csproj -- <cases folder>
 using System.Numerics;
@@ -148,6 +149,48 @@ foreach (JsonElement c in cases.RootElement.GetProperty("policies").EnumerateArr
         forgets += adapt.EndTick(dt, false) ? 1 : 0;
     Expect(forgets == 1 && adapt.PaceWeight == 0f && float.IsNaN(adapt.Pace) && adapt.Apply(fast, 1f, 0.8f, 1.2f, 2f, 0.5f, 6f) == fast,
         "server empty for AdaptToPlayersForgetSeconds: back on the settings, averages dropped");
+}
+
+// CarContactPush (CarContact.cs): the same push as the trainer's (drift_env._touch_push) on
+// make_cases.py's overlapping cars
+if (cases.RootElement.TryGetProperty("contacts", out JsonElement contacts))
+{
+    float worst = 0f;
+    int count = 0;
+    foreach (JsonElement c in contacts.EnumerateArray())
+    {
+        float[] car = c.GetProperty("car").EnumerateArray().Select(v => (float)v.GetDouble()).ToArray();
+        float[] lead = c.GetProperty("lead").EnumerateArray().Select(v => (float)v.GetDouble()).ToArray();
+        float[] after = c.GetProperty("after").EnumerateArray().Select(v => (float)v.GetDouble()).ToArray();
+        float mass = (float)c.GetProperty("mass").GetDouble();
+        float inertia = (float)c.GetProperty("inertia").GetDouble();
+        var a = new CarContact.Body
+        {
+            X = car[0], Z = car[1], Heading = car[2], Forward = car[3], Lateral = car[4], YawRate = car[5],
+            MassKg = mass, InertiaKgM2 = inertia,
+        };
+        float cs = MathF.Cos(lead[2]), sn = MathF.Sin(lead[2]);
+        var b = new CarContact.Body
+        {
+            X = lead[0], Z = lead[1], Heading = lead[2],
+            Forward = lead[3] * cs + lead[4] * sn, Lateral = -lead[3] * sn + lead[4] * cs,
+            MassKg = mass, InertiaKgM2 = inertia,
+        };
+        float kick = MathF.Abs(CarContact.Collide(ref a, ref b)) * (180f / MathF.PI);
+        float[] got = { a.Forward, a.Lateral, a.YawRate, kick };
+        for (int k = 0; k < 4; k++)
+        {
+            // speeds to 1 mm/s, yaw rate to 0.001 rad/s, the kick to 0.05 deg/s (float32)
+            float scale = k == 3 ? 50f : 1f;
+            float diff = MathF.Abs(got[k] - after[k]) / scale;
+            if (!(diff <= worst))
+                worst = float.IsNaN(diff) ? float.PositiveInfinity : diff;
+        }
+        count++;
+    }
+    bool ok = count > 0 && worst <= 1e-3f;
+    Console.WriteLine((ok ? "ok   " : "FAIL ") + $"CarContact: {count} pushes match the trainer's to within {worst:G3}");
+    if (!ok) failures++;
 }
 
 Console.WriteLine(failures == 0 ? "plugin checks passed" : $"{failures} plugin check(s) failed");

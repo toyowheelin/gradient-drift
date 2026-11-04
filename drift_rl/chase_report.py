@@ -51,6 +51,12 @@ def run(world, pol, cfg, episodes, seed, rcfg=None):
     return de.evaluate(world, pol, n_episodes=episodes, seed=seed, env_config=cfg, reward_config=rcfg)
 
 
+def mean_per_touch(c, key):
+    """key (a per-touch mean per episode) over every touch of these episodes."""
+    n = float(np.sum(c['contacts']))
+    return float(np.sum(c[key] * c['contacts'])) / n if n > 0 else 0.0
+
+
 def lead_traits(g):
     """How a ghost drives, from its own samples: mean km/h, share sliding over 20 deg, worst distance
     from the AI line (m), share braking (brake input over 0.2), steering reversals a minute, and its
@@ -174,6 +180,12 @@ def main():
               f"{closing_kmh:5.1f} {share('contact_taps'):5.0%} {share('contact_rear_end'):5.0%} "
               f"{share('contact_door'):5.0%} {share('contact_nose_side'):5.0%} {share('contact_crashes'):5.0%} "
               f"{share('touch_then_crash'):5.0%}")
+        if args.touch_push:
+            # the push moves the lead too: how hard the touches knocked it, how many would have spun it,
+            # and the share of chase time spent where the lead's rear is about to swing
+            print(f"{'':28} lead kick {mean_per_touch(c, 'lead_kick_degs'):5.1f} deg/s a touch, "
+                  f"upsets {share('lead_upsets'):5.0%}, spins {share('lead_spins'):5.0%} of touches, "
+                  f"in the swing zone {mean('swing_zone_fraction'):5.1%} of chase time")
         if kinds is not None and had.any():
             by_lead(c, kinds, w.ghosts)
 

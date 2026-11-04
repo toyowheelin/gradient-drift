@@ -61,6 +61,7 @@ The settings come in two kinds:
 | `ChaseTrainMax` | `3` | With `ChaseBots`: the most bots chasing in one line, behind a player or a bot that is not chasing. Longer trains don't form. |
 | `ChaseBotRunSeconds` | `60` | With `ChaseBots`: how long a bot chases another bot before it drops back (0 = no limit). Chasing a player is never timed. |
 | `ChaseBotCooldownSeconds` | `30` | With `ChaseBots`: after a bot-on-bot chase ends, how long that bot takes up no other bot, so trains break up and form again. |
+| `CarContactPush` | `false` | Bots feel other cars' mass. A bot that touches a player's car or another bot takes its share of the collision: it is pushed back (or along, if hit from behind), and an off-centre hit turns it. When two bots touch, both are pushed. The player's own game already gives the player its share. With this off, a bot drives through a hit as if nothing were there. Policies trained with the push (`--chase-touch-push`) expect it on. |
 
 ### Each bot's own style
 
@@ -72,9 +73,10 @@ range the policy was trained for. A bot keeps its style through respawns and ser
 
 Aggression runs from 0 to 1. **0.5** means the settings above, unchanged. Going up from there the bot asks for
 more pace (up to the policy's top), takes up a car to chase from further back (up to 1.6 × `ChaseOptInMeters`)
-and may chase up to 10% faster than `ChasePaceMaxPercent`. Going down it asks for less pace (down to
-`BotPaceMinPercent`), only takes up a car close ahead (down to 0.4 × `ChaseOptInMeters`) and chases up to
-10% slower.
+and may chase up to 10% faster than `ChasePaceMaxPercent`. It also drops the time gap: at 1 it holds just its
+chase gap at any speed (no `ChaseTimeGapSeconds`), which is what gets a chaser door to door. Going down it asks
+for less pace (down to `BotPaceMinPercent`), only takes up a car close ahead (down to 0.4 × `ChaseOptInMeters`),
+chases up to 10% slower, and keeps up to twice `ChaseTimeGapSeconds`.
 
 | Setting | Default | What it does |
 |---|---|---|

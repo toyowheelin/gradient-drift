@@ -223,6 +223,11 @@ def main():
     ap.add_argument('--chase-gap-anneal-ticks', type=int, default=0,
                     help='with --chase: start the asked gaps in the top half of --chase-gap and lower the bottom to '
                          'LOW over this many ticks (0 = the whole range from the start)')
+    ap.add_argument('--chase-touch-push', action='store_true',
+                    help='with --chase: a touch is an equal-mass collision that pushes both cars; the lead is '
+                         'knocked off its recorded run and eases back (drift_env EnvConfig.chase_touch_push). '
+                         'Pair with --reward chase_contact_ends=0 and the chase_lead_upset_* / chase_lead_spin_* / '
+                         'chase_swing_zone_per_s costs')
     ap.add_argument('--chase-scenarios', action='store_true',
                     help='with --chase: start some chase episodes in hard situations (drift_env CHASE_SCENARIOS: '
                          'catch-ups, alongside into a transition, a lead mistake), as GT Sophy trained')
@@ -616,6 +621,7 @@ def main():
         env_cfg.chase_share = args.chase
         env_cfg.chase_gap_low, env_cfg.chase_gap_high = args.chase_gap
         env_cfg.chase_scenarios = args.chase_scenarios
+        env_cfg.chase_touch_push = args.chase_touch_push
         for k, v in de.chase_controller_overrides(args).items():
             setattr(env_cfg, k, v)
         env_cfg.privileged = args.privileged_critic
@@ -627,6 +633,8 @@ def main():
               f"asked gap {args.chase_gap[0]:g} - {args.chase_gap[1]:g}", flush=True)
     if args.chase_scenarios and args.chase <= 0.0:
         sys.exit('--chase-scenarios needs --chase')
+    if args.chase_touch_push and args.chase <= 0.0:
+        sys.exit('--chase-touch-push needs --chase')
     self_slots = {}
     if args.self_ghosts > 0.0:
         if args.chase <= 0.0:
@@ -992,7 +1000,8 @@ def main():
         # the policy reads the chase inputs: it can follow a car ahead
         meta['chase'] = {'share': args.chase, 'gap_range': [float(g) for g in args.chase_gap],
                          'gap': 'outline', 'breathe_m': de.CHASE_BREATHE_M, 'inside_m': de.CHASE_INSIDE_M,
-                         'scenarios': bool(args.chase_scenarios), 'privileged_critic': bool(args.privileged_critic),
+                         'scenarios': bool(args.chase_scenarios), 'touch_push': bool(args.chase_touch_push),
+                         'privileged_critic': bool(args.privileged_critic),
                          'residual_steer_only': bool(args.residual_steer_only),
                          'controller': {k: getattr(env_cfg, k) for k in de.CHASE_CONTROLLER}}
     if hist_slots:

@@ -94,6 +94,40 @@ def float32_spread(pol, obs):
     return float(np.abs(plugin_actions(p32, obs.astype(np.float32)) - plugin_actions(pol, obs)).max())
 
 
+def contact_cases(n=48, seed=5):
+    """Car-on-car pushes (CarContact.Collide in the plugin) against the trainer's
+    (drift_env._touch_push): a car overlapping a lead at random places, speeds and yaw rates. Each:
+    the car, the lead's place and velocity, and what the push leaves the car with plus the yaw-rate
+    kick it gives the lead (deg/s)."""
+    import drift_env as de
+    import fast_sim as fs
+    p = fs.make_params()
+    rng = np.random.default_rng(seed)
+    out = []
+    while len(out) < n:
+        s = np.zeros(fs.STATE_SIZE)
+        s[fs.S_HEADING] = rng.uniform(-math.pi, math.pi)
+        s[fs.S_OWN_SPEED] = rng.uniform(5.0, 25.0)
+        s[fs.S_LATV] = rng.uniform(-8.0, 8.0)
+        s[fs.S_YAW] = rng.uniform(-1.5, 1.5)
+        lh = s[fs.S_HEADING] + rng.uniform(-1.0, 1.0)
+        ang = s[fs.S_HEADING] + rng.uniform(-math.pi, math.pi)
+        r = rng.uniform(1.5, 4.0)
+        lx, lz = r * math.cos(ang), r * math.sin(ang)
+        lead_v = rng.uniform(5.0, 25.0)
+        lvx, lvz = lead_v * math.cos(lh) + rng.normal(0, 2), lead_v * math.sin(lh) + rng.normal(0, 2)
+        if not de._cars_overlap(0.0, 0.0, s[fs.S_HEADING], lx, lz, lh):
+            continue
+        car = [0.0, 0.0, float(s[fs.S_HEADING]), float(s[fs.S_OWN_SPEED]), float(s[fs.S_LATV]), float(s[fs.S_YAW])]
+        c = np.zeros(de.N_COUNTERS)
+        kick = de._touch_push(s, p, lx, lz, lh, lvx, lvz, c)
+        out.append({'car': car, 'lead': [lx, lz, lh, lvx, lvz],
+                    'mass': float((p[fs.P_FRONT_STATIC_LOAD_N] + p[fs.P_REAR_STATIC_LOAD_N]) / 9.80665),
+                    'inertia': float(p[fs.P_YAW_INERTIA_KGM2]),
+                    'after': [float(s[fs.S_OWN_SPEED]), float(s[fs.S_LATV]), float(s[fs.S_YAW]), float(kick)]})
+    return out
+
+
 def main():
     out = sys.argv[1]
     folder = os.path.join(out, 'policies')
@@ -165,6 +199,7 @@ def main():
         f.write('{"format": "drift-policy-v1", "obs_size": ')
     cases['policies'].append({'file': 'policies/not_json.json', 'expect': 'refused', 'why': 'a cut-off file'})
 
+    cases['contacts'] = contact_cases()
     with open(os.path.join(out, 'cases.json'), 'w') as f:
         json.dump(cases, f)
     loads = sum(c['expect'] == 'loads' for c in cases['policies'])
