@@ -1374,6 +1374,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             float subDt = dt / subStepCount;
             float cosSteer = MathF.Cos(steerCommand);
             float slipAngleSpeed = MathF.Max(forwardSpeed, _configuration.MinSlipAngleSpeedMs);
+            // Below MinSlipAngleSpeedMs the slip angles are taken over that speed, not the car's, so
+            // the steering's own part of the front slip is scaled down with the car's speed: a car
+            // nearly stopped (slowed by a push, say) turns its front wheels without the tyres
+            // swinging it round, as a real car does, where before full lock gave full sideways
+            // force at a standstill and a policy sawing at the wheel twisted the car back and forth.
+            float steerSlip = steerCommand * Math.Clamp(forwardSpeed / slipAngleSpeed, 0f, 1f);
 
             float yawRate = state.YawRate;
             float lateralVelocity = state.LateralVelocity;
@@ -1383,7 +1389,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
             for (int subStep = 0; subStep < subStepCount; subStep++)
             {
-                frontSlipAngle = MathF.Atan2(lateralVelocity + _car.DistanceCgToFrontAxleM * yawRate, slipAngleSpeed) - steerCommand;
+                frontSlipAngle = MathF.Atan2(lateralVelocity + _car.DistanceCgToFrontAxleM * yawRate, slipAngleSpeed) - steerSlip;
                 rearSlipAngle = MathF.Atan2(lateralVelocity - _car.DistanceCgToRearAxleM * yawRate, slipAngleSpeed);
 
                 fyFront = frontCapacityN >= 0f

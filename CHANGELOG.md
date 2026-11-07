@@ -27,6 +27,11 @@ The only change you will see without touching a setting is the join message.
   track's data (for example to make the surface grip file a v0.3.0 policy needs) and the rebuilt AI
   line came out a point longer or shorter than before. It now makes the pace reference again for
   the new line and installs both together; the old one is kept beside it as `.before_new_line`.
+- A bot slowed almost to a stop (by a push, say) could twist violently back and forth for a moment:
+  below walking-ish speeds the car model let the front wheels swing the car round as if it were
+  still moving, and the policy sawing at the wheel shook it. The steering's effect now fades with
+  speed below 3 m/s (11 km/h), in the plugin and the trainer's simulator alike; nothing changes
+  above that.
 
 ### Bots feel other cars
 
