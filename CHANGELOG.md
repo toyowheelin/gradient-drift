@@ -20,9 +20,6 @@ when releasing.
 - Setup refuses a track whose model files are protected (every vertex moved, which the game's
   Content Manager / Custom Shaders Patch undo on load): its ground came out as a crumpled sheet with
   layers metres apart, and the bots climbed it into the air.
-
-## Unreleased
-
 - `FittedTireCorrection`, a policy-file setting (off by default): each axle's sideways force plus a correction fitted to Assetto Corsa recordings, so the bots' cars stop over-rotating at the end of a transition. A policy has to be trained with it before it changes anything.
 
 ## v0.3.1
