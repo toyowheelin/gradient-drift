@@ -2,33 +2,91 @@
 
 What changed in each release, newest first. A `v*` tag's release notes are its section here:
 the release workflow copies the section whose heading is the tag into the draft release, and
-refuses the tag if there is none. Add to `## Unreleased` as changes merge; rename it to the tag
-when releasing.
+refuses the tag if there is none. Add to `## Unreleased
 
-Settings named here are described in
-[GradientDriftPlugin/SETTINGS.md](GradientDriftPlugin/SETTINGS.md).
+## v0.3.1
 
-## Unreleased
+Bots that feel other cars, fit in with the players on the server, and say hello. The policy is
+the same as v0.3.0's (combo_all2), so the bots drive as before until you turn the new settings on.
+The only change you will see without touching a setting is the join message.
 
-- Bots can feel other cars' mass (`CarContactPush`, off by default): a bot that touches a player
-  or another bot takes its share of the collision, pushed back or along and turned by an
-  off-centre hit; two bots that touch are both pushed. The hit is shared by the cars' real masses,
-  players' cars included: setup now writes a car file for every car in the entry list.
-- Bot aggression (`BotStyles`, `BotStyleSpread`) now also sets the time gap a chasing bot holds:
-  the pushiest bots (aggression 1) drop `ChaseTimeGapSeconds` and follow door to door, the calmest
-  keep twice it.
-- Players joining a server with the bots see "Drift bots by Gradient Drift" and a link to the
-  project in chat, just above AssettoServer's own "Powered by AssettoServer" line
-  (`JoinMessage`; set it to `""` to turn it off, or to any text of your own).
-- The bots can fit in with the players drifting with them (`AdaptToPlayers`, off by default): each
-  bot's pace and chase gap move toward the players' while they are on, inside the policy's trained
-  range, and go back to the settings when the server is empty. Nothing is learned or kept.
-- A Claude Code plugin for server owners (`claude-plugin/`, skill `tune-drift-bots`): Claude reads
-  the plugin's log and scorecards and tunes `extra_cfg.yml` one setting at a time, with a backup
-  each time. See [claude-plugin/README.md](claude-plugin/README.md).
-- Trainer reports for choosing and checking policies: `pick_policy.py` ranks candidate policies on
-  one fixed set of scenarios, `chase_report.py --by-lead` splits a chase by who drove the lead, and
-  `replay_live.py` replays every bot of a server run, each in its own car.
+### Upgrading
+
+- Run the new setup on each server (`gradient-drift-setup apply <server>`, with the server
+  stopped), or `export` again for a hosted server. It replaces the plugin and now also writes a
+  car file for every car model in the entry list, players' cars included, so `CarContactPush`
+  knows each car's mass. The policy is unchanged; a policy of your own is kept as before.
+  `undo` puts back what it changed.
+- Players now see a line about the bots when they join (see below). Set `JoinMessage: ""` in the
+  plugin settings to turn it off.
+- Everything else new is off by default or keeps the v0.3.0 behaviour at its default.
+
+### Bots feel other cars
+
+- **`CarContactPush`** (off by default). Before, a bot drove through a car-on-car hit as if
+  nothing were there. Now a bot that touches a player or another bot takes its share of the
+  collision: it is pushed back, or along if hit from behind, and an off-centre hit turns it. Two
+  bots that touch are both pushed. The hit is shared by the two cars' real masses and yaw
+  inertia, from their car files, so a light car is pushed more than a heavy one. The player's own
+  game already gives the player their share. Run on the project's own three bot servers with the
+  shipped policy before this release.
+- **Bot aggression now sets how close a chaser follows.** With `BotStyles` or `BotStyleSpread`,
+  the pushiest bots (aggression 1) drop `ChaseTimeGapSeconds` and hold just their chase gap at any
+  speed, door to door; the calmest (aggression 0) keep twice it. At the default (no spread, 0.5)
+  nothing changes. The time gap is what holds a chaser about 7 m back at drifting speed, so this is
+  the dial for closer tandems.
+
+### Bots fit in with the players
+
+- **`AdaptToPlayers`** (off by default). While players drift on the server, each bot's pace and
+  chase gap move toward theirs: pace measured against the track's pace reference, the gap from
+  players following a car closely. Only players drifting on the line count (sliding 12 - 75
+  degrees, within 5 m of the AI line, its way); spinning, crashing or cruising players are left
+  out. It stays inside the policy's trained range and goes back to the settings when the server
+  is empty. Nothing is learned or kept. `AdaptToPlayersStrength`, `...LearnSeconds`,
+  `...ForgetSeconds` and `...AverageSeconds` tune it; with `VerboseLogging` the log shows what it
+  measured once a minute. See "Fitting in with the players" in
+  [SETTINGS.md](https://github.com/toyowheelin/gradient-drift/blob/main/GradientDriftPlugin/SETTINGS.md).
+
+### Players see who drives the bots
+
+- **`JoinMessage`** (on by default). Players joining get "Drift bots by Gradient Drift" and a
+  link to the project in their welcome message, just above AssettoServer's own "Powered by
+  AssettoServer" line. Set it to any text of your own, or to `""` to turn it off.
+
+### Tune the bots with Claude
+
+- A **Claude Code plugin** for server owners (`claude-plugin/`, skill `tune-drift-bots`). Claude
+  checks the plugin's log, reads the bots' scorecards and changes `extra_cfg.yml` one setting at
+  a time, with a backup each time; you judge the driving. Install it in Claude Code with
+  `/plugin marketplace add toyowheelin/gradient-drift` then
+  `/plugin install gradient-drift-tuning@gradient-drift`, or upload the skill folder on
+  claude.ai. See
+  [claude-plugin/README.md](https://github.com/toyowheelin/gradient-drift/blob/main/claude-plugin/README.md).
+  Not made or endorsed by Anthropic.
+
+### For people training their own policies
+
+- `train_ppo_gpu.py --chase-touch-push`: cars have mass in the simulator too. A touch moves both
+  cars, the lead is knocked off its run and eases back, and the reward charges what a touch does
+  to the lead (yaw kick past a free amount, a spun lead, sitting where the lead's rear is about to
+  swing), not the touch itself. With it, the automatic curriculum closes the gap on upsets, not
+  every touch. Policies trained with it expect `CarContactPush` on.
+- `gap_traces.py` (new): per-tick chase traces from the simulator, each episode sorted by why
+  the gap is what it is (holds, held back, pinned, overshoots, oscillates), with a plot.
+- `pick_policy.py` (new) ranks candidate policies on one fixed set of scenarios;
+  `chase_report.py --by-lead` splits a chase by who drove the lead; `--touch-push` prints lead
+  kicks, upsets, spins and swing-zone time.
+- `replay_live.py` replays every bot of a server run, each in its own car, and reads policies
+  with a history block (it silently broke on v0.3.0's policy before).
+- Fixed: `--init-policy` from a policy with history inputs (such as v0.3.0's) crashed.
+
+### Docs
+
+- The README, the trainer README and SETTINGS.md were checked against the code after v0.3.0:
+  the dials, what the bots send players, how a policy without chase training follows, and how
+  bots get their names. The quick start covers hosted servers (setup's `export`), and the release
+  notes say so too.
 
 ## v0.3.0
 
