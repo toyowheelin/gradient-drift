@@ -21,6 +21,13 @@ The only change you will see without touching a setting is the join message.
   plugin settings to turn it off.
 - Everything else new is off by default or keeps the v0.3.0 behaviour at its default.
 
+### Fixed
+
+- Setup stopped with "the speed targets have N points and the AI line M" when it rebuilt a
+  track's data (for example to make the surface grip file a v0.3.0 policy needs) and the rebuilt AI
+  line came out a point longer or shorter than before. It now makes the pace reference again for
+  the new line and installs both together; the old one is kept beside it as `.before_new_line`.
+
 ### Bots feel other cars
 
 - **`CarContactPush`** (off by default). Before, a bot drove through a car-on-car hit as if

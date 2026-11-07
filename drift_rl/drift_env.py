@@ -2785,23 +2785,23 @@ def write_pace_reference(path, kmh, source):
 def course_pace_reference(data_dir, course, world, *_old_args, **_old_kwargs):
     """The course's reference speed per point, km/h (what a pace of 1.0 asks for), from
     <data_dir>/<course>_pace_reference.csv; made with pace_model and written there when the file is
-    missing, or was not made by pace_model (an older one, measured by a reference policy, is kept
-    beside it as .before_pace_model). The same file goes to the server folder for the plugin, which
-    reads only PointId and Kmh."""
+    missing, was not made by pace_model (an older one, measured by a reference policy, is kept
+    beside it as .before_pace_model), or was made for another AI line (a different number of points;
+    kept as .before_new_line). The same file goes to the server folder for the plugin, which reads
+    only PointId and Kmh."""
     import pace_model
     import track_files as tf
     path = tf.pace_reference_path(data_dir, course)
     n = len(world.sp_pos)
     if os.path.exists(path):
         kmh, source = read_pace_reference(path)
-        if source == pace_model.MODEL:
-            if len(kmh) != n:
-                raise RuntimeError(f"{path} does not have one row per AI-line point ({n}); delete it to make it again")
+        if source == pace_model.MODEL and len(kmh) == n:
             return kmh
-        old, k = path + '.before_pace_model', 1
+        suffix = '.before_new_line' if source == pace_model.MODEL else '.before_pace_model'
+        old, k = path + suffix, 1
         while os.path.exists(old):
             k += 1
-            old = f'{path}.before_pace_model{k}'
+            old = f'{path}{suffix}{k}'
         os.replace(path, old)
     kmh = pace_model.course_speed(world)
     write_pace_reference(path, kmh, pace_model.MODEL)

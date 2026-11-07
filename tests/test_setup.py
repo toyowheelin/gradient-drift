@@ -270,3 +270,25 @@ def test_setup_writes_the_players_cars_too(world):
     mass = lambda n: (n['FRONT_STATIC_LOAD_N'] + n['REAR_STATIC_LOAD_N']) / 9.80665
     assert mass(theirs) > mass(ours) + 200, (mass(theirs), mass(ours))
     assert plan(world).ready, 'a second run still finds changes'
+
+
+def test_a_pace_reference_for_another_line_is_made_again(world):
+    """A rebuilt AI line can gain or lose a point: the pace reference made for the old line is found
+    (setup then makes it again) and remade for the new one, the old kept beside it."""
+    import drift_env as de
+    import fast_sim as fs
+    import track_files as tf
+    from gradientdrift_setup.apply import pace_for_another_line
+    _, _, _, data, track = world
+    ref = tf.pace_reference_path(data, track)
+    assert pace_for_another_line(data, track) is None
+    with open(ref) as f:
+        lines = f.readlines()
+    with open(ref, 'w') as f:
+        f.writelines(lines[:-1])                     # made for a line one point shorter
+    assert pace_for_another_line(data, track) == ref
+    world_ = fs.load_world(data, track=track)
+    kmh = de.course_pace_reference(data, track, world_)
+    assert len(kmh) == len(world_.sp_pos)
+    assert os.path.exists(ref + '.before_new_line')
+    assert pace_for_another_line(data, track) is None
