@@ -356,5 +356,5 @@ Set `GRADIENTDRIFT_GUI=0` for the command-line-only build. The result goes in
 | `gradient-drift-setup.spec`, `launcher.py`, `requirements-build.txt` | The packaged build (PyInstaller, one folder). |
 
 Confirmed on the owner's servers (2026-10-12): `AiParams.MaxPlayerCount` equals the number of player
-entries; AssettoServer reads the AI line from the server's own `content/tracks/<track>[/<layout>]/ai/fast_lane.ai`;
+entries; AssettoServer reads the AI line from the server's own `content/tracks/<track>/ai/fast_lane.ai`, for a layout too (0.0.54 never reads a layout's own `ai` folder);
 an `AI=auto` bot entry gives its slot to a player who picks that car, so setup writes `AI=fixed`.

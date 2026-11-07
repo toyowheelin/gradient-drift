@@ -292,3 +292,12 @@ def test_a_pace_reference_for_another_line_is_made_again(world):
     assert len(kmh) == len(world_.sp_pos)
     assert os.path.exists(ref + '.before_new_line')
     assert pace_for_another_line(data, track) is None
+def test_ai_line_goes_where_assettoserver_reads_it(tmp_path):
+    """AssettoServer 0.0.54 reads content/tracks/<track>/ai/ only, a layout's too: a line put in the
+    layout's own ai folder leaves the server failing to start ("No ai folder found")."""
+    from gradientdrift_setup.server import Server
+    s = Server(folder=str(tmp_path), track='evergreen_speedway', layout='evergreen_speedway_fd2024')
+    base = os.path.join(str(tmp_path), 'content', 'tracks', 'evergreen_speedway')
+    assert s.server_ai_line() == os.path.join(base, 'ai', 'fast_lane.ai')
+    assert s.server_layout_ai_line() == os.path.join(base, 'evergreen_speedway_fd2024', 'ai', 'fast_lane.ai')
+    assert Server(folder=str(tmp_path), track='t').server_layout_ai_line() == ''
