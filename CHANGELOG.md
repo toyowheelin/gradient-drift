@@ -14,6 +14,10 @@ when releasing.
   Content Manager / Custom Shaders Patch undo on load): its ground came out as a crumpled sheet with
   layers metres apart, and the bots climbed it into the air.
 
+## Unreleased
+
+- `FittedTireCorrection`, a policy-file setting (off by default): each axle's sideways force plus a correction fitted to Assetto Corsa recordings, so the bots' cars stop over-rotating at the end of a transition. A policy has to be trained with it before it changes anything.
+
 ## v0.3.1
 
 Bots that feel other cars, fit in with the players on the server, and say hello. The policy is

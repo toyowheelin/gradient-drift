@@ -764,7 +764,18 @@ def main():
         if tp.residual is not None or tp.mlp.W[-1].shape[0] != de.ACT_SIZE:
             sys.exit(f"--kickstart {args.kickstart}: needs a plain policy with {de.ACT_SIZE} outputs")
         t_n = len(tp.obs_mean)
-        t_names = list(tp.meta.get('obs_names') or [])[:t_n]
+        # a teacher with a history block (more inputs than the env gives) reads the same history-extended
+        # inputs the student gets, so the trainer must build the same block (--history-frames / --history-every)
+        hist_n = (de.OBS_SIZE + len(hist_slots) * args.history_frames) if history else de.OBS_SIZE
+        if t_n > de.OBS_SIZE and t_n != hist_n:
+            sys.exit(f"--kickstart {args.kickstart}: reads {t_n} inputs; with these history flags the trainer "
+                     f"gives {hist_n} (use the teacher's --history-frames / --history-every)")
+        t_hist = tp.meta.get('history') or {}
+        if t_n > de.OBS_SIZE and t_hist and (list(t_hist.get('slots', [])) != hist_slots
+                                             or t_hist.get('every') != args.history_every):
+            sys.exit(f"--kickstart {args.kickstart}: its history block (slots {t_hist.get('slots')}, every "
+                     f"{t_hist.get('every')}) is not the one this run builds")
+        t_names = list(tp.meta.get('obs_names') or [])[:min(t_n, de.OBS_SIZE)]
         if t_names:
             bad = [j for j, nm in enumerate(t_names) if nm != de.OBS_NAMES[j] and j != de.SLIDING_GRIP_OBS_SLOT]
             if bad:
@@ -1290,12 +1301,13 @@ def main():
                 env.set_chase_gap_low(chase_gap_low_now())
             with torch.no_grad():
                 for t in range(T):
-                    x = norm_obs(history.step(obs) if history else obs)
+                    hx = history.step(obs) if history else obs
+                    x = norm_obs(hx)
                     if args.obs_noise > 0.0:
                         x = x + args.obs_noise * (adr['dr'] if adr is not None else 1.0) * torch.randn_like(x)
                     lead_buf[t] = obs[:, gate_slot]
                     if teacher:
-                        teach_buf[t] = teacher(obs)
+                        teach_buf[t] = teacher(hx)       # the base inputs, then the history block if it reads one
                     mu = actor(x, lead_buf[t])
                     a = mu + log_std.exp() * torch.randn_like(mu)
                     obs_buf[t], act_buf[t] = x, a
