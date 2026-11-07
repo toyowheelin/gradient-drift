@@ -398,6 +398,11 @@ public class GradientDriftConfiguration
     // same way, so a slippery stretch of road is slippery for the bots too. Set by the policy file.
     public bool SurfaceGrip { get; set; } = false;
 
+    // Each axle's sideways force plus a correction fitted to Assetto Corsa (FittedTireCorrection.cs):
+    // without it this model's car keeps rotating at the end of a transition where the game's stops.
+    // Made for the physics the shipped policy trains with. Set by the policy file.
+    public bool FittedTireCorrection { get; set; } = false;
+
     // Floor on the speed in the slip-angle formula, which is singular at zero speed.
     public float MinSlipAngleSpeedMs { get; set; } = 3.0f;
 

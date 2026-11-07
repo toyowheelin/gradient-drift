@@ -25,6 +25,7 @@
   "EnableRearFrictionCircle",
   "EnableRearThrustLimit",
   "EnableTireLoadSensitivity",
+  "FittedTireCorrection",
   "FrontBrakeOnly",
   "FrontTireLoadSensitivityPerKn",
   "FrontTrackMeters",

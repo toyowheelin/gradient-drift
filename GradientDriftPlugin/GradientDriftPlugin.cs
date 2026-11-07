@@ -407,6 +407,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _configuration.RoundTireCurve = false;
         _configuration.RearSpinGripShare = 1f;
         _configuration.SurfaceGrip = false;
+        _configuration.FittedTireCorrection = false;
 
         foreach ((string name, float value) in policy.PluginSettings)
         {
@@ -480,6 +481,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     break;
                 case "SurfaceGrip":
                     _configuration.SurfaceGrip = value == 1f;
+                    break;
+                case "FittedTireCorrection":
+                    _configuration.FittedTireCorrection = value == 1f;
                     break;
             }
             VerboseLog.Information("GradientDrift: {Name} = {Value}, from the policy file", name, value);
@@ -1386,6 +1390,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             float frontSlipAngle = 0f, rearSlipAngle = 0f, fyFront = 0f, fyRear = 0f;
             bool roundCurve = _configuration.RoundTireCurve;
             (float frontCurveAngle, float rearCurveAngle) = _car.TireCurveAngles(roundCurve);
+            bool fittedCorrection = _configuration.FittedTireCorrection;
+            float throttleShare = pedal ? Math.Clamp(speedAction, 0f, 1f) : 0f;
 
             for (int subStep = 0; subStep < subStepCount; subStep++)
             {
@@ -1400,6 +1406,13 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     ? LateralForceWithin(rearSlipAngle, rearPeakForceN, rearCurveAngle, rearCapacityN, roundCurve)
                     : LateralTireForce(rearSlipAngle, effectiveRearPeakFriction,
                         _car.RearStaticLoadN, rearCurveAngle, state.RearSlidingGrip, roundCurve);
+                if (fittedCorrection)
+                {
+                    (float correctionFront, float correctionRear) = FittedTireCorrection.Correction(frontSlipAngle, rearSlipAngle,
+                        yawRate, MathF.Atan2(lateralVelocity, slipAngleSpeed), slipAngleSpeed, throttleShare);
+                    fyFront += correctionFront * _car.FrontStaticLoadN;
+                    fyRear += correctionRear * _car.RearStaticLoadN;
+                }
 
                 float yawMomentNm = _car.DistanceCgToFrontAxleM * fyFront * cosSteer - _car.DistanceCgToRearAxleM * fyRear;
                 float yawAngularAccel = yawMomentNm / _car.YawInertiaKgM2;

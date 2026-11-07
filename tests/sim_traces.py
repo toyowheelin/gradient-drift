@@ -41,6 +41,11 @@ VARIANTS = {
         'FrontBrakeOnly': 1.0, 'CarOutlineContact': 1.0, 'RoundTireCurve': 1.0, 'RearSpinGripShare': 0.95,
         'SurfaceGrip': 1.0,
     },
+    'fitted': {
+        'MaxSteerAngleDeg': 50.0, 'EnableRearThrustLimit': 1.0, 'MaxSteerRateDegS': 150.0,
+        'EnableRearBrakeLimit': 1.0, 'EnableRearFrictionCircle': 1.0, 'EnableTireLoadSensitivity': 1.0,
+        'FrontBrakeOnly': 1.0, 'RoundTireCurve': 1.0, 'RearSpinGripShare': 0.95, 'FittedTireCorrection': 1.0,
+    },
 }
 
 

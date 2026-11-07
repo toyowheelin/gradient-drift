@@ -4,6 +4,10 @@ What changed in each release, newest first. A `v*` tag's release notes are its s
 the release workflow copies the section whose heading is the tag into the draft release, and
 refuses the tag if there is none. Add to `## Unreleased
 
+## Unreleased
+
+- `FittedTireCorrection`, a policy-file setting (off by default): each axle's sideways force plus a correction fitted to Assetto Corsa recordings, so the bots' cars stop over-rotating at the end of a transition. A policy has to be trained with it before it changes anything.
+
 ## v0.3.1
 
 Bots that feel other cars, fit in with the players on the server, and say hello. The policy is
