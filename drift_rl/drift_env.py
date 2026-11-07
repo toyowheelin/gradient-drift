@@ -278,8 +278,8 @@ ACT_SIZE = 3
  E_CHASE_SLIP_DIFF, E_CHASE_LINE_DIFF, E_CONTACTS, E_CHASE_DRIFT_TICKS,
  E_CONTACT_CLOSING, E_CONTACT_TAPS, E_CONTACT_TICKS, E_CONTACT_CRASHES,
  E_CONTACT_REAR_END, E_CONTACT_DOOR, E_CONTACT_NOSE_SIDE, E_TOUCH_THEN_CRASH,
- E_LEAD_UPSETS, E_LEAD_SPINS, E_SWING_ZONE_TICKS, E_LEAD_KICK) = range(58)
-EP_SIZE = 58
+ E_LEAD_UPSETS, E_LEAD_SPINS, E_SWING_ZONE_TICKS, E_LEAD_KICK, E_BREATHE_TICKS, E_HOLD_THROUGH_TICKS) = range(60)
+EP_SIZE = 60
 # how hard a touch was, for the statistics: the closing speed along the line when it starts (the
 # lead is a replayed ghost, so nothing pushes back and there is no force to read; closing speed is
 # what an impact would scale with). Under TAP_CLOSING_MS (3.6 km/h) it counts as a tap.
@@ -574,6 +574,15 @@ class RewardConfig:
     chase_lead_spin_degs: float = 45.0
     chase_lead_spin_penalty: float = 0.0
     chase_swing_zone_per_s: float = 0.0
+    # HOLDING THE GAP THROUGH TRANSITIONS. The gap paid for breathes open by CHASE_BREATHE_M through
+    # each of the lead's transitions (and a lead with a plan asks the gap law for it too), so a
+    # chaser is paid to drop back there - and it did: in contact1 it fell back 4 m+ after being
+    # within 1 m in ~70% of chases. chase_breathe_scale sets how far the gap opens (1 = as before,
+    # 0 = no breathing: the asked gap holds through the switch); chase_hold_through_pay pays, per
+    # metre moved through the breathing window, for being at the gap paid for (the proximity pay's
+    # nearness), on top of the proximity pay. 0 = off.
+    chase_breathe_scale: float = 1.0
+    chase_hold_through_pay: float = 0.0
 
     def vector(self):
         return np.array(list(asdict(self).values()), dtype=np.float64)
@@ -589,7 +598,7 @@ class RewardConfig:
  R_CHASE_SLIP_FREE, R_CHASE_SLIP_ZERO, R_CHASE_LINE, R_CHASE_LINE_FREE, R_CHASE_LINE_ZERO,
  R_CHASE_CONTACT, R_CHASE_REAR_END, R_CHASE_GAIN, R_CHASE_SWITCH_PAY, R_CHASE_SLOT, R_CHASE_LINE_SHIFT,
  R_CHASE_CONTACT_ENDS, R_PATH_PROGRESS, R_LEAD_UPSET_FREE, R_LEAD_UPSET, R_LEAD_SPIN_DEGS, R_LEAD_SPIN,
- R_SWING_ZONE) = range(66)
+ R_SWING_ZONE, R_BREATHE_SCALE, R_HOLD_THROUGH) = range(68)
 
 
 @dataclass
@@ -1540,7 +1549,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     # error it sees there read 27% slow (Black Cat County, 2026-10-19). The plugin's UpdatePaceOver
     # asks the same.
     ask = CHASE_GAP_M[0] + counters[i, C_CHASE_ASK] * (CHASE_GAP_M[1] - CHASE_GAP_M[0])
-    target = ask + CHASE_BREATHE_M * breathe        # the gap paid for (breathing)
+    target = ask + CHASE_BREATHE_M * rw[R_BREATHE_SCALE] * breathe        # the gap paid for (breathing)
     closing = 0.0
     if chasing:
         closing = progress / max(dt, 1e-3) - lead_v
@@ -1713,6 +1722,13 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
             q_c = max(q, breathe)
             lead_q = max(lead_q, breathe)
         r += rw[R_CHASE_PROX] * moved * q_c * lead_q * near_pay
+        if breathe > 0.0:
+            r += rw[R_HOLD_THROUGH] * moved * breathe * near_pay
+            # through the lead's transition: at the gap the plain ask paid for (within 1 m of it,
+            # breathing left out), whatever this run pays
+            ep[i, E_BREATHE_TICKS] += breathe
+            if not contact and abs(gap - ask) <= 1.0:
+                ep[i, E_HOLD_THROUGH_TICKS] += breathe
         if here >= 0:
             slip_diff = abs(slip_signed - gh[g, here, GH_SLIP] * (180.0 / math.pi))
             line_diff = abs(d[D_CrossTrackErrorM] - (gh[g, here, GH_CTE] + line_inside))
@@ -2139,6 +2155,9 @@ def finalize_episode_stats(raw):
         'lead_spins': raw[:, E_LEAD_SPINS],
         'swing_zone_fraction': raw[:, E_SWING_ZONE_TICKS] / np.maximum(raw[:, E_CHASE_TICKS], 1.0),
         'lead_kick_degs': raw[:, E_LEAD_KICK] / np.maximum(raw[:, E_CONTACTS], 1.0),
+        # through the lead's transitions (the breathing window, weighted by it): the share within 1 m
+        # of the asked gap, breathing left out
+        'hold_through_fraction': raw[:, E_HOLD_THROUGH_TICKS] / np.maximum(raw[:, E_BREATHE_TICKS], 1e-9),
         'chase_drift_fraction': raw[:, E_CHASE_DRIFT_TICKS] / np.maximum(raw[:, E_CHASE_TICKS], 1.0),
     }
 

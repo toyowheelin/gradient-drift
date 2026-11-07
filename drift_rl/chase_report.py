@@ -180,6 +180,7 @@ def main():
               f"{closing_kmh:5.1f} {share('contact_taps'):5.0%} {share('contact_rear_end'):5.0%} "
               f"{share('contact_door'):5.0%} {share('contact_nose_side'):5.0%} {share('contact_crashes'):5.0%} "
               f"{share('touch_then_crash'):5.0%}")
+        print(f"{'':28} through the lead's transitions: within 1 m of the ask {mean('hold_through_fraction'):5.1%}")
         if args.touch_push:
             # the push moves the lead too: how hard the touches knocked it, how many would have spun it,
             # and the share of chase time spent where the lead's rear is about to swing
