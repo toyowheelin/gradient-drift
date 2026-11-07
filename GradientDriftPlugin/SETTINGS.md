@@ -61,7 +61,7 @@ The settings come in two kinds:
 | `ChaseTrainMax` | `3` | With `ChaseBots`: the most bots chasing in one line, behind a player or a bot that is not chasing. Longer trains don't form. |
 | `ChaseBotRunSeconds` | `60` | With `ChaseBots`: how long a bot chases another bot before it drops back (0 = no limit). Chasing a player is never timed. |
 | `ChaseBotCooldownSeconds` | `30` | With `ChaseBots`: after a bot-on-bot chase ends, how long that bot takes up no other bot, so trains break up and form again. |
-| `CarContactPush` | `false` | Bots feel other cars' mass. A bot that touches a player's car or another bot takes its share of the collision: it is pushed back (or along, if hit from behind), and an off-centre hit turns it. When two bots touch, both are pushed. The player's own game already gives the player its share. With this off, a bot drives through a hit as if nothing were there. Policies trained with the push (`--chase-touch-push`) expect it on. |
+| `CarContactPush` | `false` | Bots feel other cars' mass. A bot that touches a player's car or another bot takes its share of the collision: it is pushed back (or along, if hit from behind), and an off-centre hit turns it. The hit is shared by the two cars' masses, so a light car is pushed more than a heavy one: each bot's and each player's car comes from its model's car file (setup writes one for every car in the entry list; a player's car without one counts as the bot's own car). When two bots touch, both are pushed. The player's own game already gives the player its share. With this off, a bot drives through a hit as if nothing were there. Policies trained with the push (`--chase-touch-push`) expect it on. |
 
 ### Each bot's own style
 

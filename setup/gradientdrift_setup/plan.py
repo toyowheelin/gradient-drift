@@ -671,6 +671,27 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
             elif old != text:
                 p.changes.append(Change(rel, f"the numbers the bots in {model} drive with, from the game's car files"
                                         + (" (updated)" if old else ""), after=text, op=('write', rel, text)))
+    # the players' cars too (CarContactPush): a bot that touches one takes its share of the hit by that
+    # car's mass, as each player's game loads the other cars' physics by model. Every model in the entry
+    # list is installed wherever the server's content is, so a missing one only gets a note.
+    if game:
+        from .carfile import car_file_text
+        bot_models = set(models)
+        for model in sorted({e.model for e in server.entries if e.model} - bot_models):
+            rel = f'{plugin_rel}/cars/{model}.json'
+            text, why = car_file_text(game, model)
+            if text is None:
+                p.notes.append(f"no car file for the players' {model}: {why}. A bot it touches takes it as its own car")
+                continue
+            there = server.data_path(rel)
+            old = ''
+            if os.path.exists(there):
+                with open(there, encoding='utf-8') as f:
+                    old = f.read()
+            if old != text:
+                p.changes.append(Change(rel, f"the mass and size of the players' {model}, from the game's car files, "
+                                        "for bots that touch it" + (" (updated)" if old else ""),
+                                        after=text, op=('write', rel, text)))
     plan_bundle(p, plugin_source)
     if trained and not any(t.lower() in server.track.lower() for t in trained):
         p.blockers.append(f"the plugin's policy was trained on {', '.join(trained)} only; on {server.track} the plugin "

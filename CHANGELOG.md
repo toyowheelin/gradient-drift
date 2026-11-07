@@ -12,7 +12,8 @@ Settings named here are described in
 
 - Bots can feel other cars' mass (`CarContactPush`, off by default): a bot that touches a player
   or another bot takes its share of the collision, pushed back or along and turned by an
-  off-centre hit; two bots that touch are both pushed.
+  off-centre hit; two bots that touch are both pushed. The hit is shared by the cars' real masses,
+  players' cars included: setup now writes a car file for every car in the entry list.
 - Bot aggression (`BotStyles`, `BotStyleSpread`) now also sets the time gap a chasing bot holds:
   the pushiest bots (aggression 1) drop `ChaseTimeGapSeconds` and follow door to door, the calmest
   keep twice it.
