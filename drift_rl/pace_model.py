@@ -28,6 +28,13 @@ Lab notebook, "A pace reference without gen3", "The hairpin and pace_model 2" an
 
 A car's PACE_SCALE (its speed against the reference car's) comes from the same model: the default
 car (fast_sim.make_params) is the reference.
+
+pace_model 4 adds the crowd (CROWD_SCALE): where public drivers have been recorded on a track
+(AI Car Monitor, measured by crowd_fit.py), its reference is scaled so the crowd drives it at
+the share of the reference it drives the model's own fit track at. On Drift Playground, where the
+constants were fitted, the crowd and the owner both drive 1.02 of the reference; on Klutch Kickers
+the crowd drives 1.11 of pace_model 3's, in corners and on straights alike (1.11 / 1.12): the
+model asks about 9% too little there. Lab notebook, "Fitting pace and gap to the crowd".
 """
 import math
 
@@ -35,7 +42,7 @@ import numpy as np
 
 import fast_sim as fs
 
-MODEL = 'pace_model 3'          # what policy files and car files record as their pace reference
+MODEL = 'pace_model 4'          # what policy files and car files record as their pace reference
 HUMAN_MARGIN = 1.05             # the owner: the bots should max out "slightly faster than me"
 CORNER_GRIP = 0.606             # share of the tires' grip a drift corners on
 CURVE_WINDOW_M = 15.3           # the curvature is the heading change over this much line, per metre
@@ -45,6 +52,14 @@ RADIUS_OFFSET_M = 0.63          # a drift's line runs this much wider than the A
 LAG_M = 6.1                     # and reaches its slowest this far after the AI line's tightest point
 MAX_SPEED_MS = 60.0
 G = 9.81
+# The crowd's pace share on the track the constants were fitted on (Drift Playground: public drivers
+# 1.024, the owner 1.022 of the reference; crowd_fit.py), and per track the reference's scale that
+# brings the crowd there to it: crowd share / CROWD_ANCHOR. Tracks not listed have no crowd data (1.0).
+CROWD_ANCHOR = 1.02
+CROWD_SCALE = {
+    'driftplayground_2021': 1.0,                        # the anchor: 6 drivers, 948 s, 1.024
+    'adc_klutch_kickers_drifters_paradise': 1.09,       # 11 drivers, 1409 s, 1.112 / 1.02
+}
 
 
 def _axle_mu(peak, per_kn, expy, fz0, axle_load_n):
@@ -89,8 +104,9 @@ def curvature(world, window_m=CURVE_WINDOW_M):
     return np.abs(heading_at(arc + 0.5 * window_m) - heading_at(arc - 0.5 * window_m)) / window_m
 
 
-def course_speed(world, car=None, margin=HUMAN_MARGIN):
-    """The reference speed per AI-line point, km/h, for this car (None = the default car)."""
+def course_speed(world, car=None, margin=HUMAN_MARGIN, track=None):
+    """The reference speed per AI-line point, km/h, for this car (None = the default car), scaled
+    by CROWD_SCALE when the track (its folder name) is given and listed there."""
     t = car_terms(car)
     lengths = np.asarray(world.sp_length, dtype=np.float64)
     n = len(lengths)
@@ -117,7 +133,7 @@ def course_speed(world, car=None, margin=HUMAN_MARGIN):
     arc = np.r_[0.0, np.cumsum(lengths[:-1])]
     lap = float(lengths.sum())
     v = np.interp((arc - LAG_M) % lap, np.r_[arc, lap], np.r_[v, v[0]])
-    return np.maximum(v * 3.6 * margin, 5.0)
+    return np.maximum(v * 3.6 * margin * CROWD_SCALE.get(track, 1.0), 5.0)
 
 
 def mean_speed(world, kmh):

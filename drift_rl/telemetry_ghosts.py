@@ -92,16 +92,19 @@ def is_crowd(path):
 
 def crowd_paths(path, steer_ratio, max_kmh, cars=None):
     """car_path's dict for each stretch of each car in an AI Car Monitor CSV, with its CarId and
-    model: [(car_id, model, path dict)]."""
+    model: [(car_id, model, path dict)]. A stretch's 'start' is its first sample's time from the
+    recording's first row (its 't' starts at 0)."""
     cols = ['ClientTimeMs', 'CarId', 'CarModel', 'X', 'Z', 'SpeedKMH', 'Gas', 'Brake', 'Steer'] + \
         [f'Wheel{w}_{a}' for w in ('FL', 'FR', 'RL', 'RR') for a in 'XZ']
     d = pd.read_csv(path, usecols=cols)
+    first_ms = d.ClientTimeMs.min()
     out = []
     for car_id, c in d.groupby('CarId'):
         if cars and car_id not in cars:
             continue
         c = c.sort_values('ClientTimeMs').drop_duplicates('ClientTimeMs').reset_index(drop=True)
-        t = (c.ClientTimeMs.values - c.ClientTimeMs.values[0]) / 1000.0
+        # one clock for every car (from the recording's first row), so cars can be compared
+        t = (c.ClientTimeMs.values - first_ms) / 1000.0
         fx = 0.5 * (c.WheelFL_X + c.WheelFR_X - c.WheelRL_X - c.WheelRR_X).values
         fz = 0.5 * (c.WheelFL_Z + c.WheelFR_Z - c.WheelRL_Z - c.WheelRR_Z).values
         wheelbase = np.hypot(fx, fz)
@@ -142,7 +145,7 @@ def stretch_path(t, x_raw, z_raw, heading_raw, steer, gas, brake, steer_ratio):
     yaw = savgol_filter(h_g, win, 3, deriv=1, delta=CROWD_S)
     # course is meaningless when barely moving: keep the body's own heading there
     beta = np.where(v > 1.0, np.arctan2(np.sin(course - heading), np.cos(course - heading)), 0.0)
-    return dict(t=grid - grid[0], x=x, z=z, heading=heading, slip=-beta, yaw=yaw, speed=v,
+    return dict(t=grid - grid[0], start=grid[0], x=x, z=z, heading=heading, slip=-beta, yaw=yaw, speed=v,
                 steer=np.radians(steer_ratio * np.interp(grid, t, steer)),
                 pedal=np.clip(np.interp(grid, t, gas), 0, 1), brake=np.clip(np.interp(grid, t, brake), 0, 1))
 

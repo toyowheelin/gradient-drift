@@ -82,8 +82,15 @@ class Server:
         return os.path.join(self.folder, 'content', 'tracks', self.track)
 
     def server_ai_line(self):
-        base = self.server_track_folder()
-        return os.path.join(base, self.layout, 'ai', 'fast_lane.ai') if self.layout else os.path.join(base, 'ai', 'fast_lane.ai')
+        """The AI line AssettoServer drives: content/tracks/<track>/ai/fast_lane.ai, for a layout too.
+        AssettoServer 0.0.54 never looks in the layout's own ai folder (later versions read it first
+        when it is there: server_layout_ai_line)."""
+        return os.path.join(self.server_track_folder(), 'ai', 'fast_lane.ai')
+
+    def server_layout_ai_line(self):
+        """The layout's own ai folder's line, which only AssettoServer versions after 0.0.54 read
+        (ahead of the track's), or '' when the server runs no layout."""
+        return os.path.join(self.server_track_folder(), self.layout, 'ai', 'fast_lane.ai') if self.layout else ''
 
 
 def read_server(folder):

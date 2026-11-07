@@ -220,6 +220,9 @@ def main():
                     help="share of episodes chasing a ghost leader (each track's <track>_ghosts.npz, record_ghosts.py)")
     ap.add_argument('--chase-gap', type=float, nargs=2, default=(0.0, 1.0), metavar=('LOW', 'HIGH'),
                     help='the asked gap drawn per chase episode, 0 - 1 (door to door ... a few lengths)')
+    ap.add_argument('--chase-gap-crowd', metavar='CROWD_JSON',
+                    help="with --chase: draw the asked gaps in public drivers' proportions within --chase-gap "
+                         "(a crowd_fit.py --out file) rather than evenly")
     ap.add_argument('--chase-gap-anneal-ticks', type=int, default=0,
                     help='with --chase: start the asked gaps in the top half of --chase-gap and lower the bottom to '
                          'LOW over this many ticks (0 = the whole range from the start)')
@@ -620,6 +623,11 @@ def main():
             sys.exit("chase episodes run on the CPU simulator only for now: add --sim cpu")
         env_cfg.chase_share = args.chase
         env_cfg.chase_gap_low, env_cfg.chase_gap_high = args.chase_gap
+        if args.chase_gap_crowd:
+            env_cfg.chase_gap_crowd = de.read_crowd_gaps(args.chase_gap_crowd)
+            g = env_cfg.chase_gap_crowd
+            print(f"asked gaps in the crowd's proportions ({args.chase_gap_crowd}: median {g[10]:.1f} m, "
+                  f"p10 {g[2]:.1f}, p90 {g[18]:.1f}) within {de.CHASE_GAP_M[0]} - {de.CHASE_GAP_M[1]} m", flush=True)
         env_cfg.chase_scenarios = args.chase_scenarios
         env_cfg.chase_touch_push = args.chase_touch_push
         for k, v in de.chase_controller_overrides(args).items():
@@ -1015,6 +1023,8 @@ def main():
                          'privileged_critic': bool(args.privileged_critic),
                          'residual_steer_only': bool(args.residual_steer_only),
                          'controller': {k: getattr(env_cfg, k) for k in de.CHASE_CONTROLLER}}
+        if env_cfg.chase_gap_crowd:
+            meta['chase']['gap_crowd_m'] = [round(g, 3) for g in env_cfg.chase_gap_crowd]
     if hist_slots:
         # the plugin reads this: it appends the same history block (DriftPolicy.AppendHistory)
         meta['history'] = {'slots': hist_slots, 'frames': args.history_frames, 'every': args.history_every,

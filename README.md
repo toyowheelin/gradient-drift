@@ -54,8 +54,11 @@ ships as one `policy.json`; nothing learns on the live server.
 
 **Limits:** tested on Windows servers only (the same plugin download should run on Linux too, as
 a .NET plugin with no native code, but nobody has tried it yet); rear-drive cars only;
-and cars don't collide with each other: a chasing bot sees the car it follows, but nothing stops
-cars passing through each other, so a car that spins can be driven through by the one behind.
+no tracks whose model files are protected (DRM, which Custom Shaders Patch decodes as the game
+loads the track: setup cannot read their ground or walls and turns them down);
+and bots feel other cars only with `CarContactPush` on (off by default): then a bot that touches a
+player or another bot is pushed by its share of the hit, by the two cars' masses; with it off, a bot
+drives through a car it hits as if nothing were there.
 
 ## Quick start
 
