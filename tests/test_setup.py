@@ -235,3 +235,38 @@ def test_setup_keeps_a_policy_made_for_the_server(world):
     p = plan(world)
     assert not any(c.file.endswith('policy.json') for c in p.changes)
     assert any('kept' in n for n in p.notes)
+
+
+def test_setup_writes_the_players_cars_too(world):
+    """CarContactPush weighs a player's car by its model's car file: setup writes one for every model
+    in the entry list, not only the bots'."""
+    from gradientdrift_setup.apply import apply_plan
+    server, game, plugin, data, track = world
+    other = 'test_player_car'
+    car = os.path.join(game, 'content', 'cars', other)
+    os.makedirs(os.path.join(car, 'data'))
+    for name, text in CAR_FILES.items():
+        if name == 'car.ini':
+            text = text.replace('TOTALMASS=1150', 'TOTALMASS=1450')
+        with open(os.path.join(car, 'data', name), 'w') as f:
+            f.write(text)
+    cfg = os.path.join(server, 'cfg')
+    with open(os.path.join(cfg, 'server_cfg.ini')) as f:
+        text = f.read()
+    with open(os.path.join(cfg, 'server_cfg.ini'), 'w') as f:
+        f.write(text.replace(f'CARS={CAR}', f'CARS={CAR};{other}').replace('MAX_CLIENTS=1', 'MAX_CLIENTS=2'))
+    with open(os.path.join(cfg, 'entry_list.ini'), 'a') as f:
+        f.write(f'[CAR_1]\nMODEL={other}\nSKIN=\nSPECTATOR_MODE=0\nDRIVERNAME=\nTEAM=\nGUID=\nBALLAST=0\nRESTRICTOR=0\n')
+
+    p = plan(world)
+    assert not p.blockers, p.blockers
+    assert other not in {m for _, m, _ in p.slots}, 'the test meant the bots to drive the other car'
+    apply_plan(p, log=lambda *_: None)
+    cars = os.path.join(server, 'plugins', 'GradientDriftPlugin', 'cars')
+    with open(os.path.join(cars, f'{other}.json')) as f:
+        theirs = json.load(f)
+    with open(os.path.join(cars, f'{CAR}.json')) as f:
+        ours = json.load(f)
+    mass = lambda n: (n['FRONT_STATIC_LOAD_N'] + n['REAR_STATIC_LOAD_N']) / 9.80665
+    assert mass(theirs) > mass(ours) + 200, (mass(theirs), mass(ours))
+    assert plan(world).ready, 'a second run still finds changes'

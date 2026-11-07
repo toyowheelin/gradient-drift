@@ -187,6 +187,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private CarSpec _car;
     private CarSpec _defaultCar;
     private readonly Dictionary<string, CarSpec> _carSpecs = new();
+    private readonly Dictionary<string, CarSpec?> _playerCarSpecs = new();
     private readonly float _skill = 1f;           // how good a driver the bots are (BotSkill), for a policy that reads it
     // Each bot's own style (BotStyles.cs), by session id, worked out the first time it is taken over;
     // each AI entry's place among the AI entries this tick, and the entry list's DRIVERNAMEs.
@@ -518,6 +519,28 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 spec.MaxSteerAngleRadians * 180f / MathF.PI, spec.EngineForceN != null ? "limited" : "unlimited", path);
         }
         _carSpecs[model] = spec;
+        return spec;
+    }
+
+    // CarContactPush: a player's car, from its model's car file (setup writes one for every model in
+    // the entry list), read once and kept; null when there is none (the push then takes the player
+    // as the same car as the bot it touches).
+    private CarSpec? PlayerCarFor(string model)
+    {
+        if (_playerCarSpecs.TryGetValue(model, out CarSpec? known))
+        {
+            return known;
+        }
+        string pluginDirectory = Path.GetDirectoryName(GetType().Assembly.Location) ?? "";
+        string path = Path.Combine(pluginDirectory, "cars", model + ".json");
+        float steerLock = (_policy?.DriftSteerLockDeg ?? 0f) * MathF.PI / 180f;
+        CarSpec? spec = CarSpec.Load(path, steerLock, out string? problem);
+        if (spec == null)
+        {
+            VerboseLog.Information("GradientDrift: no car file for the player's {Model} ({Problem}) - a bot it touches takes it as its own car; run setup to write it",
+                model, problem);
+        }
+        _playerCarSpecs[model] = spec;
         return spec;
     }
 
@@ -886,6 +909,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             var status = car.Status;
             float heading = status.Rotation.X + MathF.PI / 2f;
             float cs = MathF.Cos(heading), sn = MathF.Sin(heading);
+            CarSpec? playerCar = PlayerCarFor(car.Model);
             for (int i = 0; i < bodies.Length; i++)
             {
                 if (MathF.Abs(bodies[i].X - status.Position.X) >= ReachM || MathF.Abs(bodies[i].Z - status.Position.Z) >= ReachM
@@ -893,13 +917,16 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 {
                     continue;
                 }
-                // the player as the same car (its own mass is not known here), its yaw rate unknown: 0
+                // the player's car with its own mass and yaw inertia, from its model's car file (each
+                // player's game loads the other cars' physics the same way, by model); without one, the
+                // same car as the bot. Its yaw rate is not known here: 0
                 var player = new CarContact.Body
                 {
                     X = status.Position.X, Z = status.Position.Z, Heading = heading,
                     Forward = status.Velocity.X * cs + status.Velocity.Z * sn,
                     Lateral = -status.Velocity.X * sn + status.Velocity.Z * cs,
-                    MassKg = bodies[i].MassKg, InertiaKgM2 = bodies[i].InertiaKgM2,
+                    MassKg = playerCar?.MassKg ?? bodies[i].MassKg,
+                    InertiaKgM2 = playerCar?.YawInertiaKgM2 ?? bodies[i].InertiaKgM2,
                 };
                 CarContact.Collide(ref bodies[i], ref player);
                 hit[i] = true;
