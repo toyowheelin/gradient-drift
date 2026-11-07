@@ -301,3 +301,17 @@ def test_ai_line_goes_where_assettoserver_reads_it(tmp_path):
     assert s.server_ai_line() == os.path.join(base, 'ai', 'fast_lane.ai')
     assert s.server_layout_ai_line() == os.path.join(base, 'evergreen_speedway_fd2024', 'ai', 'fast_lane.ai')
     assert Server(folder=str(tmp_path), track='t').server_layout_ai_line() == ''
+
+
+def test_protected_model_files_are_found():
+    """A protected model file moves its vertices but keeps their normals: its triangles stop facing
+    the way the normals say (track_triangles refuses the layout under SCRAMBLED_AGREEMENT)."""
+    import sys
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'tools'))
+    import track_triangles as tt
+    from types import SimpleNamespace
+    up = (0.0, 1.0, 0.0)
+    flat = SimpleNamespace(positions=[(0, 0, 0), (0, 0, 4), (4, 0, 0)], normals=[up] * 3, indices=[0, 1, 2])
+    moved = SimpleNamespace(positions=[(0, 0, 0), (0, 3, 4), (4, -2, 0)], normals=[up] * 3, indices=[0, 1, 2])
+    assert tt.normal_agreement(flat)[0] > 0.999
+    assert tt.normal_agreement(moved)[0] < tt.SCRAMBLED_AGREEMENT
