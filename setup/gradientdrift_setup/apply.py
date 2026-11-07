@@ -129,6 +129,28 @@ def make_track_data(op, server, log=print):
     return None
 
 
+def pace_for_another_line(home, name, pace_files=()):
+    """The first pace reference of pace_files (else the track data folder's own) whose points do not
+    match the AI line in the track data folder, or None when they match or either is missing."""
+    import track_files as tf
+    from ai_spline import load_fast_lane
+    import drift_env as de
+    line = tf.path(home, 'fast_lane', name)
+    if not os.path.exists(line):
+        return None
+    points = len(load_fast_lane(line))
+    for ref in list(pace_files) or [tf.pace_reference_path(home, name)]:
+        if not ref or not os.path.exists(ref):
+            continue
+        try:
+            kmh, _ = de.read_pace_reference(ref)
+        except (RuntimeError, ValueError, KeyError, OSError):
+            continue
+        if len(kmh) != points:
+            return ref
+    return None
+
+
 def make_pace_reference(op, log=print):
     """Makes a track's pace reference for a pace_reference change, into the track data folder
     (drift_env.course_pace_reference: drift_rl/pace_model.py, from the track's shape, as training
@@ -194,6 +216,17 @@ def apply_plan(plan, log=print):
         line = make_track_data(c.op, server, log)
         if line:
             copies.append(type(c)(c.op[5], "the track's AI line", op=('copy', line, c.op[5])))
+        # a rebuilt AI line can have more or fewer points than the line the pace reference (the
+        # server's, or the one in the track data folder) was made for: make that again for the new line
+        home, name = c.op[3], c.op[4]
+        if not any(p.op[2:4] == (home, name) for p in paces):
+            pace_files = [k.op[4] for k in checks if k.op[3] == name and len(k.op) > 4 and k.op[4]]
+            stale = pace_for_another_line(home, name, pace_files)
+            if stale:
+                log(f"  {os.path.basename(stale)} was made for another AI line: making it again")
+                paces.append(type(c)(f'{name}_pace_reference.csv', "the track's pace reference",
+                                     op=('pace_reference', None, home, name)))
+                checks = [type(k)(k.file, k.what, op=k.op[:4] + (None,)) if k.op[3] == name else k for k in checks]
     # then its pace reference, from that data (also only into the track data folder)
     for c in paces:
         made = make_pace_reference(c.op, log)

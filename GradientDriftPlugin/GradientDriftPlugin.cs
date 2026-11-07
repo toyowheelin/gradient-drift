@@ -912,8 +912,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             CarSpec? playerCar = PlayerCarFor(car.Model);
             for (int i = 0; i < bodies.Length; i++)
             {
-                if (MathF.Abs(bodies[i].X - status.Position.X) >= ReachM || MathF.Abs(bodies[i].Z - status.Position.Z) >= ReachM
-                    || !ChaseInputs.CarsOverlap(bodies[i].X, bodies[i].Z, bodies[i].Heading, status.Position.X, status.Position.Z, heading))
+                if (MathF.Abs(bodies[i].X - status.Position.X) >= ReachM || MathF.Abs(bodies[i].Z - status.Position.Z) >= ReachM)
                 {
                     continue;
                 }
@@ -928,7 +927,16 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     MassKg = playerCar?.MassKg ?? bodies[i].MassKg,
                     InertiaKgM2 = playerCar?.YawInertiaKgM2 ?? bodies[i].InertiaKgM2,
                 };
+                float depth = CarContact.Penetration(bodies[i], player, CarContact.PlayerExtraLengthM,
+                    out float nx, out float nz);
+                if (depth <= 0f)
+                {
+                    continue;
+                }
+                var pusher = player;    // as the player drives it, before the hit
                 CarContact.Collide(ref bodies[i], ref player);
+                // a push held on: the player's game does not move for the bot, so keep the bot moving away
+                CarContact.Press(ref bodies[i], pusher, depth, nx, nz);
                 hit[i] = true;
             }
         }
@@ -1366,6 +1374,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             float subDt = dt / subStepCount;
             float cosSteer = MathF.Cos(steerCommand);
             float slipAngleSpeed = MathF.Max(forwardSpeed, _configuration.MinSlipAngleSpeedMs);
+            // Below MinSlipAngleSpeedMs the slip angles are taken over that speed, not the car's, so
+            // the steering's own part of the front slip is scaled down with the car's speed: a car
+            // nearly stopped (slowed by a push, say) turns its front wheels without the tyres
+            // swinging it round, as a real car does, where before full lock gave full sideways
+            // force at a standstill and a policy sawing at the wheel twisted the car back and forth.
+            float steerSlip = steerCommand * Math.Clamp(forwardSpeed / slipAngleSpeed, 0f, 1f);
 
             float yawRate = state.YawRate;
             float lateralVelocity = state.LateralVelocity;
@@ -1375,7 +1389,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
             for (int subStep = 0; subStep < subStepCount; subStep++)
             {
-                frontSlipAngle = MathF.Atan2(lateralVelocity + _car.DistanceCgToFrontAxleM * yawRate, slipAngleSpeed) - steerCommand;
+                frontSlipAngle = MathF.Atan2(lateralVelocity + _car.DistanceCgToFrontAxleM * yawRate, slipAngleSpeed) - steerSlip;
                 rearSlipAngle = MathF.Atan2(lateralVelocity - _car.DistanceCgToRearAxleM * yawRate, slipAngleSpeed);
 
                 fyFront = frontCapacityN >= 0f

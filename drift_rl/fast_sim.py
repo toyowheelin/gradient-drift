@@ -1506,7 +1506,10 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
     slide_grip = rear_sliding_grip(s)
     for k in range(sub_n):
         slip_speed = max(body_speed, p[P_MIN_SLIP_SPEED_MS])
-        front_slip = math.atan2(run_latv + p[P_DIST_CG_FRONT_M] * run_yaw, slip_speed) - steer_cmd
+        # below the minimum slip speed the steering's part of the front slip scales with the car's
+        # speed, so a nearly stopped car does not swing round on its front tyres (the plugin does the same)
+        front_slip = (math.atan2(run_latv + p[P_DIST_CG_FRONT_M] * run_yaw, slip_speed)
+                      - steer_cmd * min(1.0, max(0.0, body_speed / slip_speed)))
         rear_slip = math.atan2(run_latv - p[P_DIST_CG_REAR_M] * run_yaw, slip_speed)
         fy_f = _lateral_tire_force(front_slip, mu_f, front_load, curve_f, 1.0, round_curve)
         if front_capacity >= 0.0:

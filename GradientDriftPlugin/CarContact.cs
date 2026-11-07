@@ -56,6 +56,70 @@ public static class CarContact
         return bw;
     }
 
+    // A player pressing on a bot: the player's own game treats the bot as a fixed object, so after
+    // the first hit the player's car sits against it with little closing speed left, and Collide
+    // (closing speed only) gives nothing. While the two still overlap, Press keeps the bot moving
+    // away: its speed along the contact normal is raised to at least the pusher's, plus the overlap
+    // depth over PressSeconds (at most PressMaxMs), at its centre. A push held on keeps moving it.
+    public const float PressSeconds = 0.15f;
+    public const float PressMaxMs = 3f;
+    // Real cars are longer than the contact box (3.9 m): a player's car touching a bot's nose or
+    // tail in its own game can sit just outside it. A player contact counts this much longer at
+    // each end.
+    public const float PlayerExtraLengthM = 0.3f;
+
+    // How deep two car boxes overlap (separating axes over both cars' sides): the depth in metres
+    // and the unit normal (nx, nz) from b towards a along the shallowest axis; 0 when apart. Each
+    // box is longer by extraLengthM at both ends.
+    public static float Penetration(in Body a, in Body b, float extraLengthM, out float nx, out float nz)
+    {
+        nx = nz = 0f;
+        float halfLen = 0.5f * (ChaseInputs.CarFrontM + ChaseInputs.CarRearM) + extraLengthM;
+        float shift = 0.5f * (ChaseInputs.CarFrontM - ChaseInputs.CarRearM);
+        float ca = MathF.Cos(a.Heading), sa = MathF.Sin(a.Heading);
+        float cb = MathF.Cos(b.Heading), sb = MathF.Sin(b.Heading);
+        float ax = a.X + shift * ca, az = a.Z + shift * sa;
+        float bx = b.X + shift * cb, bz = b.Z + shift * sb;
+        float best = float.MaxValue;
+        for (int k = 0; k < 4; k++)
+        {
+            float h = k < 2 ? a.Heading : b.Heading;
+            float ux = k % 2 == 0 ? MathF.Cos(h) : -MathF.Sin(h);
+            float uz = k % 2 == 0 ? MathF.Sin(h) : MathF.Cos(h);
+            float ra = halfLen * MathF.Abs(ca * ux + sa * uz) + ChaseInputs.CarHalfWidthM * MathF.Abs(ca * uz - sa * ux);
+            float rb = halfLen * MathF.Abs(cb * ux + sb * uz) + ChaseInputs.CarHalfWidthM * MathF.Abs(cb * uz - sb * ux);
+            float d = (ax - bx) * ux + (az - bz) * uz;
+            float overlap = ra + rb - MathF.Abs(d);
+            if (overlap <= 0f)
+                return 0f;
+            if (overlap < best)
+            {
+                best = overlap;
+                float sign = d >= 0f ? 1f : -1f;
+                nx = sign * ux;
+                nz = sign * uz;
+            }
+        }
+        return best;
+    }
+
+    // Raises car's speed along (nx, nz) (from the pusher towards car) to the pusher's speed along it
+    // plus depth / PressSeconds, capped at PressMaxMs over the pusher's; true when it changed.
+    public static bool Press(ref Body car, in Body pusher, float depth, float nx, float nz)
+    {
+        float cs = MathF.Cos(car.Heading), sn = MathF.Sin(car.Heading);
+        float pc = MathF.Cos(pusher.Heading), ps = MathF.Sin(pusher.Heading);
+        float have = (car.Forward * cs - car.Lateral * sn) * nx + (car.Forward * sn + car.Lateral * cs) * nz;
+        float pusherAlong = (pusher.Forward * pc - pusher.Lateral * ps) * nx + (pusher.Forward * ps + pusher.Lateral * pc) * nz;
+        float want = pusherAlong + MathF.Min(depth / PressSeconds, PressMaxMs);
+        if (have >= want)
+            return false;
+        float dv = want - have;
+        car.Forward = MathF.Max(0f, car.Forward + dv * (nx * cs + nz * sn));
+        car.Lateral += dv * (-nx * sn + nz * cs);
+        return true;
+    }
+
     // a body point's velocity (world axes) at r from its centre
     private static (float X, float Z) PointVelocity(in Body c, float rx, float rz)
     {
