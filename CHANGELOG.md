@@ -35,8 +35,9 @@ The only change you will see without touching a setting is the join message.
   collision: it is pushed back, or along if hit from behind, and an off-centre hit turns it. Two
   bots that touch are both pushed. The hit is shared by the two cars' real masses and yaw
   inertia, from their car files, so a light car is pushed more than a heavy one. The player's own
-  game already gives the player their share. Run on the project's own three bot servers with the
-  shipped policy before this release.
+  game already gives the player their share. A push held on keeps moving the bot: while the cars
+  stay in contact it is kept moving away at least as fast as the player drives into it. Run on the
+  project's own three bot servers with the shipped policy before this release.
 - **Bot aggression now sets how close a chaser follows.** With `BotStyles` or `BotStyleSpread`,
   the pushiest bots (aggression 1) drop `ChaseTimeGapSeconds` and hold just their chase gap at any
   speed, door to door; the calmest (aggression 0) keep twice it. At the default (no spread, 0.5)

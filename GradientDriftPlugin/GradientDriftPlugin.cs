@@ -912,8 +912,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             CarSpec? playerCar = PlayerCarFor(car.Model);
             for (int i = 0; i < bodies.Length; i++)
             {
-                if (MathF.Abs(bodies[i].X - status.Position.X) >= ReachM || MathF.Abs(bodies[i].Z - status.Position.Z) >= ReachM
-                    || !ChaseInputs.CarsOverlap(bodies[i].X, bodies[i].Z, bodies[i].Heading, status.Position.X, status.Position.Z, heading))
+                if (MathF.Abs(bodies[i].X - status.Position.X) >= ReachM || MathF.Abs(bodies[i].Z - status.Position.Z) >= ReachM)
                 {
                     continue;
                 }
@@ -928,7 +927,16 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     MassKg = playerCar?.MassKg ?? bodies[i].MassKg,
                     InertiaKgM2 = playerCar?.YawInertiaKgM2 ?? bodies[i].InertiaKgM2,
                 };
+                float depth = CarContact.Penetration(bodies[i], player, CarContact.PlayerExtraLengthM,
+                    out float nx, out float nz);
+                if (depth <= 0f)
+                {
+                    continue;
+                }
+                var pusher = player;    // as the player drives it, before the hit
                 CarContact.Collide(ref bodies[i], ref player);
+                // a push held on: the player's game does not move for the bot, so keep the bot moving away
+                CarContact.Press(ref bodies[i], pusher, depth, nx, nz);
                 hit[i] = true;
             }
         }
