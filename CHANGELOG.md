@@ -7,6 +7,13 @@ when releasing.
 
 ## Unreleased
 
+- Bots drift Klutch Kickers at the public drivers' pace: the pace reference (`pace_model 4`) is
+  scaled where public drivers have been recorded (`drift_rl/crowd_fit.py` on AI Car Monitor
+  recordings). Klutch Kickers goes up 9%; Drift Playground and every other track are unchanged.
+  Setup remakes an older pace reference.
+- `ChaseTimeGapSeconds` defaults to 0.25 (was 0.2): with `ChaseGapMeters` 2 it is the gap public
+  drivers settle at behind each other, 5.5 m at 50 km/h.
+- Trainer: `--chase-gap-crowd FILE` asks for chase gaps in the public drivers' proportions.
 - Setup puts the AI line where AssettoServer 0.0.54 reads it on a track with layouts:
   `content/tracks/<track>/ai/fast_lane.ai`. It used to go in the layout's own `ai` folder, which
   0.0.54 never reads, so the server would not start ("No ai folder found").

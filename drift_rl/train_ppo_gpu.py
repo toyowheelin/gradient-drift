@@ -220,6 +220,9 @@ def main():
                     help="share of episodes chasing a ghost leader (each track's <track>_ghosts.npz, record_ghosts.py)")
     ap.add_argument('--chase-gap', type=float, nargs=2, default=(0.0, 1.0), metavar=('LOW', 'HIGH'),
                     help='the asked gap drawn per chase episode, 0 - 1 (door to door ... a few lengths)')
+    ap.add_argument('--chase-gap-crowd', metavar='CROWD_JSON',
+                    help="with --chase: draw the asked gaps in public drivers' proportions within --chase-gap "
+                         "(a crowd_fit.py --out file) rather than evenly")
     ap.add_argument('--chase-gap-anneal-ticks', type=int, default=0,
                     help='with --chase: start the asked gaps in the top half of --chase-gap and lower the bottom to '
                          'LOW over this many ticks (0 = the whole range from the start)')
@@ -620,6 +623,11 @@ def main():
             sys.exit("chase episodes run on the CPU simulator only for now: add --sim cpu")
         env_cfg.chase_share = args.chase
         env_cfg.chase_gap_low, env_cfg.chase_gap_high = args.chase_gap
+        if args.chase_gap_crowd:
+            env_cfg.chase_gap_crowd = de.read_crowd_gaps(args.chase_gap_crowd)
+            g = env_cfg.chase_gap_crowd
+            print(f"asked gaps in the crowd's proportions ({args.chase_gap_crowd}: median {g[10]:.1f} m, "
+                  f"p10 {g[2]:.1f}, p90 {g[18]:.1f}) within {de.CHASE_GAP_M[0]} - {de.CHASE_GAP_M[1]} m", flush=True)
         env_cfg.chase_scenarios = args.chase_scenarios
         env_cfg.chase_touch_push = args.chase_touch_push
         for k, v in de.chase_controller_overrides(args).items():
@@ -764,7 +772,18 @@ def main():
         if tp.residual is not None or tp.mlp.W[-1].shape[0] != de.ACT_SIZE:
             sys.exit(f"--kickstart {args.kickstart}: needs a plain policy with {de.ACT_SIZE} outputs")
         t_n = len(tp.obs_mean)
-        t_names = list(tp.meta.get('obs_names') or [])[:t_n]
+        # a teacher with a history block (more inputs than the env gives) reads the same history-extended
+        # inputs the student gets, so the trainer must build the same block (--history-frames / --history-every)
+        hist_n = (de.OBS_SIZE + len(hist_slots) * args.history_frames) if history else de.OBS_SIZE
+        if t_n > de.OBS_SIZE and t_n != hist_n:
+            sys.exit(f"--kickstart {args.kickstart}: reads {t_n} inputs; with these history flags the trainer "
+                     f"gives {hist_n} (use the teacher's --history-frames / --history-every)")
+        t_hist = tp.meta.get('history') or {}
+        if t_n > de.OBS_SIZE and t_hist and (list(t_hist.get('slots', [])) != hist_slots
+                                             or t_hist.get('every') != args.history_every):
+            sys.exit(f"--kickstart {args.kickstart}: its history block (slots {t_hist.get('slots')}, every "
+                     f"{t_hist.get('every')}) is not the one this run builds")
+        t_names = list(tp.meta.get('obs_names') or [])[:min(t_n, de.OBS_SIZE)]
         if t_names:
             bad = [j for j, nm in enumerate(t_names) if nm != de.OBS_NAMES[j] and j != de.SLIDING_GRIP_OBS_SLOT]
             if bad:
@@ -1004,6 +1023,8 @@ def main():
                          'privileged_critic': bool(args.privileged_critic),
                          'residual_steer_only': bool(args.residual_steer_only),
                          'controller': {k: getattr(env_cfg, k) for k in de.CHASE_CONTROLLER}}
+        if env_cfg.chase_gap_crowd:
+            meta['chase']['gap_crowd_m'] = [round(g, 3) for g in env_cfg.chase_gap_crowd]
     if hist_slots:
         # the plugin reads this: it appends the same history block (DriftPolicy.AppendHistory)
         meta['history'] = {'slots': hist_slots, 'frames': args.history_frames, 'every': args.history_every,
@@ -1290,12 +1311,13 @@ def main():
                 env.set_chase_gap_low(chase_gap_low_now())
             with torch.no_grad():
                 for t in range(T):
-                    x = norm_obs(history.step(obs) if history else obs)
+                    hx = history.step(obs) if history else obs
+                    x = norm_obs(hx)
                     if args.obs_noise > 0.0:
                         x = x + args.obs_noise * (adr['dr'] if adr is not None else 1.0) * torch.randn_like(x)
                     lead_buf[t] = obs[:, gate_slot]
                     if teacher:
-                        teach_buf[t] = teacher(obs)
+                        teach_buf[t] = teacher(hx)       # the base inputs, then the history block if it reads one
                     mu = actor(x, lead_buf[t])
                     a = mu + log_std.exp() * torch.randn_like(mu)
                     obs_buf[t], act_buf[t] = x, a

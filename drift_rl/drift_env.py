@@ -678,6 +678,10 @@ class EnvConfig:
     # the asked gap (the chase_gap input, 0 - 1 over CHASE_GAP_M), drawn per chase episode
     chase_gap_low: float = 0.0
     chase_gap_high: float = 1.0
+    # ... evenly between those, or with this set (the outline gaps, m, at the quantiles 0, 0.05, ...
+    # 1 of how public drivers follow: crowd_fit.py, train_ppo_gpu --chase-gap-crowd) in the crowd's
+    # proportions within them: a gap the crowd holds twice as often is asked twice as often
+    chase_gap_crowd: tuple = ()
     # scenario starts for the chase episodes (CHASE_SCENARIOS); False = every lead pulls in plainly
     chase_scenarios: bool = False
     # the gap law (IDM / CACC, see IDM_ACCEL): its time gap behind a lead that hands over its plan
@@ -2433,7 +2437,7 @@ class DriftVecEnv:
             self.chase_ghost[i] = g
             c[C_GHOST_T] = ghost[j, GH_T]
             c[C_GHOST_K] = j
-            c[C_CHASE_ASK] = self.rng.uniform(self.cfg.chase_gap_low, self.cfg.chase_gap_high)
+            c[C_CHASE_ASK] = self._chase_ask()
             c[C_CHASE_DELAY] = self.rng.uniform(*CHASE_DELAY_S)
             c[C_CHASE_GAP] = -1e9
             c[C_CHASE_PLAN] = 1.0 if self.rng.random() < CHASE_PLAN_SHARE else 0.0
@@ -2444,6 +2448,13 @@ class DriftVecEnv:
             if scenario == 3:
                 c[C_MISTAKE_AT] = self.ep[i, E_TIME_S] + self.rng.uniform(*CHASE_MISTAKE_AFTER_S)
                 c[C_MISTAKE_LEN] = self.rng.uniform(*CHASE_MISTAKE_S)
+
+    def _chase_ask(self):
+        """One episode's asked gap, 0 - 1 over CHASE_GAP_M (EnvConfig.chase_gap_crowd)."""
+        low, high = self.cfg.chase_gap_low, self.cfg.chase_gap_high
+        if not self.cfg.chase_gap_crowd:
+            return self.rng.uniform(low, high)
+        return crowd_ask(self.cfg.chase_gap_crowd, low, high, self.rng.random())
 
     def _rnd(self):
         """The step's uniforms; two more per car (the noise of a lower skill) only when skill is
@@ -2761,6 +2772,29 @@ PHYSICS_SETTINGS = ('EnableTireLoadSensitivity', 'FrontTireLoadSensitivityPerKn'
                     'FrontTrackMeters', 'RearTrackMeters', 'RollStiffnessFrontShare', 'CgHeightMeters')
 
 
+def crowd_ask(gaps_m, low, high, u):
+    """The chase_gap input (0 - 1 over CHASE_GAP_M) at u (0 - 1) of the crowd's gap distribution
+    (gaps_m: metres at evenly spaced quantiles) cut to the asks low - high: the crowd's inverse
+    CDF between the shares of it under those two gaps."""
+    q = np.linspace(0.0, 1.0, len(gaps_m))
+    g = np.maximum.accumulate(np.asarray(gaps_m, dtype=np.float64))
+    lo_m = CHASE_GAP_M[0] + low * (CHASE_GAP_M[1] - CHASE_GAP_M[0])
+    hi_m = CHASE_GAP_M[0] + high * (CHASE_GAP_M[1] - CHASE_GAP_M[0])
+    f_lo, f_hi = np.interp(lo_m, g, q), np.interp(hi_m, g, q)
+    if f_hi - f_lo < 1e-6:                      # the crowd is never there: evenly instead
+        return low + u * (high - low)
+    m = np.interp(f_lo + u * (f_hi - f_lo), q, g)
+    return float(np.clip((m - CHASE_GAP_M[0]) / (CHASE_GAP_M[1] - CHASE_GAP_M[0]), low, high))
+
+
+def read_crowd_gaps(path):
+    """The outline gaps (m) at 21 evenly spaced quantiles from a crowd_fit.py --out file."""
+    import json
+    with open(path) as f:
+        quant = json.load(f)['gap']['quantiles']
+    return tuple(float(quant[str(round(q, 2))]) for q in np.linspace(0.0, 1.0, 21))
+
+
 def read_pace_reference(path):
     """(km/h per point, source) from a <course>_pace_reference.csv; source is the file's Source
     column (pace_model.MODEL for pace_model's), or None for an older file measured by a policy."""
@@ -2785,10 +2819,10 @@ def write_pace_reference(path, kmh, source):
 def course_pace_reference(data_dir, course, world, *_old_args, **_old_kwargs):
     """The course's reference speed per point, km/h (what a pace of 1.0 asks for), from
     <data_dir>/<course>_pace_reference.csv; made with pace_model and written there when the file is
-    missing, was not made by pace_model (an older one, measured by a reference policy, is kept
-    beside it as .before_pace_model), or was made for another AI line (a different number of points;
-    kept as .before_new_line). The same file goes to the server folder for the plugin, which reads
-    only PointId and Kmh."""
+    missing, was not made by this pace_model (an older one - an earlier pace_model, or measured by a
+    reference policy - is kept beside it as .before_pace_model, .before_pace_model2, ...), or was made
+    for another AI line (a different number of points; kept as .before_new_line). The same file goes
+    to the server folder for the plugin, which reads only PointId and Kmh."""
     import pace_model
     import track_files as tf
     path = tf.pace_reference_path(data_dir, course)
@@ -2803,7 +2837,7 @@ def course_pace_reference(data_dir, course, world, *_old_args, **_old_kwargs):
             k += 1
             old = f'{path}{suffix}{k}'
         os.replace(path, old)
-    kmh = pace_model.course_speed(world)
+    kmh = pace_model.course_speed(world, track=course)
     write_pace_reference(path, kmh, pace_model.MODEL)
     return read_pace_reference(path)[0]
 
