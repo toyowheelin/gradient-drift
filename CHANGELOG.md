@@ -2,7 +2,17 @@
 
 What changed in each release, newest first. A `v*` tag's release notes are its section here:
 the release workflow copies the section whose heading is the tag into the draft release, and
-refuses the tag if there is none. Add to `## Unreleased
+refuses the tag if there is none. Add to `## Unreleased` as changes merge; rename it to the tag
+when releasing.
+
+## Unreleased
+
+- Setup puts the AI line where AssettoServer 0.0.54 reads it on a track with layouts:
+  `content/tracks/<track>/ai/fast_lane.ai`. It used to go in the layout's own `ai` folder, which
+  0.0.54 never reads, so the server would not start ("No ai folder found").
+- Setup refuses a track whose model files are protected (every vertex moved, which the game's
+  Content Manager / Custom Shaders Patch undo on load): its ground came out as a crumpled sheet with
+  layers metres apart, and the bots climbed it into the air.
 
 ## v0.3.1
 

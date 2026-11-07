@@ -26,6 +26,8 @@ scripts.
   targets the car cannot drive (more than it can corner at, or a kink in the AI line), the AI line
   running into a wall, or a wall too low for the policy's sensors to feel (`drift_rl/check_track.py`).
   It says where on the lap, and what to do about it.
+  A track whose model files are protected (scrambled, for the game to unscramble as it loads them)
+  is refused too: its ground and walls cannot be read.
 - **Updates an installed plugin.** Run it again with a newer download and it replaces the plugin
   on the server, and the policy with it (an older plugin turns down a newer policy's settings and
   leaves the cars to the stock AI). The old files go to the backup like any other change. Stop the
@@ -356,5 +358,5 @@ Set `GRADIENTDRIFT_GUI=0` for the command-line-only build. The result goes in
 | `gradient-drift-setup.spec`, `launcher.py`, `requirements-build.txt` | The packaged build (PyInstaller, one folder). |
 
 Confirmed on the owner's servers (2026-10-12): `AiParams.MaxPlayerCount` equals the number of player
-entries; AssettoServer reads the AI line from the server's own `content/tracks/<track>[/<layout>]/ai/fast_lane.ai`;
+entries; AssettoServer reads the AI line from the server's own `content/tracks/<track>/ai/fast_lane.ai`, for a layout too (0.0.54 never reads a layout's own `ai` folder);
 an `AI=auto` bot entry gives its slot to a player who picks that car, so setup writes `AI=fixed`.

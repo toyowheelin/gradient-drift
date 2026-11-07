@@ -29,6 +29,10 @@ SurfaceType in world coordinates (to 0.1 mm), after one header line; gzip-compre
   from the layout's data/surfaces.ini or the game's system/data/surfaces.ini; WALL is the game's
   wall. Meshes named AC_ (the game's helper objects) are left out of both files.
 
+A layout whose model files are protected (every vertex moved by up to a few metres, which Content
+Manager / Custom Shaders Patch undo when the game loads them) cannot be read: the ground comes out
+as a crumpled sheet with layers metres apart. Such a layout is refused (SCRAMBLED_AGREEMENT).
+
 The model files are read by kn5_reader.py (from KN5 Blender Tools, GPL-3.0-or-later; see that file).
 """
 import argparse
@@ -48,6 +52,11 @@ HEADER = 'X1,Y1,Z1,X2,Y2,Z2,X3,Y3,Z3,SurfaceType\n'
 GRIP_HEADER = 'Key,Grip\n'
 # a track surface with less grip than this share of the main road's is the verge, not the course
 OFF_ROAD_FRICTION_SHARE = 0.9
+# A protected model file stores each vertex's normal as modelled but moves its position, so its
+# triangles no longer face the way their vertices' normals say. |cos| between the two, median over
+# the colliding road: 1.00 on a readable track (Spirit Peaks), about 0.6 on a protected one
+# (Evergreen Speedway). Under this the layout is refused.
+SCRAMBLED_AGREEMENT = 0.9
 
 
 def sensor_surface(name):
@@ -160,8 +169,27 @@ def times(a, b):
     return [[sum(a[i][k] * b[k][j] for k in range(4)) for j in range(4)] for i in range(4)]
 
 
-def meshes(node, world, out):
-    """Appends (mesh name, triangles in world coordinates) for node and its children."""
+def normal_agreement(mesh):
+    """|cos| between each triangle's own normal and its vertices' stored normals (their mean), in
+    the mesh's own coordinates: near 1 for every triangle of a readable mesh."""
+    p, n, index = mesh.positions, mesh.normals, mesh.indices
+    out = []
+    for i in range(0, len(index) - 2, 3):
+        a, b, c = p[index[i]], p[index[i + 1]], p[index[i + 2]]
+        u = (b[0] - a[0], b[1] - a[1], b[2] - a[2])
+        v = (c[0] - a[0], c[1] - a[1], c[2] - a[2])
+        f = (u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0])
+        m = [n[index[i]][k] + n[index[i + 1]][k] + n[index[i + 2]][k] for k in range(3)]
+        lf = (f[0] ** 2 + f[1] ** 2 + f[2] ** 2) ** 0.5
+        lm = (m[0] ** 2 + m[1] ** 2 + m[2] ** 2) ** 0.5
+        if lf > 1e-9 and lm > 1e-9:
+            out.append(abs(f[0] * m[0] + f[1] * m[1] + f[2] * m[2]) / (lf * lm))
+    return out
+
+
+def meshes(node, world, out, agreement=None):
+    """Appends (mesh name, triangles in world coordinates) for node and its children; with
+    `agreement` (a dict), also mesh name -> normal_agreement(mesh) for the colliding meshes."""
     if node.kind == 1:
         own = times([list(row) for row in node.matrix], world)
     else:
@@ -174,8 +202,10 @@ def meshes(node, world, out):
             index = node.mesh.indices
             out.append((node.name, [(*p[index[i]], *p[index[i + 1]], *p[index[i + 2]])
                                     for i in range(0, len(index) - 2, 3)]))
+            if agreement is not None and node.name[:1].isdigit():
+                agreement.setdefault(node.name, []).extend(normal_agreement(node.mesh))
     for child in node.children:
-        meshes(child, own, out)
+        meshes(child, own, out, agreement)
 
 
 def main(argv=None):
@@ -220,6 +250,7 @@ def main(argv=None):
 
     unplaced = collections.Counter()
     road_count = collections.Counter()
+    road_agreement = []
     sensors, collision, collision_keys = [], [], []
     for file, (dx, dy, dz) in layout_files(track, args.layout):
         path = find(track, file)
@@ -227,7 +258,8 @@ def main(argv=None):
             print(f'  missing: {file} (listed by the layout)')
             continue
         found = []
-        meshes(parse(path).root, [[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)], found)
+        agreement = {}
+        meshes(parse(path).root, [[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)], found, agreement)
         before = len(sensors), len(collision)
         for mesh_name, tris in found:
             surface, key = collision_surface(mesh_name)
@@ -238,10 +270,18 @@ def main(argv=None):
                 collision_keys.extend([key] * len(moved))
                 if surface == 'Road':
                     road_count[key] += len(moved)
+                    road_agreement.extend(agreement.get(mesh_name, []))
             if surface in (None, 'Wall'):
                 kind = sensor_surface(mesh_name)
                 sensors.extend(t + (kind,) for t in moved)
         print(f'  {file}: {len(sensors) - before[0]} sensor, {len(collision) - before[1]} collision triangles')
+
+    if road_agreement:
+        agree = sorted(road_agreement)[len(road_agreement) // 2]
+        if agree < SCRAMBLED_AGREEMENT:
+            raise SystemExit(f"{name}'s model files are protected (scrambled): its road's triangles do not face the "
+                             f"way their stored normals say (median {agree:.2f}, a readable track 1.00), so its ground "
+                             "and walls cannot be read from them. Drift bots cannot run on this layout.")
 
     off_road = off_road_keys(friction, road_count)
     if off_road:

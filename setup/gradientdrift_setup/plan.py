@@ -271,6 +271,11 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         span_m = t.span_m
         server_ai = server.server_ai_line()
         rel_ai = os.path.relpath(server_ai, server.folder).replace(os.sep, '/')
+        layout_ai = server.server_layout_ai_line()
+        if layout_ai and os.path.exists(layout_ai):
+            p.notes.append(f"the server also has {os.path.relpath(layout_ai, server.folder).replace(os.sep, '/')}: "
+                           f"AssettoServer {TESTED_VERSION} drives {rel_ai} (setup puts the line there), but later "
+                           "versions read the layout's own line first; copy the same line there if you move on")
         if t.ai_points < 2 and not t.recorded and not t.sides:
             p.blockers.append(f"{where} has no usable AI line ({t.ai_note}), no recorded lap and no side files "
                               "(data/side_l.csv, side_r.csv) to make one from; AssettoServer needs one to place any AI car")
