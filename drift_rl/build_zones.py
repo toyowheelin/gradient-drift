@@ -10,7 +10,7 @@ completely the zones are filled, and anything past a zone's outer boundary is "N
 
 Where the zones go is worked out from the course's own shape (the course edges build_course.py
 wrote), nothing track-specific:
-  1. The course centreline (midway between the two edges, their spikes taken out: SPIKE_M) is cut into corners: stretches that
+  1. The course centreline (midway between the two edges, their spikes smoothed out: SPIKE_M) is cut into corners: stretches that
      turn one way with a radius under CORNER_RADIUS_M.
   2. Each corner gets one zone on its outside edge, by how far the corner turns:
        150 deg or more   outside zone over 30% - 90% of the corner (a long sweeper: on it early)
@@ -53,17 +53,21 @@ ZONE_RULES = [(150.0, 'outside zone', 0.30, 0.90),
 ZONE_DEPTH_M = 3.0              # also drift_env.RewardConfig.zone_depth_m
 REAR_AXLE_BEHIND_CENTRE_M = 1.3
 # Where nothing marks the course (no cones or stacks) its edge is the paving up to the first wall,
-# so on a corner with open run-off the edge jumps out 10-25 m for a few points, and a glitch in the
-# mesh can pull one point in or out. Zones are placed, drawn, painted and scored on an edge whose
-# width each side stays within SPIKE_M of the median over SPIKE_WINDOW points around it
-# (GradientDriftPlugin/DriftZones.cs does the same). The trainer's own course inputs are unchanged.
+# so on a corner with open run-off the edge jumps out 10-25 m for a few points, and the mesh makes
+# it zigzag by a metre or two from point to point. Zones are placed, drawn, painted and scored on
+# an edge whose width each side is first held within SPIKE_M of its median over SPIKE_WINDOW points
+# around it, then averaged over SMOOTH_POINTS points (GradientDriftPlugin/DriftZones.cs does the
+# same). A width that moves by no more than SMOOTH_KEEP_M is left as it was. The trainer's own
+# course inputs are unchanged.
 SPIKE_WINDOW = 15
-SPIKE_M = 3.0
+SPIKE_M = 1.0
+SMOOTH_POINTS = 5
+SMOOTH_KEEP_M = 0.01
 
 
 def smooth_widths(half):
-    """One side's widths (m from the line, per point round the lap) held within SPIKE_M of their
-    running median over SPIKE_WINDOW points."""
+    """One side's widths (m from the line, per point round the lap): held within SPIKE_M of their
+    running median over SPIKE_WINDOW points, then a running mean over SMOOTH_POINTS."""
     half = np.asarray(half, dtype=float)
     n = len(half)
     k = min(SPIKE_WINDOW // 2, (n - 1) // 2)
@@ -71,7 +75,11 @@ def smooth_widths(half):
         return half.copy()
     idx = (np.arange(n)[:, None] + np.arange(-k, k + 1)[None, :]) % n
     med = np.median(half[idx], axis=1)
-    return np.clip(half, med - SPIKE_M, med + SPIKE_M)
+    held = np.clip(half, med - SPIKE_M, med + SPIKE_M)
+    a = min(SMOOTH_POINTS // 2, (n - 1) // 2)
+    idx = (np.arange(n)[:, None] + np.arange(-a, a + 1)[None, :]) % n
+    mean = held[idx].mean(axis=1)
+    return np.where(np.abs(mean - half) > SMOOTH_KEEP_M, mean, half)
 
 
 def smooth_edges(edges):

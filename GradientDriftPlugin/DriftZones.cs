@@ -24,11 +24,15 @@ public static class DriftZones
     public const float StripeSlantM = 2.1f;  // a stripe ends this far along the inner side from where it starts
     public const float StripeMarginM = 0.6f; // no stripe closer than this to either end bar
     public const string ScriptName = "gradientdrift_zones.lua";
-    // build_zones.SPIKE_WINDOW / SPIKE_M: where nothing marks the course its edge is the paving up to
-    // the first wall, so it jumps out across an open corner's run-off for a few points. Each side's
-    // width is held within SpikeM of its running median over SpikeWindow points before painting.
+    // build_zones.SPIKE_WINDOW / SPIKE_M / SMOOTH_POINTS / SMOOTH_KEEP_M: where nothing marks the
+    // course its edge is the paving up to the first wall, so it jumps out across an open corner's
+    // run-off for a few points and zigzags from point to point. Each side's width is held within
+    // SpikeM of its running median over SpikeWindow points, then averaged over SmoothPoints, before
+    // painting; a width that moves by no more than SmoothKeepM is left as it was.
     public const int SpikeWindow = 15;
-    public const float SpikeM = 3f;
+    public const float SpikeM = 1f;
+    public const int SmoothPoints = 5;
+    public const float SmoothKeepM = 0.01f;
 
     public sealed record Shape(bool OutsideZone, Vector3[] Frame, (Vector3 From, Vector3 To)[] Stripes);
 
@@ -154,7 +158,7 @@ public static class DriftZones
     }
 
     // build_zones.smooth_widths: one side's widths held within SpikeM of their running median over
-    // SpikeWindow points round the lap.
+    // SpikeWindow points round the lap, then a running mean over SmoothPoints.
     public static float[] SmoothWidths(float[] half)
     {
         int n = half.Length;
@@ -162,6 +166,7 @@ public static class DriftZones
         var result = (float[])half.Clone();
         if (k < 1) return result;
         var window = new float[2 * k + 1];
+        var held = new float[n];
         for (int i = 0; i < n; i++)
         {
             for (int j = -k; j <= k; j++)
@@ -170,7 +175,18 @@ public static class DriftZones
             }
             Array.Sort(window);
             float median = window[k];
-            result[i] = Math.Clamp(half[i], median - SpikeM, median + SpikeM);
+            held[i] = Math.Clamp(half[i], median - SpikeM, median + SpikeM);
+        }
+        int a = Math.Min(SmoothPoints / 2, (n - 1) / 2);
+        for (int i = 0; i < n; i++)
+        {
+            double sum = 0;
+            for (int j = -a; j <= a; j++)
+            {
+                sum += held[Mod(i + j, n)];
+            }
+            float mean = (float)(sum / (2 * a + 1));
+            if (MathF.Abs(mean - half[i]) > SmoothKeepM) result[i] = mean;
         }
         return result;
     }

@@ -200,7 +200,8 @@ def test_spikes_taken_out(tracks_dir):
     smooth = bz.smooth_edges(spiked)
     assert smooth.attrs['smoothed'] and bz.smooth_edges(smooth) is smooth
     p_new, _ = bz.edge_arrays(spiked)
-    assert np.abs(p_new - pos).max() < bz.SPIKE_M + 0.01            # back within 3 m of where it was
-    assert np.allclose(np.delete(p_new, [50, 51, 52, 200], 0), np.delete(pos, [50, 51, 52, 200], 0))
+    assert np.abs(p_new - pos).max() < bz.SPIKE_M + 0.01            # back within a metre of where it was
+    near = [i for c in (50, 51, 52, 200) for i in range(c - bz.SMOOTH_POINTS // 2, c + bz.SMOOTH_POINTS // 2 + 1)]
+    assert np.allclose(np.delete(p_new, near, 0), np.delete(pos, near, 0))
     assert [(z['side'], z['first'], z['last']) for z in bz.place_zones(spiked)] == \
            [(z['side'], z['first'], z['last']) for z in bz.place_zones(edges)]
