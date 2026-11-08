@@ -15,6 +15,12 @@ when releasing.
   edited and kept (with their ends following the course) when setup or `build_zones.py` makes the
   track's data again; `--replace` places them afresh. In a terminal the same with words
   (`zones <track> help`), and `picture` draws the map as an SVG.
+- The plugin paints the track's drift zones on the road for players with Custom Shaders Patch:
+  yellow boxes along the outside of the corners, closed at both ends, striped inside (sparser for a
+  touch-and-go area), sent as a CSP online script that uses CSP's track paint. On by default
+  (`ShowZones`; `ZoneColor`, `ZoneLineWidthMeters`, `ZoneStripeSpacingMeters`). Setup copies the
+  track's `<track>_course_zones.csv` to the server with its other files, and copies it again after
+  the zone editor changes it.
 - AI Car Monitor (`tools/ai_car_monitor.py`) records about 15 times less: every car 20 times a
   second (was every frame), only the values the game really sends for another player's car (the
   always-zero columns are gone), written straight to `.csv.gz`. A full server is ~1 MB a minute,

@@ -567,6 +567,8 @@ class ChangesPage(QWizardPage):
             QMessageBox.information(self, 'No zones yet', f"There is no course data for {track} in {tracks} yet. "
                                     "Make the changes first: setup makes the track's data, zones included. Or pick "
                                     "Track files that have it.")
+            return
+        self.initializePage()       # changed zones are a change to copy to the server
 
     def undo(self):
         server = self.state['server'].folder

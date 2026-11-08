@@ -128,7 +128,7 @@ def test_score_a_recording(track, tmp_path):
     assert Z.line_score(rows) == pytest.approx(40 * np.mean([rows[0][0], 0.0]))
     out = Z.picture(course, [left, right], str(tmp_path / 'zones.svg'), run=runs[0])
     text = open(out, encoding='utf-8').read()
-    assert text.startswith('<svg') and text.count('url(#oz)') == 2
+    assert text.startswith('<svg') and text.count('<polygon') >= 3 and 'stroke="#f5c400"' in text
 
 
 def test_zones_command(track, tmp_path, capsys):
@@ -156,3 +156,26 @@ def test_zones_command(track, tmp_path, capsys):
     assert main(words + ['picture', str(tmp_path / 'map.png'), rec, 'Tester']) == 0
     assert os.path.exists(tmp_path / 'map.svg')
     assert 'line score' in capsys.readouterr().out
+
+
+def test_paint_shapes(track):
+    """What the plugin paints (DriftZones.cs mirrors it; tests/plugin checks the two agree): a closed
+    frame round each zone and stripes inside it, sparser in a touch-and-go area."""
+    from gradientdrift_setup import zones as Z
+    tracks, name = track
+    course, _, _ = Z.load(tracks, name)
+    long_oz = Z.new_zone(course, 1, 100, 160)
+    long_tg = Z.new_zone(course, 1, 100, 160, kind=Z.KINDS[1])
+    tiny = Z.new_zone(course, -1, 300, 301)
+    (oz, f1, s1), (tg, f2, s2), (_, f3, s3) = Z.paint_shapes(course, [long_oz, long_tg, tiny], 1.6)
+    assert oz and not tg and len(f1) == 2 * 61 and len(s3) == 0
+    assert len(s1) > 10 and abs(len(s1) / max(len(s2), 1) - 2) < 0.3
+    outer, inner = course.zone_outline(long_oz)
+
+    def off(line, p):                                 # distance from p to a polyline
+        a, b = line[:-1], line[1:]
+        t = np.clip(np.sum((p - a) * (b - a), 1) / np.maximum(np.sum((b - a) ** 2, 1), 1e-9), 0, 1)
+        return np.min(np.hypot(*(a + t[:, None] * (b - a) - p).T))
+    for a, b in s1:                                   # each stripe runs from the outer edge to 3 m in
+        assert off(outer, a) < 0.01 and off(inner, b) < 0.01
+        assert 2.0 < np.hypot(*(a - b)) < 4.5

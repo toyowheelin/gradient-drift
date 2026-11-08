@@ -117,8 +117,9 @@ ZONES_HELP = """zones <server folder or track> [what] [--track-data FOLDER]
 
 Each change is saved straight away (the file it replaces is kept in the track's zone_backups
 folder) and marked as edited, so setup keeps it when it makes the track's data again (auto
-takes the mark off). Zones change
-what the trainer pays for: the bots drive them only after training on that track."""
+takes the mark off). Run setup's apply again to copy them to the server, where the plugin
+paints them on the road for players (ShowZones). For the bots, zones change what the trainer pays
+for: they drive them only after training on that track."""
 
 
 def zones_command(target, words, track_data):

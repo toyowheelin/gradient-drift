@@ -203,6 +203,15 @@ public class GradientDriftConfiguration
     // own "Powered by AssettoServer" line (the game shows it in chat). Empty = no line.
     public string JoinMessage { get; set; } = "Drift bots by Gradient Drift https://github.com/toyowheelin/gradient-drift";
 
+    // Paint the track's drift zones on the road for players with CSP (DriftZones.cs): the
+    // <track>_course_zones.csv setup writes (and its zone editor changes), as boxes of this colour
+    // (RRGGBB) with lines this wide, closed at both ends, striped every ZoneStripeSpacingMeters
+    // (twice that for a touch-and-go area). Needs <track>_course_edges.csv too.
+    public bool ShowZones { get; set; } = true;
+    public string ZoneColor { get; set; } = "F5C400";
+    public float ZoneLineWidthMeters { get; set; } = 0.3f;
+    public float ZoneStripeSpacingMeters { get; set; } = 1.6f;
+
     // Every this many seconds, a line in the server log with the time the plugin took on the
     // server's update thread: milliseconds a tick, split into the network, the sensors (rays,
     // ground and wall checks), telemetry and the tandem followers, the worst tick, and the share

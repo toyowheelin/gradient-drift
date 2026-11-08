@@ -9,9 +9,9 @@ name: build plugin
 on:
   push:
     branches: [main]
-    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', 'setup/gradientdrift_setup/pairing.py', 'tools/plugin_features.py', 'drift_rl/policy.py', 'tests/plugin/**', '.github/workflows/build-plugin.yml']
+    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', 'setup/gradientdrift_setup/pairing.py', 'setup/gradientdrift_setup/zones.py', 'drift_rl/build_zones.py', 'tools/plugin_features.py', 'drift_rl/policy.py', 'tests/plugin/**', '.github/workflows/build-plugin.yml']
   pull_request:
-    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', 'setup/gradientdrift_setup/pairing.py', 'tools/plugin_features.py', 'drift_rl/policy.py', 'tests/plugin/**', '.github/workflows/build-plugin.yml']
+    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', 'setup/gradientdrift_setup/pairing.py', 'setup/gradientdrift_setup/zones.py', 'drift_rl/build_zones.py', 'tools/plugin_features.py', 'drift_rl/policy.py', 'tests/plugin/**', '.github/workflows/build-plugin.yml']
   workflow_dispatch:
   workflow_call:       # from release.yml on a v* tag
     outputs:
@@ -71,8 +71,9 @@ jobs:
       - name: the plugin runs policies as the trainer does, and refuses what it cannot run
         # tests/plugin: the plugin's own loader and network on the shipped policy, made-up ones of
         # every shape it runs (their actions against drift_rl/policy.py's) and broken ones
+        # and the drift zones it paints (against setup's zones.paint_shapes)
         run: |
-          python3 -m pip install --quiet "numpy<2.5" numba
+          python3 -m pip install --quiet "numpy<2.5" numba pandas scipy    # pandas, scipy: the zones case (a generated course)
           python3 gradient-drift/tests/plugin/make_cases.py plugin-cases
           cp -r gradient-drift/tests/plugin AssettoServer/PluginChecks
           dotnet run --project AssettoServer/PluginChecks/PluginChecks.csproj -- "$PWD/plugin-cases"

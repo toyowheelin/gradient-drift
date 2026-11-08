@@ -3,7 +3,8 @@
 //   - a policy the plugin must run is refused, or gives other actions than the Python policy does
 //     (the trainer's and every tool's copy of the network) for the same inputs, or
 //   - a policy the plugin must refuse (broken, or needing a setting this build cannot apply) loads, or
-//   - a car-on-car push (CarContact) differs from the trainer's.
+//   - a car-on-car push (CarContact) differs from the trainer's, or
+//   - the drift zones painted for players (DriftZones) are not the shapes setup's zones.py makes.
 //
 //     dotnet run --project PluginChecks.csproj -- <cases folder>
 using System.Numerics;
@@ -190,6 +191,74 @@ if (cases.RootElement.TryGetProperty("contacts", out JsonElement contacts))
     }
     bool ok = count > 0 && worst <= 1e-3f;
     Console.WriteLine((ok ? "ok   " : "FAIL ") + $"CarContact: {count} pushes match the trainer's to within {worst:G3}");
+    if (!ok) failures++;
+}
+
+// ShowZones (DriftZones.cs): the painted frames and stripes of a generated course's zones, the same
+// as setup's zones.paint_shapes, at the AI line's heights; and a script that paints them
+if (cases.RootElement.TryGetProperty("zones", out JsonElement zoneCase))
+{
+    string track = zoneCase.GetProperty("track").GetString()!;
+    var line = zoneCase.GetProperty("line").EnumerateArray()
+        .Select(p => p.EnumerateArray().Select(v => (float)v.GetDouble()).ToArray()).ToArray();
+    var trackPoints = new SplinePoint[line.Length];
+    for (int i = 0; i < line.Length; i++)
+    {
+        trackPoints[i] = new SplinePoint
+        {
+            Id = i, Position = new Vector3(line[i][0], line[i][1], line[i][2]),
+            NextId = (i + 1) % line.Length, PreviousId = (i + line.Length - 1) % line.Length,
+            JunctionStartId = -1, JunctionEndId = -1, LeftId = -1, RightId = -1,
+        };
+    }
+    PluginData.Init(Path.Combine(folder, "zones"));
+    string before = Directory.GetCurrentDirectory();
+    Directory.SetCurrentDirectory(Path.Combine(folder, "zones"));       // the track's files sit in the server folder
+    List<DriftZones.Shape>? shapes = DriftZones.Load(track, trackPoints, (float)zoneCase.GetProperty("spacing").GetDouble());
+    Directory.SetCurrentDirectory(before);
+    var expected = zoneCase.GetProperty("shapes").EnumerateArray().ToArray();
+    string problem = "";
+    float worst = 0f;
+    if (shapes == null || shapes.Count != expected.Length)
+    {
+        problem = $"{shapes?.Count.ToString() ?? "no"} zones loaded, {expected.Length} expected";
+    }
+    else
+    {
+        for (int z = 0; z < shapes.Count && problem == ""; z++)
+        {
+            var frame = expected[z].GetProperty("frame").EnumerateArray().Select(p => p.EnumerateArray().Select(v => (float)v.GetDouble()).ToArray()).ToArray();
+            var stripes = expected[z].GetProperty("stripes").EnumerateArray().ToArray();
+            if (shapes[z].OutsideZone != expected[z].GetProperty("outside").GetBoolean()
+                || shapes[z].Frame.Length != frame.Length || shapes[z].Stripes.Length != stripes.Length)
+            {
+                problem = $"zone {z + 1}: kind, frame points ({shapes[z].Frame.Length} vs {frame.Length}) or stripes ({shapes[z].Stripes.Length} vs {stripes.Length}) differ";
+                break;
+            }
+            for (int k = 0; k < frame.Length; k++)
+            {
+                worst = MathF.Max(worst, MathF.Max(MathF.Abs(shapes[z].Frame[k].X - frame[k][0]), MathF.Abs(shapes[z].Frame[k].Z - frame[k][1])));
+            }
+            for (int k = 0; k < stripes.Length; k++)
+            {
+                var ends = stripes[k].EnumerateArray().Select(p => p.EnumerateArray().Select(v => (float)v.GetDouble()).ToArray()).ToArray();
+                (Vector3 a, Vector3 b) = shapes[z].Stripes[k];
+                worst = MathF.Max(worst, new[] { a.X - ends[0][0], a.Z - ends[0][1], b.X - ends[1][0], b.Z - ends[1][1] }.Max(d => MathF.Abs(d)));
+            }
+            float lineY = shapes[z].Frame[0].Y;
+            if (!trackPoints.Any(p => MathF.Abs(p.Position.Y - lineY) < 1e-4f))
+            {
+                problem = $"zone {z + 1}: painted at a height that is not the AI line's";
+            }
+        }
+    }
+    string script = shapes != null ? DriftZones.Script(shapes, "#F5C400", 0.3f) : "";
+    if (problem == "" && !(worst <= 0.02f))
+        problem = $"shapes differ from setup's by up to {worst:G3} m";
+    if (problem == "" && (!script.Contains("ac.TrackPaint()") || script.Split("{o=").Length - 1 != shapes!.Count))
+        problem = "the script does not paint every zone";
+    bool ok = problem == "";
+    Console.WriteLine((ok ? "ok   " : "FAIL ") + $"DriftZones: " + (ok ? $"{shapes!.Count} zones painted as setup draws them (to within {worst:G3} m), script {script.Length} characters" : problem));
     if (!ok) failures++;
 }
 

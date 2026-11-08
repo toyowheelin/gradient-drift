@@ -180,8 +180,9 @@ class ZoneEditor(QDialog):
         lay.addWidget(self.driver)
         lay.addWidget(self.line_score)
         help_text = QLabel("Click a zone to pick it, then drag its round handles along the edge to move its ends. "
-                           "Scroll to zoom; drag the empty map to move it. Zones change what the trainer pays "
-                           "for: the bots drive them only after training on this track.")
+                           "Scroll to zoom; drag the empty map to move it. The plugin paints the zones on the "
+                           "road for players once setup has copied them to the server. For the bots, zones "
+                           "change what the trainer pays for: they drive them only after training on this track.")
         help_text.setWordWrap(True)
         help_text.setForegroundRole(QPalette.PlaceholderText)
         lay.addWidget(help_text)
@@ -497,8 +498,9 @@ class ZoneEditor(QDialog):
                                 ("\n\nSetup keeps these zones when it makes the track's data again." if edited else
                                  "\n\nThese are the automatic zones, so setup places them afresh when it makes the "
                                  "track's data again.") +
-                                ' Zones change what the trainer pays for: the bots drive them after training on this '
-                                'track.')
+                                "\n\nRun setup's changes again to copy them to the server, where the plugin paints them "
+                                'for players. For the bots, zones change what the trainer pays for: they drive them '
+                                'after training on this track.')
         return True
 
     def closeEvent(self, event):

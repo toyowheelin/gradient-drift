@@ -3,6 +3,8 @@
   policies/<name>.json   the shipped policy and small made-up ones covering every network shape the
                          plugin runs (two outputs, a residual chase network, a history block, deeper
                          layers), plus broken or unrunnable files the plugin must refuse
+  zones/                 a generated course's course edges and drift zones (DriftZones.cs paints
+                         them), with the shapes setup's zones.paint_shapes makes of them in cases.json
   cases.json             for each policy: whether the plugin must load it or refuse it, and for the
                          ones it loads, observations with the actions the Python policy (drift_rl/
                          policy.py, what the trainer and every tool here run) gives for them
@@ -128,6 +130,28 @@ def contact_cases(n=48, seed=5):
     return out
 
 
+def zone_case(out):
+    """A generated course (one with outside zones and touch-and-go areas) in out/zones/: its course
+    edges, zones and AI line heights, and the painted shapes Python makes of them."""
+    sys.path.insert(0, os.path.join(ROOT, 'setup'))
+    import generate_track as gt
+    import line_tools as lt
+    import track_files as tf
+    from gradientdrift_setup import zones as Z
+    tracks = os.path.join(out, 'zone_tracks')
+    name = gt.ensure(tracks, 1, 1)
+    folder = os.path.join(out, 'zones')
+    os.makedirs(folder, exist_ok=True)
+    for kind in ('course_edges', 'course_zones'):
+        shutil.copyfile(tf.path(tracks, kind, name), os.path.join(folder, tf.name(kind, name)))
+    line, _ = lt.read_line(tf.path(tracks, 'fast_lane', name))
+    course, zones, _ = Z.load(tracks, name)
+    shapes = Z.paint_shapes(course, zones, 1.6)
+    shutil.rmtree(tracks)
+    return {'track': name, 'spacing': 1.6, 'line': line.tolist(),
+            'shapes': [{'outside': bool(o), 'frame': f.tolist(), 'stripes': st.tolist()} for o, f, st in shapes]}
+
+
 def main():
     out = sys.argv[1]
     folder = os.path.join(out, 'policies')
@@ -200,6 +224,7 @@ def main():
     cases['policies'].append({'file': 'policies/not_json.json', 'expect': 'refused', 'why': 'a cut-off file'})
 
     cases['contacts'] = contact_cases()
+    cases['zones'] = zone_case(out)
     with open(os.path.join(out, 'cases.json'), 'w') as f:
         json.dump(cases, f)
     loads = sum(c['expect'] == 'loads' for c in cases['policies'])

@@ -246,8 +246,11 @@ gradient-drift-setup zones "D:\servers\my server" score ai_car_monitor_20261108.
 gradient-drift-setup zones "D:\servers\my server" picture zones.svg ai_car_monitor_20261108.csv.gz
 ```
 
-Zones change what the trainer pays for. The plugin does not read them, so the bots drive a
-track's new zones only after a policy is trained on that track with them.
+Setup copies the zones to the server with the track's other files (run it again after changing
+them), and the plugin paints them on the road for players with Custom Shaders Patch: yellow boxes
+closed at both ends, striped inside (`ShowZones`, `ZoneColor` and the rest in the plugin's
+[SETTINGS.md](../GradientDriftPlugin/SETTINGS.md)). For the bots, zones change what the trainer pays
+for: they drive a track's new zones only after a policy is trained on that track with them.
 
 ## A server on a hosting plan (or any machine without the game)
 

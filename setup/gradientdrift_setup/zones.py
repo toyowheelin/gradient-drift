@@ -4,8 +4,9 @@ places them from the course's shape when it makes a track's data; here they are 
 scored against a recorded run and saved. The zone editor (zones_gui.py) and the `zones` command
 (cli.py) are two faces of this file.
 
-Zones only change what the trainer pays for: the plugin does not read them (yet), and a policy
-drives differently on a track only once it has been trained on that track's zones.
+The plugin paints the zones on the road for players (GradientDriftPlugin/DriftZones.cs, ShowZones;
+paint_shapes below is the same geometry). For the bots they only change what the trainer pays for:
+a policy drives differently on a track only once it has been trained on that track's zones.
 
 A zone is a dict as build_zones.place_zones makes it: kind ('outside zone' or 'touch and go'),
 side (+1 the left edge, -1 the right edge, looking along the direction of travel), first and last
@@ -198,6 +199,33 @@ def describe(course, zone):
             f"(points {zone['first']} - {zone['last']}, {len(pts)}), {zone['length']:.0f} m long{corner}")
 
 
+# --- painted in game -----------------------------------------------------------------------------
+
+STRIPE_SLANT_M = 2.1        # GradientDriftPlugin/DriftZones.cs: the same numbers
+STRIPE_MARGIN_M = 0.6
+
+
+def paint_shapes(course, zones, stripe_spacing_m=1.6):
+    """What the plugin paints on the road for each zone (DriftZones.Build, the same geometry):
+    (outside zone?, frame (k, 2): its outer edge forward then its inner side back, stripes (s, 2, 2):
+    each from the outer edge to the inner side STRIPE_SLANT_M further on)."""
+    out = []
+    for z in zones:
+        outer, inner = course.zone_outline(z)
+        along = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(outer, axis=0), axis=1))]
+        spacing = max(0.3, stripe_spacing_m) * (1.0 if z['kind'] == KINDS[0] else 2.0)
+        stripes = []
+        t = STRIPE_MARGIN_M
+        while t + STRIPE_SLANT_M <= along[-1] - STRIPE_MARGIN_M + 1e-4:
+            a = np.array([np.interp(t, along, outer[:, 0]), np.interp(t, along, outer[:, 1])])
+            u = t + STRIPE_SLANT_M
+            b = np.array([np.interp(u, along, inner[:, 0]), np.interp(u, along, inner[:, 1])])
+            stripes.append((a, b))
+            t += spacing
+        out.append((z['kind'] == KINDS[0], np.r_[outer, inner[::-1]], np.array(stripes).reshape(-1, 2, 2)))
+    return out
+
+
 # --- recorded runs -----------------------------------------------------------------------------
 
 @dataclass
@@ -279,7 +307,7 @@ def line_score(rows):
 
 
 def picture(course, zones, out, run=None, title=None):
-    """A map of the course and its zones (striped yellow boxes, as they are to look in game), with a
+    """A map of the course and its zones (striped yellow boxes, as the plugin paints them), with a
     run's rear-axle path if given, saved as an SVG (any web browser opens it). Plain text, so the
     packaged setup needs nothing more to draw it."""
     from xml.sax.saxutils import escape
@@ -297,10 +325,6 @@ def picture(course, zones, out, run=None, title=None):
         return ' '.join(xy(p) for p in arr)
     svg = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w:.0f}" height="{h + 40:.0f}" '
            f'viewBox="0 -40 {w:.0f} {h + 40:.0f}" font-family="sans-serif">',
-           '<defs><pattern id="oz" width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
-           '<rect width="3.5" height="8" fill="#f5c400"/></pattern>'
-           '<pattern id="tg" width="16" height="16" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
-           '<rect width="3" height="16" fill="#f5c400" fill-opacity="0.7"/></pattern></defs>',
            f'<rect x="0" y="-40" width="{w:.0f}" height="{h + 40:.0f}" fill="#6f8f55"/>',
            f'<polygon points="{poly(np.r_[course.pos, course.neg[::-1]])}" fill="#3b3b3d"/>',
            f'<polygon points="{poly([course.pos[-1], course.pos[0], course.neg[0], course.neg[-1]])}" fill="#3b3b3d"/>']
@@ -314,12 +338,15 @@ def picture(course, zones, out, run=None, title=None):
         d = (b - a) / max(np.linalg.norm(b - a), 1e-6)
         nrm = np.array([-d[1], d[0]])
         svg.append(f'<polygon points="{poly([a + 4.0 * d, a - 1.5 * nrm, a + 1.5 * nrm])}" fill="#9a9a9a"/>')
-    for i, z in enumerate(zones, 1):
+    width = max(1.5, 0.3 * scale)           # the frame as the plugin paints it (0.3 m), at least 1.5 px
+    for i, (z, (_, frame, stripes)) in enumerate(zip(zones, paint_shapes(course, zones)), 1):
         outer, inner = course.zone_outline(z)
-        fill = 'url(#oz)' if z['kind'] == KINDS[0] else 'url(#tg)'
-        svg.append(f'<polygon points="{poly(np.r_[outer, inner[::-1]])}" fill="{fill}" stroke="#f5c400" '
-                   'stroke-width="2.5" stroke-linejoin="miter"/>')
-        svg.append(f'<polyline points="{poly(outer)}" fill="none" stroke="#f5c400" stroke-width="5"/>')
+        opacity = 1.0 if z['kind'] == KINDS[0] else 0.75
+        svg.append(f'<polygon points="{poly(frame)}" fill="none" stroke="#f5c400" stroke-opacity="{opacity}" '
+                   f'stroke-width="{width:.1f}" stroke-linejoin="miter"/>')
+        for a, b in stripes:
+            svg.append(f'<polyline points="{poly([a, b])}" stroke="#f5c400" stroke-opacity="{opacity}" '
+                       f'stroke-width="{0.8 * width:.1f}"/>')
         mid = len(outer) // 2
         d = outer[mid] - inner[mid]
         spot = outer[mid] + (6.0 / max(np.linalg.norm(d), 1e-6)) * d
