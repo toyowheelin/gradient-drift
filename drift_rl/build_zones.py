@@ -10,7 +10,7 @@ completely the zones are filled, and anything past a zone's outer boundary is "N
 
 Where the zones go is worked out from the course's own shape (the course edges build_course.py
 wrote), nothing track-specific:
-  1. The course centreline (midway between the two edges) is cut into corners: stretches that
+  1. The course centreline (midway between the two edges, their spikes taken out: SPIKE_M) is cut into corners: stretches that
      turn one way with a radius under CORNER_RADIUS_M.
   2. Each corner gets one zone on its outside edge, by how far the corner turns:
        150 deg or more   outside zone over 30% - 90% of the corner (a long sweeper: on it early)
@@ -52,6 +52,55 @@ ZONE_RULES = [(150.0, 'outside zone', 0.30, 0.90),
               (MIN_TURN_DEG, 'touch and go', 0.70, 1.00)]
 ZONE_DEPTH_M = 3.0              # also drift_env.RewardConfig.zone_depth_m
 REAR_AXLE_BEHIND_CENTRE_M = 1.3
+# Where nothing marks the course (no cones or stacks) its edge is the paving up to the first wall,
+# so on a corner with open run-off the edge jumps out 10-25 m for a few points, and a glitch in the
+# mesh can pull one point in or out. Zones are placed, drawn, painted and scored on an edge whose
+# width each side stays within SPIKE_M of the median over SPIKE_WINDOW points around it
+# (GradientDriftPlugin/DriftZones.cs does the same). The trainer's own course inputs are unchanged.
+SPIKE_WINDOW = 15
+SPIKE_M = 3.0
+
+
+def smooth_widths(half):
+    """One side's widths (m from the line, per point round the lap) held within SPIKE_M of their
+    running median over SPIKE_WINDOW points."""
+    half = np.asarray(half, dtype=float)
+    n = len(half)
+    k = min(SPIKE_WINDOW // 2, (n - 1) // 2)
+    if k < 1:
+        return half.copy()
+    idx = (np.arange(n)[:, None] + np.arange(-k, k + 1)[None, :]) % n
+    med = np.median(half[idx], axis=1)
+    return np.clip(half, med - SPIKE_M, med + SPIKE_M)
+
+
+def smooth_edges(edges):
+    """The course-edges table with its spikes taken out (see SPIKE_M): a point whose width is
+    clipped has that edge moved along the same cross-track line. Other rows are left exactly as they
+    are. A table without the width columns, or one already smoothed, comes back unchanged."""
+    if edges.attrs.get('smoothed') or not {'PositiveSideM', 'NegativeSideM'} <= set(edges.columns):
+        return edges
+    out = edges.copy()
+    out.attrs['smoothed'] = True
+    p_m, n_m = edges.PositiveSideM.to_numpy(float), edges.NegativeSideM.to_numpy(float)
+    new_p, new_n = smooth_widths(p_m), smooth_widths(n_m)
+    changed = (new_p != p_m) | (new_n != n_m)
+    if not changed.any():
+        return out
+    pos = edges[['PositiveEdgeX', 'PositiveEdgeZ']].to_numpy(float)
+    neg = edges[['NegativeEdgeX', 'NegativeEdgeZ']].to_numpy(float)
+    across = pos - neg
+    width = np.linalg.norm(across, axis=1)
+    ok = changed & (width > 1e-6) & (p_m + n_m > 1e-6)
+    unit = across / np.maximum(width, 1e-6)[:, None]
+    line = pos - across * (p_m / np.maximum(p_m + n_m, 1e-6))[:, None]
+    pos_new = line + unit * new_p[:, None]
+    neg_new = line - unit * new_n[:, None]
+    out.loc[ok, 'PositiveSideM'] = new_p[ok]
+    out.loc[ok, 'NegativeSideM'] = new_n[ok]
+    out.loc[ok, ['PositiveEdgeX', 'PositiveEdgeZ']] = pos_new[ok]
+    out.loc[ok, ['NegativeEdgeX', 'NegativeEdgeZ']] = neg_new[ok]
+    return out
 
 
 def find_corners(mid):
@@ -89,7 +138,8 @@ def find_corners(mid):
 
 
 def place_zones(edges):
-    """edges: the course-edges table. Returns a list of zone dicts."""
+    """edges: the course-edges table (its spikes taken out first). Returns a list of zone dicts."""
+    edges = smooth_edges(edges)
     pos = edges[['PositiveEdgeX', 'PositiveEdgeZ']].to_numpy()
     neg = edges[['NegativeEdgeX', 'NegativeEdgeZ']].to_numpy()
     n = len(pos)
@@ -161,7 +211,9 @@ ZONE_KINDS = ('outside zone', 'touch and go')
 
 
 def edge_arrays(edges):
-    """The course's positive (left) and negative (right) edges, (n, 2) each."""
+    """The course's positive (left) and negative (right) edges, (n, 2) each, as zones are drawn on
+    them (spikes taken out)."""
+    edges = smooth_edges(edges)
     return (edges[['PositiveEdgeX', 'PositiveEdgeZ']].to_numpy(dtype=float),
             edges[['NegativeEdgeX', 'NegativeEdgeZ']].to_numpy(dtype=float))
 
@@ -236,6 +288,7 @@ def rear_depth(x, z, heading, edges, side):
     """For car positions and headings: nearest spline point, and how far inside that point's zone
     edge the rear axle is (m; negative = past the edge). NaN where the point has no zone."""
     from scipy.spatial import cKDTree
+    edges = smooth_edges(edges)
     pos = edges[['PositiveEdgeX', 'PositiveEdgeZ']].to_numpy()
     neg = edges[['NegativeEdgeX', 'NegativeEdgeZ']].to_numpy()
     line = np.stack([pos[:, 0] - (pos[:, 0] - neg[:, 0]) * edges.PositiveSideM / (edges.PositiveSideM + edges.NegativeSideM),
@@ -298,7 +351,7 @@ def main(argv=None):
     args = ap.parse_args(argv)
     data = args.tracks
     track = args.track or tf.TRACK
-    edges = pd.read_csv(tf.path(data, 'course_edges', track))
+    edges = smooth_edges(pd.read_csv(tf.path(data, 'course_edges', track)))
     out = tf.writable_path(data, 'course_zones', track)
     zones, edited = read_zones(out, edges) if os.path.exists(out) else ([], False)
     if edited and not args.replace:

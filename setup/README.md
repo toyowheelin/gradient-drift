@@ -220,7 +220,10 @@ Several server folders can be given at once (not with `export`).
 Each track has drift zones: boxes along the outside edge of its corners where the trainer pays a
 bot to put the rear of the car while it slides (Formula Drift's outside zones, and shorter
 touch-and-go areas). Setup places them from the course's shape when it makes the track's data
-(`<track>_course_zones.csv` in the track files folder). To see or change them, click **Zones...**
+(`<track>_course_zones.csv` in the track files folder). Where nothing marks the course, its edge is
+the paving up to the first wall, so on an open corner it can jump out across the run-off for a few
+points; zones are placed, drawn and painted on an edge with those spikes taken out (each side held
+within 3 m of its neighbours' median). To see or change them, click **Zones...**
 on the last page, or run `gradient-drift-setup zones <server folder or track>`:
 
 - The map shows the course, the direction of travel and the zones as yellow striped boxes. Click a

@@ -132,7 +132,9 @@ def contact_cases(n=48, seed=5):
 
 def zone_case(out):
     """A generated course (one with outside zones and touch-and-go areas) in out/zones/: its course
-    edges, zones and AI line heights, and the painted shapes Python makes of them."""
+    edges, zones and AI line heights, and the painted shapes Python makes of them. The edges get
+    spikes like an open corner's run-off (and a one-point dip) inside the zones, which both sides
+    take out the same way before painting."""
     sys.path.insert(0, os.path.join(ROOT, 'setup'))
     import generate_track as gt
     import line_tools as lt
@@ -140,6 +142,22 @@ def zone_case(out):
     from gradientdrift_setup import zones as Z
     tracks = os.path.join(out, 'zone_tracks')
     name = gt.ensure(tracks, 1, 1)
+    import pandas as pd
+    edges_path = tf.path(tracks, 'course_edges', name)
+    edges = pd.read_csv(edges_path)
+    _, placed, _ = Z.load(tracks, name)
+    for z, change in ((placed[0], 12.0), (placed[-1], -4.0)):
+        mid = int(z['points'][len(z['points']) // 2])
+        side = 'Positive' if z['side'] > 0 else 'Negative'
+        other = 'Negative' if z['side'] > 0 else 'Positive'
+        for i in ([mid - 1, mid, mid + 1] if change > 0 else [mid]):
+            i %= len(edges)
+            e = edges.loc[i, [f'{side}EdgeX', f'{side}EdgeZ']].to_numpy(float)
+            o = edges.loc[i, [f'{other}EdgeX', f'{other}EdgeZ']].to_numpy(float)
+            out_dir = (e - o) / np.linalg.norm(e - o)
+            edges.loc[i, [f'{side}EdgeX', f'{side}EdgeZ']] = e + out_dir * change
+            edges.loc[i, f'{side}SideM'] += change
+    edges.to_csv(edges_path, index=False, float_format='%.3f')
     folder = os.path.join(out, 'zones')
     os.makedirs(folder, exist_ok=True)
     for kind in ('course_edges', 'course_zones'):

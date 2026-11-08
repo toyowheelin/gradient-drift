@@ -10,7 +10,8 @@ namespace GradientDriftPlugin;
 // edge of the corners, closed at both ends, with diagonal stripes inside (sparser for a
 // touch-and-go area). The zones are the ones the trainer pays the bots to fill: <track>_course_zones.csv
 // (drift_rl/build_zones.py, or setup's zone editor) on <track>_course_edges.csv's points, which are
-// the AI line's, so each point's height is the AI line's there.
+// the AI line's, so each point's height is the AI line's there. Spikes in the edges (open run-off
+// where nothing marks the course) are taken out first, as build_zones does.
 //
 // The plugin sends players a CSP online script (AssettoServer's CSPServerScriptProvider) that
 // paints them with CSP's ac.TrackPaint, which lays the lines on the track's surface. Players
@@ -23,6 +24,11 @@ public static class DriftZones
     public const float StripeSlantM = 2.1f;  // a stripe ends this far along the inner side from where it starts
     public const float StripeMarginM = 0.6f; // no stripe closer than this to either end bar
     public const string ScriptName = "gradientdrift_zones.lua";
+    // build_zones.SPIKE_WINDOW / SPIKE_M: where nothing marks the course its edge is the paving up to
+    // the first wall, so it jumps out across an open corner's run-off for a few points. Each side's
+    // width is held within SpikeM of its running median over SpikeWindow points before painting.
+    public const int SpikeWindow = 15;
+    public const float SpikeM = 3f;
 
     public sealed record Shape(bool OutsideZone, Vector3[] Frame, (Vector3 From, Vector3 To)[] Stripes);
 
@@ -40,7 +46,8 @@ public static class DriftZones
         }
         try
         {
-            List<string[]> edges = ReadTable(edgesFile, "PointId", "PositiveEdgeX", "PositiveEdgeZ", "NegativeEdgeX", "NegativeEdgeZ");
+            List<string[]> edges = ReadTable(edgesFile, "PointId", "PositiveEdgeX", "PositiveEdgeZ", "NegativeEdgeX", "NegativeEdgeZ",
+                "PositiveSideM", "NegativeSideM");
             List<string[]> zones = ReadTable(zonesFile, "Kind", "Side", "FirstPointId", "LastPointId");
             if (edges.Count != points.Length)
             {
@@ -51,12 +58,17 @@ public static class DriftZones
             int n = edges.Count;
             var positive = new Vector3[n];
             var negative = new Vector3[n];
+            var positiveM = new float[n];
+            var negativeM = new float[n];
             for (int i = 0; i < n; i++)
             {
                 float y = points[i].Position.Y;
                 positive[i] = new Vector3(Number(edges[i][1]), y, Number(edges[i][2]));
                 negative[i] = new Vector3(Number(edges[i][3]), y, Number(edges[i][4]));
+                positiveM[i] = Number(edges[i][5]);
+                negativeM[i] = Number(edges[i][6]);
             }
+            TakeOutSpikes(positive, negative, positiveM, negativeM);
             var shapes = new List<Shape>();
             foreach (string[] z in zones)
             {
@@ -117,6 +129,50 @@ public static class DriftZones
             stripes.Add((At(outer, along, t), At(inner, along, t + StripeSlantM)));
         }
         return new Shape(outsideZone, frame, stripes.ToArray());
+    }
+
+    // build_zones.smooth_edges: a point whose width either side is clipped (SmoothWidths) has that
+    // edge moved along its cross-track line; the other points are left as they are.
+    public static void TakeOutSpikes(Vector3[] positive, Vector3[] negative, float[] positiveM, float[] negativeM)
+    {
+        float[] newPositive = SmoothWidths(positiveM);
+        float[] newNegative = SmoothWidths(negativeM);
+        for (int i = 0; i < positive.Length; i++)
+        {
+            if (newPositive[i] == positiveM[i] && newNegative[i] == negativeM[i]) continue;
+            var across = new Vector2(positive[i].X - negative[i].X, positive[i].Z - negative[i].Z);
+            float width = across.Length();
+            float sum = positiveM[i] + negativeM[i];
+            if (width <= 1e-6f || sum <= 1e-6f) continue;
+            Vector2 unit = across / width;
+            Vector2 line = new Vector2(positive[i].X, positive[i].Z) - across * (positiveM[i] / sum);
+            Vector2 p = line + unit * newPositive[i];
+            Vector2 q = line - unit * newNegative[i];
+            positive[i] = new Vector3(p.X, positive[i].Y, p.Y);
+            negative[i] = new Vector3(q.X, negative[i].Y, q.Y);
+        }
+    }
+
+    // build_zones.smooth_widths: one side's widths held within SpikeM of their running median over
+    // SpikeWindow points round the lap.
+    public static float[] SmoothWidths(float[] half)
+    {
+        int n = half.Length;
+        int k = Math.Min(SpikeWindow / 2, (n - 1) / 2);
+        var result = (float[])half.Clone();
+        if (k < 1) return result;
+        var window = new float[2 * k + 1];
+        for (int i = 0; i < n; i++)
+        {
+            for (int j = -k; j <= k; j++)
+            {
+                window[j + k] = half[Mod(i + j, n)];
+            }
+            Array.Sort(window);
+            float median = window[k];
+            result[i] = Math.Clamp(half[i], median - SpikeM, median + SpikeM);
+        }
+        return result;
     }
 
     // The CSP online script that paints the shapes. colorHex: RRGGBB (a leading # is fine).

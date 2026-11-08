@@ -179,3 +179,28 @@ def test_paint_shapes(track):
     for a, b in s1:                                   # each stripe runs from the outer edge to 3 m in
         assert off(outer, a) < 0.01 and off(inner, b) < 0.01
         assert 2.0 < np.hypot(*(a - b)) < 4.5
+
+
+def test_spikes_taken_out(tracks_dir):
+    """An edge that jumps out across open run-off for a few points (or dips in at one) is held near
+    its neighbours before zones are placed, drawn, painted and scored; a clean course is untouched."""
+    import build_zones as bz
+    import generate_track as gt
+    import track_files as tf
+    for seed, k in COURSES:                       # the generated courses: nothing to take out
+        edges = pd.read_csv(tf.path(tracks_dir, 'course_edges', gt.track_name(seed, k)))
+        assert bz.smooth_edges(edges).equals(edges)
+    edges = pd.read_csv(tf.path(tracks_dir, 'course_edges', gt.track_name(*COURSES[0])))
+    spiked = edges.copy()
+    pos, neg = bz.edge_arrays(edges)
+    out = (pos - neg) / np.linalg.norm(pos - neg, axis=1)[:, None]
+    for i, change in ((50, 15.0), (51, 20.0), (52, 15.0), (200, -4.0)):
+        spiked.loc[i, ['PositiveEdgeX', 'PositiveEdgeZ']] = pos[i] + out[i] * change
+        spiked.loc[i, 'PositiveSideM'] += change
+    smooth = bz.smooth_edges(spiked)
+    assert smooth.attrs['smoothed'] and bz.smooth_edges(smooth) is smooth
+    p_new, _ = bz.edge_arrays(spiked)
+    assert np.abs(p_new - pos).max() < bz.SPIKE_M + 0.01            # back within 3 m of where it was
+    assert np.allclose(np.delete(p_new, [50, 51, 52, 200], 0), np.delete(pos, [50, 51, 52, 200], 0))
+    assert [(z['side'], z['first'], z['last']) for z in bz.place_zones(spiked)] == \
+           [(z['side'], z['first'], z['last']) for z in bz.place_zones(edges)]
