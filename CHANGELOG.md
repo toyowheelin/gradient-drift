@@ -7,6 +7,11 @@ when releasing.
 
 ## Unreleased
 
+- AI Car Monitor (`tools/ai_car_monitor.py`) records about 15 times less: every car 20 times a
+  second (was every frame), only the values the game really sends for another player's car (the
+  always-zero columns are gone), written straight to `.csv.gz`. A full server is ~1 MB a minute,
+  was ~15 MB. The crowd tools read the new files, and a recording cut short by a crash reads up
+  to its last few seconds.
 - Bots drift Klutch Kickers at the public drivers' pace: the pace reference (`pace_model 4`) is
   scaled where public drivers have been recorded (`drift_rl/crowd_fit.py` on AI Car Monitor
   recordings). Klutch Kickers goes up 9%; Drift Playground and every other track are unchanged.

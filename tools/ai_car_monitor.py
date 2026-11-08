@@ -1,7 +1,7 @@
 """
 AI Car Monitor - an in-game Assetto Corsa app that logs what this client sees of every car on
 the server (bots included, and optionally the player's own): position, the four tire contact
-points, and whatever the game's Python API will give for the car's motion and tires. Each row
+points, speed, pedals, gear, rpm, steering, velocity and whether the rear wheels spin. Each row
 carries the car's index on this client, its driver name and its model.
 
 Cars are not picked by number: the game numbers them on each client with the player as 0 and the
@@ -10,10 +10,13 @@ others shifted around the player's own slot, so a bot's index is not its server 
 
 Install: copy this file to  assettocorsa/apps/python/AI Car Monitor/AI Car Monitor.py  and turn
 the app on in the game. Press Record to start, Stop to finish. Each recording is written as it
-goes to  Documents/Assetto Corsa/telemetry_exports/ai_car_monitor_<date>_<time>.csv.
+goes to  Documents/Assetto Corsa/telemetry_exports/ai_car_monitor_<date>_<time>.csv.gz
+(a plain .csv if the game's Python has no gzip). pandas reads either directly.
 
-The game returns zero for many values of a remote car, so a zero here does not mean a client
-never got it.
+Every car is sampled at SAMPLE_HZ (20 a second), all cars at the same instant, whatever the frame
+rate. Only the values the game really sends for a remote car are logged: the rest (local
+velocities, tyre slip and angle, loads, suspension, radii, CG height) came back as zero or one
+constant for every remote car, so they were dropped. A full server records ~1 MB a minute.
 """
 import ac
 import acsys
@@ -21,26 +24,29 @@ import csv
 import os
 import time
 
+try:
+    import gzip
+except Exception:          # some game installs ship a cut-down Python
+    gzip = None
+
 PLAYER_CAR_ID = 0        # the game's index for this client's own car
 LOG_PLAYER_CAR = True    # the player's car in the same columns, rows told apart by CarId
-DECIMALS = 4
+SAMPLE_HZ = 20.0         # samples a second for every car (the frame rate caps it)
+FLUSH_SECONDS = 5.0      # how often the file is pushed to disk while recording
+DECIMALS = 3             # mm for positions, 0.001 for pedals and steering
 
-SCALARS = ["SpeedKMH", "RPM", "Gas", "Brake", "Gear", "Steer", "DriveTrainSpeed", "CGHeight"]
-VECTORS = ["Velocity", "LocalVelocity", "LocalAngularVelocity"]
-PER_WHEEL = ["WheelAngularSpeed", "TyreSlip", "NdSlip", "SlipAngle", "SlipRatio", "Load",
-             "SuspensionTravel", "TyreDirtyLevel", "TyreRadius", "TyreLoadedRadius"]
 WHEELS = ["FL", "FR", "RL", "RR"]
+SCALARS = ["SpeedKMH", "Gas", "Brake", "Steer"]
+SLIP_WHEELS = ["RL", "RR"]   # SlipRatio: the only per-wheel value a remote car sends (on/off)
 
 
 def columns():
     names = ["ClientTimeMs", "CarId", "DriverName", "CarModel", "X", "Y", "Z"]
     for wheel in WHEELS:
         names += ["Wheel{}_{}".format(wheel, axis) for axis in "XYZ"]
-    names += SCALARS
-    for name in VECTORS:
-        names += ["{}_{}".format(name, axis) for axis in "XYZ"]
-    for name in PER_WHEEL:
-        names += ["{}_{}".format(name, wheel) for wheel in WHEELS]
+    names += SCALARS + ["RPM", "Gear"]
+    names += ["Velocity_{}".format(axis) for axis in "XYZ"]
+    names += ["SlipRatio_{}".format(wheel) for wheel in SLIP_WHEELS]
     return names
 
 
@@ -48,8 +54,11 @@ class Recorder:
     def __init__(self):
         self.file = None
         self.writer = None
+        self.path = ""
         self.rows = 0
-        self.wheel_reads = {}   # per-wheel value -> "all" (one call, four values), "each", or None
+        self.slip_read = None   # "all" (one call, four values), "each", or None
+        self.next_sample = 0.0
+        self.next_flush = 0.0
 
     @property
     def active(self):
@@ -59,71 +68,87 @@ class Recorder:
         folder = os.path.join(os.path.expanduser("~"), "Documents", "Assetto Corsa", "telemetry_exports")
         if not os.path.isdir(folder):
             os.makedirs(folder)
-        path = os.path.join(folder, "ai_car_monitor_{}.csv".format(time.strftime("%Y%m%d_%H%M%S")))
-        self.file = open(path, "w", newline="")
+        base = os.path.join(folder, "ai_car_monitor_{}.csv".format(time.strftime("%Y%m%d_%H%M%S")))
+        self.file = None
+        if gzip is not None:
+            try:
+                self.file = gzip.open(base + ".gz", "wt", newline="")
+                self.path = base + ".gz"
+            except Exception:
+                self.file = None
+        if self.file is None:
+            self.file = open(base, "w", newline="")
+            self.path = base
         self.writer = csv.writer(self.file)
         self.writer.writerow(columns())
         self.rows = 0
-        self.wheel_reads = {name: self.how_to_read(name) for name in PER_WHEEL}
-        ac.log("AI Car Monitor: writing {}".format(path))
+        self.slip_read = how_to_read("SlipRatio")
+        self.next_sample = 0.0
+        self.next_flush = time.time() + FLUSH_SECONDS
+        ac.log("AI Car Monitor: writing {}".format(self.path))
 
     def stop(self):
         if self.file is not None:
-            self.file.close()
-            ac.log("AI Car Monitor: {} rows written".format(self.rows))
+            self.file.close()   # a .gz file is only whole once closed (a crash leaves it readable up to the last flush)
+            ac.log("AI Car Monitor: {} rows written to {}".format(self.rows, self.path))
         self.file = None
         self.writer = None
 
-    def how_to_read(self, name):
-        key = getattr(acsys.CS, name, None)
-        if key is None:
-            return None
-        try:
-            if len(list(ac.getCarState(PLAYER_CAR_ID, key))) == 4:
-                return "all"
-        except Exception:
-            pass
-        try:
-            float(ac.getCarState(PLAYER_CAR_ID, key, acsys.WHEELS.FL))
-            return "each"
-        except Exception:
-            return None
-
     def sample(self, car_id, now_ms):
         row = [now_ms, car_id, ac.getDriverName(car_id), ac.getCarName(car_id)] \
-            + list(ac.getCarState(car_id, acsys.CS.WorldPosition))
+            + rounded(ac.getCarState(car_id, acsys.CS.WorldPosition))
         for wheel in (acsys.WHEELS.FL, acsys.WHEELS.FR, acsys.WHEELS.RL, acsys.WHEELS.RR):
-            row += list(ac.getCarState(car_id, acsys.CS.TyreContactPoint, wheel))
+            row += rounded(ac.getCarState(car_id, acsys.CS.TyreContactPoint, wheel))
         for name in SCALARS:
             row.append(number(lambda: ac.getCarState(car_id, getattr(acsys.CS, name))))
-        for name in VECTORS:
-            row += numbers(lambda: ac.getCarState(car_id, getattr(acsys.CS, name)), 3)
-        for name in PER_WHEEL:
-            how = self.wheel_reads.get(name)
-            if how == "all":
-                row += numbers(lambda: ac.getCarState(car_id, getattr(acsys.CS, name)), 4)
-            elif how == "each":
-                row += [number(lambda w=w: ac.getCarState(car_id, getattr(acsys.CS, name), w))
-                        for w in (acsys.WHEELS.FL, acsys.WHEELS.FR, acsys.WHEELS.RL, acsys.WHEELS.RR)]
-            else:
-                row += [""] * 4
+        row.append(number(lambda: ac.getCarState(car_id, acsys.CS.RPM), 0))
+        row.append(number(lambda: ac.getCarState(car_id, acsys.CS.Gear), 0))
+        try:
+            row += rounded(ac.getCarState(car_id, acsys.CS.Velocity))
+        except Exception:
+            row += ["", "", ""]
+        if self.slip_read == "all":
+            try:
+                values = list(ac.getCarState(car_id, acsys.CS.SlipRatio))
+                row += [round(float(values[2]), DECIMALS), round(float(values[3]), DECIMALS)]
+            except Exception:
+                row += ["", ""]
+        elif self.slip_read == "each":
+            row += [number(lambda w=w: ac.getCarState(car_id, acsys.CS.SlipRatio, w))
+                    for w in (acsys.WHEELS.RL, acsys.WHEELS.RR)]
+        else:
+            row += ["", ""]
         self.writer.writerow(row)
         self.rows += 1
 
 
-def number(read):
+def how_to_read(name):
+    """How the game hands out a per-wheel value: all four in one call, or one wheel per call."""
+    key = getattr(acsys.CS, name, None)
+    if key is None:
+        return None
     try:
-        return round(float(read()), DECIMALS)
+        if len(list(ac.getCarState(PLAYER_CAR_ID, key))) == 4:
+            return "all"
+    except Exception:
+        pass
+    try:
+        float(ac.getCarState(PLAYER_CAR_ID, key, acsys.WHEELS.FL))
+        return "each"
+    except Exception:
+        return None
+
+
+def rounded(values):
+    return [round(float(v), DECIMALS) for v in values]
+
+
+def number(read, decimals=DECIMALS):
+    try:
+        value = round(float(read()), decimals)
+        return int(value) if decimals == 0 else value
     except Exception:
         return ""
-
-
-def numbers(read, count):
-    try:
-        values = [round(float(v), DECIMALS) for v in read()]
-    except Exception:
-        return [""] * count
-    return values if len(values) == count else [""] * count
 
 
 recorder = Recorder()
@@ -159,7 +184,15 @@ def acMain(ac_version):
 def acUpdate(delta_t):
     if not recorder.active:
         return
-    now_ms = int(time.time() * 1000)
+    now = time.time()
+    if now < recorder.next_sample:
+        return
+    # the next sample is due one step after this one was due, so a frame rate that does not divide
+    # evenly still averages SAMPLE_HZ; after a stall (or the first frame) it counts from now
+    step = 1.0 / SAMPLE_HZ
+    behind = now - recorder.next_sample
+    recorder.next_sample = recorder.next_sample + step if behind < step else now + step
+    now_ms = int(now * 1000)
     for car_id in range(ac.getCarsCount()):
         if (car_id == PLAYER_CAR_ID and not LOG_PLAYER_CAR) or not ac.isConnected(car_id):
             continue
@@ -167,8 +200,9 @@ def acUpdate(delta_t):
             recorder.sample(car_id, now_ms)
         except Exception:
             pass
-    if recorder.rows % 200 == 0:
+    if now >= recorder.next_flush:
         recorder.file.flush()
+        recorder.next_flush = now + FLUSH_SECONDS
         refresh()
 
 
