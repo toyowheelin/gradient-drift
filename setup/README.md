@@ -19,6 +19,7 @@ scripts.
   AssettoServer's version.
 - **Makes a track's data when it's missing**, from the game install. It takes a few minutes: the
   track's geometry, road mesh, AI line, course and zones, the same as `drift_rl/setup_track.py`.
+  Its zone editor shows and changes the drift zones (see [Drift zones](#drift-zones)).
   For a track with no AI line of its own (or an empty one) it makes one from a recorded lap
   (`ai/fast_lane.ai.candidate`), or else down the middle of the road from the track's side files
   (`data/side_l.csv` and `side_r.csv`, which most tracks carry), and puts it in the server.
@@ -213,6 +214,40 @@ Several server folders can be given at once (not with `export`).
 | `--pace PERCENT` | how fast they drive, as a share of the track's reference speed round the lap (a policy trained with paces; lower is calmer) |
 | `--plugin FOLDER` | the plugin's files (default: the plugin download's `GradientDriftPlugin/` beside the packaged program, else the repository's build folder) |
 | `--track-data FOLDER` | the tracks' files, a folder per track (default: `tracks/` beside it, else the repository's `drift_rl/tracks`) |
+
+### Drift zones
+
+Each track has drift zones: boxes along the outside edge of its corners where the trainer pays a
+bot to put the rear of the car while it slides (Formula Drift's outside zones, and shorter
+touch-and-go areas). Setup places them from the course's shape when it makes the track's data
+(`<track>_course_zones.csv` in the track files folder). To see or change them, click **Zones...**
+on the last page, or run `gradient-drift-setup zones <server folder or track>`:
+
+- The map shows the course, the direction of travel and the zones as yellow striped boxes. Click a
+  zone, then drag its round handles along the edge to move its ends; **Draw a zone** and drag along
+  an edge for a new one; **Other edge**, **Kind**, **Delete**, **Undo**, and **Place
+  automatically** to put back setup's own.
+- **Load a recording** draws a recorded run's rear-axle path (AI Car Monitor's recording, with a
+  pick of driver, the plugin's telemetry, or the game's telemetry recorder) and scores each zone:
+  the share of the time on its stretch with the rear axle in the zone while sliding 20 degrees or
+  more, and a Formula Drift style line score out of 40. It shows where drivers really put the car.
+- **Save** keeps the old file in the track's `zone_backups` folder and marks the new one as edited,
+  so setup (and `drift_rl/build_zones.py`) keep it when they make the track's data again; a zone
+  follows the course if the course is built again. `build_zones.py --replace` places them afresh.
+
+In a terminal, the same with words: `zones <server or track> help` lists them.
+
+```
+gradient-drift-setup zones "D:\servers\my server" list
+gradient-drift-setup zones "D:\servers\my server" add right 410m 460m          # metres from the start, or point ids
+gradient-drift-setup zones "D:\servers\my server" move 3 405m 470m
+gradient-drift-setup zones "D:\servers\my server" kind 3 touch
+gradient-drift-setup zones "D:\servers\my server" score ai_car_monitor_20261108.csv.gz
+gradient-drift-setup zones "D:\servers\my server" picture zones.svg ai_car_monitor_20261108.csv.gz
+```
+
+Zones change what the trainer pays for. The plugin does not read them, so the bots drive a
+track's new zones only after a policy is trained on that track with them.
 
 ## A server on a hosting plan (or any machine without the game)
 

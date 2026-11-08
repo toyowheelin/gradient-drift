@@ -7,6 +7,14 @@ when releasing.
 
 ## Unreleased
 
+- Setup has a zone editor: **Zones...** on its last page, or `gradient-drift-setup zones <server or
+  track>`. It shows a track's drift zones as yellow striped boxes on a map of the course; drag a
+  zone's ends, draw new ones, move one to the other edge, change its kind, delete, or put back the
+  automatic ones. Load a recording (AI Car Monitor, plugin telemetry or the game's recorder) to
+  see each driver's rear-axle path and how well it fills each zone. Saved zones are marked as
+  edited and kept (with their ends following the course) when setup or `build_zones.py` makes the
+  track's data again; `--replace` places them afresh. In a terminal the same with words
+  (`zones <track> help`), and `picture` draws the map as an SVG.
 - AI Car Monitor (`tools/ai_car_monitor.py`) records about 15 times less: every car 20 times a
   second (was every frame), only the values the game really sends for another player's car (the
   always-zero columns are gone), written straight to `.csv.gz`. A full server is ~1 MB a minute,

@@ -76,7 +76,7 @@ tracks.
 | `<track>_triangles.csv.gz` | what the bot's sensors see: the walls the game collides with plus the course's markers, `python sensor_view.py --track <track>` (after `build_course.py`). Things the model shows that the car cannot hit are left out. |
 | `<track>_road_mesh.csv` | the road-mesh points the plugin reads, from the AssettoServer folder |
 | `<track>_course_edges.csv`, `<track>_course_markers.csv` | `python build_course.py` (the course's edges, from its markers where it has them) |
-| `<track>_course_zones.csv` | `python build_zones.py` (outside zones and the long-corner stretches) |
+| `<track>_course_zones.csv` | `python build_zones.py` (outside zones and the long-corner stretches); keeps zones drawn in setup's zone editor unless given `--replace` |
 | `<track>_pace_reference.csv` | made by the trainer the first time it trains the track with paces (or by the setup program, the same way, for a track the policy never trained on): how fast a reference policy drives each point flat out, which a pace of 1.0 asks for. The plugin needs it in the server folder for a policy that reads its pace error. |
 
 The files keep the track's name in theirs inside the track's folder, because they are copied to
