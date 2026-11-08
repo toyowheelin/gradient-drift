@@ -52,7 +52,7 @@ TICK_S = 0.1          # common clock the cars are compared on
 def car_tracks(path, world, steer_ratio, max_kmh, cars=None):
     """Per stretch of each car: CarId, model and samples on a TICK_S clock from the recording's
     start - time, x, z, heading, slip, speed, place along the line (unwrapped), line offset."""
-    t0 = pd.read_csv(path, usecols=['ClientTimeMs']).ClientTimeMs.min() / 1000.0
+    t0 = tg.read_monitor(path, usecols=['ClientTimeMs']).ClientTimeMs.min() / 1000.0
     y = float(np.median(world.sp_pos[:, 1]))
     lap = float(np.sum(world.sp_length))
     out = []
