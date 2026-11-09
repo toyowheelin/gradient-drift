@@ -26,15 +26,17 @@ frame) gives a lead per car, other drivers on a public server included. A remote
 values are not sent, so its heading comes from its four tire contact points instead (front axle
 middle minus rear axle middle), and the body slip is the course angle minus that heading. Each car
 is cut into stretches where it stays on the track: a sample with a value out of range, a move
-faster than --max-kmh between frames (a reset to the pits), the body turning over 0.6 rad in one
-frame (a network correction) or a gap of over a second ends one. Only stretches as long as a ghost
+faster than --max-kmh between samples (a reset to the pits), the body turning over 0.6 rad between
+samples (a network correction) or a gap of over a second ends one. Only stretches as long as a ghost
 give runs. A recording name may end in :<CarIds> (ai_car_monitor_x.csv:4,8,15) to take only
 those cars from it. A public server can run another version of the track: the median distance from the
 AI line printed for each lead shows it (a few metres is driving; tens is another layout). Driver names are read nowhere: cars are told apart by the app's
 CarId and printed with their model.
 """
 import argparse
+import io
 import os
+import zlib
 import shutil
 
 import numpy as np
@@ -46,7 +48,7 @@ import fast_sim as fs
 import track_files as tf
 
 RAW_S = 0.006       # the app's sample spacing, s (its clock is in whole milliseconds)
-CROWD_S = 0.02      # AI Car Monitor rows (one per frame, ~27 a second) resampled to this spacing
+CROWD_S = 0.02      # AI Car Monitor rows (20 a second; older recordings one per frame) resampled to this spacing
 
 
 def car_path(path, wheelbase, front_share, steer_ratio):
@@ -85,9 +87,20 @@ def car_path(path, wheelbase, front_share, steer_ratio):
                 steer=np.radians(steer_ratio * col['Steer']), pedal=col['Throttle'], brake=col['Brake'])
 
 
+def read_monitor(path, **kw):
+    """pd.read_csv for an AI Car Monitor recording, .csv or .csv.gz. A .gz the game never closed
+    (a crash) has no end marker: it is read up to its last whole row instead of refused."""
+    try:
+        return pd.read_csv(path, **kw)
+    except (EOFError, zlib.error):
+        with open(path, 'rb') as f:
+            text = zlib.decompressobj(16 + zlib.MAX_WBITS).decompress(f.read())
+        return pd.read_csv(io.BytesIO(text[:text.rfind(b'\n') + 1]), **kw)
+
+
 def is_crowd(path):
     """True for an AI Car Monitor CSV (every car, a CarId column), False for the telemetria app's."""
-    return 'CarId' in pd.read_csv(path, nrows=0).columns
+    return 'CarId' in read_monitor(path, nrows=0).columns
 
 
 def crowd_paths(path, steer_ratio, max_kmh, cars=None):
@@ -96,7 +109,7 @@ def crowd_paths(path, steer_ratio, max_kmh, cars=None):
     recording's first row (its 't' starts at 0)."""
     cols = ['ClientTimeMs', 'CarId', 'CarModel', 'X', 'Z', 'SpeedKMH', 'Gas', 'Brake', 'Steer'] + \
         [f'Wheel{w}_{a}' for w in ('FL', 'FR', 'RL', 'RR') for a in 'XZ']
-    d = pd.read_csv(path, usecols=cols)
+    d = read_monitor(path, usecols=cols)
     first_ms = d.ClientTimeMs.min()
     out = []
     for car_id, c in d.groupby('CarId'):
@@ -113,7 +126,7 @@ def crowd_paths(path, steer_ratio, max_kmh, cars=None):
         steer = np.nan_to_num(c.Steer.values)                 # some cars never send it
         step = np.hypot(np.diff(c.X.values), np.diff(c.Z.values))
         turn = np.abs(np.angle(np.exp(1j * np.diff(np.arctan2(fz, fx)))))
-        # a body turning over 0.6 rad in a frame (~17 rad/s) is a network correction, not driving
+        # a body turning over 0.6 rad between samples (12 rad/s at 20 a second) is a network correction, not driving
         fast = step / np.maximum(np.diff(t), 1e-3) * 3.6 > max_kmh
         breaks = np.r_[True, fast | (turn > 0.6) | (np.diff(t) > 1.0)] | ~good
         # stretches: good samples between breaks (a bad sample starts one, and is left out)
