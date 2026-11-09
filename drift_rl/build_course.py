@@ -84,12 +84,13 @@ FOLD_MAX_DY_M = 2.5
 # <track>_collision_material.csv.gz the edge also ends where the ground under the ray is drawn with
 # an off-track material for OFF_TRACK_RUN_M or more (a painted line or a small patch does not end
 # it). Off-track: a material with at least OFF_TRACK_GRASS_SHARE of its ground area under a key that
-# does not count as track, or whose name says sand, grass, dirt, gravel, mud or soil. A material
+# does not count as track, or whose name says sand, grass, dirt, gravel, mud, soil or cement (Klutch
+# Kickers' aprons; not concrete, which RiverSide's course crosses on a pad). A material
 # under at least LINE_MATERIAL_SHARE of the racing line's points never is (RiverSide's course is
 # gravel); kerbs, rumble strips and other tarmac stay part of the course.
 OFF_TRACK_RUN_M = 0.75
 OFF_TRACK_GRASS_SHARE = 0.5
-OFF_TRACK_NAME_WORDS = ('sand', 'grass', 'dirt', 'gravel', 'mud', 'soil')
+OFF_TRACK_NAME_WORDS = ('sand', 'grass', 'dirt', 'gravel', 'mud', 'soil', 'cement')
 LINE_MATERIAL_SHARE = 0.05
 # Markers that stand near the course but are NOT part of its edge (X, Z; matched within 1 m).
 # From the track's owner, checking course_layout.png: "the cones aren't part of the
