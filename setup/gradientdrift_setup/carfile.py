@@ -17,7 +17,7 @@ SERVER_EXTRAS = ('road_mesh.csv', 'course_edges.csv')
 
 def car_file_text(game_folder, model):
     """(the car file's JSON text, None) or (None, the reason it cannot be made)."""
-    from cars import acd_to_ini
+    from cars import acd_to_ini, collider_box
     from cars.car_numbers import car_numbers, car_param_values
     folder = game.game_path(game_folder, 'content', 'cars', model)
     if not os.path.isdir(folder):
@@ -47,9 +47,29 @@ def car_file_text(game_folder, model):
         values['_note'] = ("made by gradient-drift-setup from the game's car files; every bot drives it as a drift "
                            "car (welded diff, angle kit). PACE_SCALE 1 = not measured for this car")
         values['PACE_SCALE'] = 1.0
+        body, why = _body(folder, unpacked, collider_box)
+        if body:
+            values.update(body)
+        else:
+            values['_body'] = f"no body size ({why}): the bots' wall contact uses the axles + overhang"
         return json.dumps(values, indent=1, sort_keys=True) + '\n', None
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _body(car_folder, unpacked, collider_box):
+    """(BODY_FRONT_M / BODY_REAR_M / BODY_HALF_WIDTH_M, None) from the car's collider.kn5 and car.ini,
+    or (None, why not)."""
+    kn5 = game.game_path(car_folder, 'collider.kn5')
+    ini = os.path.join(unpacked, 'car.ini')
+    if not os.path.exists(kn5):
+        return None, 'the car has no collider.kn5'
+    try:
+        with open(ini, 'rb') as f:
+            car_ini = f.read().decode('latin-1')
+        return collider_box.body_box(kn5, car_ini), None
+    except (OSError, ValueError) as e:
+        return None, f"{e.__class__.__name__}: {e}"
 
 
 def pace_source(policy, track_data, server_folder, track, made_here=False, server_line=None):

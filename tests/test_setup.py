@@ -128,6 +128,8 @@ def world(tmp_path, tracks_dir, course_names):
     (car / 'skins' / SKIN).mkdir(parents=True)
     for name, text in CAR_FILES.items():
         (car / 'data' / name).write_text(text)
+    from test_collider_box import make_kn5
+    (car / 'collider.kn5').write_bytes(make_kn5(0.85, -2.12, 1.81))
 
     server = tmp_path / 'server'
     (server / 'cfg').mkdir(parents=True)
@@ -189,6 +191,7 @@ def test_setup_makes_a_server_ready_and_undo_puts_it_back(world):
     with open(car_file) as f:
         numbers = json.load(f)
     assert numbers['_car'] == CAR and 0.3 < numbers['PACE_SCALE'] < 3.0, numbers.get('PACE_SCALE')
+    assert numbers['BODY_FRONT_M'] == 1.81 and numbers['BODY_REAR_M'] == 2.12, 'no body size from collider.kn5'
 
     entries = open(os.path.join(server, 'cfg', 'entry_list.ini')).read()
     assert entries.count('AI=fixed') == 2 and '[CAR_2]' in entries

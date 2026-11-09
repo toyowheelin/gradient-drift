@@ -1570,9 +1570,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         Vector3 previousPosition = position;
         position += velocity * dt;
         long pushStart = PluginTiming.Now();
-        row.WallPushOutM = _configuration.CarOutlineContact
-            ? PushOutlineOutOfWalls(collision, state.Heading ?? aiState.Status.Rotation.X + MathF.PI / 2f, ref position, ref velocity)
-            : PushOutOfWalls(contactPins, aiState, ref position, ref velocity);
+        float wallHeading = state.Heading ?? aiState.Status.Rotation.X + MathF.PI / 2f;
+        row.WallPushOutM = _configuration.BodyWallContact
+            ? PushBodyOutOfWalls(collision, wallHeading, ref position, ref velocity)
+            : _configuration.CarOutlineContact
+                ? PushOutlineOutOfWalls(collision, wallHeading, ref position, ref velocity)
+                : PushOutOfWalls(contactPins, aiState, ref position, ref velocity);
         _timing.Add(PluginTiming.Part.Sensors, pushStart);
 
         // ---- 7. Ride height, attitude, and what clients are sent -----------------------------
@@ -2156,6 +2159,46 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         for (int i = 0; i < CarOutline.PointCount; i++)
         {
             (float forward, float left) = outline.Point(i);
+            float reach = MathF.Sqrt(forward * forward + left * left);
+            float angle = heading + MathF.Atan2(left, forward);
+            var direction = new Vector3(MathF.Cos(angle), 0f, MathF.Sin(angle));
+            if (!collision.Raycast(origin, direction, reach, out RaycastHit hit, wallsOnly: true)
+                || hit.Surface != SurfaceType.Wall || hit.Distance >= reach)
+            {
+                continue;
+            }
+            pushOut -= direction * (reach + _configuration.CollisionPushOutMarginMeters - hit.Distance);
+        }
+
+        if (pushOut.LengthSquared() <= 0.0001f)
+        {
+            return 0f;
+        }
+
+        position += pushOut;
+        Vector3 contactNormal = Vector3.Normalize(pushOut);
+        float velocityAlongNormal = Vector3.Dot(velocity, contactNormal);
+        if (velocityAlongNormal < 0f)
+        {
+            velocity -= contactNormal * velocityAlongNormal;
+        }
+        return pushOut.Length();
+    }
+
+    // Wall contact with BodyWallContact: a ray from the car's centre to each point round its body
+    // (CarBody, turned with its heading); a Wall triangle nearer than the point is inside the car
+    // and pushes it back along that ray by how far it is in plus the margin, then the velocity into
+    // the wall is removed (fast_sim's collision response, EXT_BODY_WALL_CONTACT). Returns the
+    // distance pushed.
+    private float PushBodyOutOfWalls(TriangleGrid collision, float heading, ref Vector3 position, ref Vector3 velocity)
+    {
+        var body = new CarBody(_car, _configuration.CarOutlineOverhangMeters, _configuration.CarOutlineSideMarginMeters);
+        var origin = new Vector3(position.X, position.Y + _configuration.ProximityPinHeightOffsetMeters, position.Z);
+        Vector3 pushOut = Vector3.Zero;
+        int count = body.PointCount;
+        for (int i = 0; i < count; i++)
+        {
+            (float forward, float left) = body.Point(i);
             float reach = MathF.Sqrt(forward * forward + left * left);
             float angle = heading + MathF.Atan2(left, forward);
             var direction = new Vector3(MathF.Cos(angle), 0f, MathF.Sin(angle));

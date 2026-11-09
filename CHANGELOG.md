@@ -34,6 +34,10 @@ when releasing.
   Content Manager / Custom Shaders Patch undo on load): its ground came out as a crumpled sheet with
   layers metres apart, and the bots climbed it into the air.
 - `FittedTireCorrection`, a policy-file setting (off by default): each axle's sideways force plus a correction fitted to Assetto Corsa recordings, so the bots' cars stop over-rotating at the end of a transition. A policy has to be trained with it before it changes anything.
+- Bots no longer put their nose or tail through guard rails. Walls now touch the car's body, sized
+  from its `collider.kn5` and checked every 0.5 m round its edge (`BodyWallContact`, on by default).
+  Before, six short pins around the direction of travel, with none straight ahead or behind, let a
+  bumper into a rail by up to a metre. Run setup again to write each car's body size into its car file.
 
 ## v0.3.1
 

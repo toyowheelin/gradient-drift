@@ -43,6 +43,11 @@ public sealed class CarSpec
     public float[]? EngineForceN;
     // This car's flat-out speed over the reference car's: a pace asks for pace x reference x this.
     public float PaceScale = 1f;
+    // The body's reach from the centre of gravity, m (BodyWallContact): forward, back, and to each
+    // side. 0 = not known (an older car file); wall contact then uses the outline's estimate.
+    public float BodyFrontM;
+    public float BodyRearM;
+    public float BodyHalfWidthM;
 
     public float MassKg => (FrontStaticLoadN + RearStaticLoadN) / 9.80665f;
 
@@ -132,6 +137,9 @@ public sealed class CarSpec
                 FrontFz0N = Get("FRONT_FZ0_N", 0f),
                 RearFz0N = Get("REAR_FZ0_N", 0f),
                 PaceScale = Get("PACE_SCALE", 1f) > 0f ? Get("PACE_SCALE", 1f) : 1f,
+                BodyFrontM = MathF.Max(0f, Get("BODY_FRONT_M", 0f)),
+                BodyRearM = MathF.Max(0f, Get("BODY_REAR_M", 0f)),
+                BodyHalfWidthM = MathF.Max(0f, Get("BODY_HALF_WIDTH_M", 0f)),
             };
             if (Get("EXT_ENGINE", 0f) > 0.5f)
             {
