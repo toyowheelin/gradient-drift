@@ -21,9 +21,11 @@ What it does:
      that side, or the edge of the paved surface or the first wall where that is nearer (read
      along three parallel rays and the middle one kept, so one crack or gap does not count). With
      the track's collision materials, paving drawn as sand or grass ends it too (OFF_TRACK_RUN_M).
+     Where the ground changes the edge is put on the boundary itself (BOUNDARY_BISECTIONS).
   4. Tidies the edge: no nearer another stretch of the line than its own point (the inside of a
      tight corner, two stretches side by side), and widening at most MAX_EDGE_SLOPE m per m along
-     the line, so open run-off reached for a point or two no longer spikes the edge out.
+     the line, so open run-off reached for a point or two no longer spikes the edge out; and, where
+     no marker sets it, smooths it into one continuous curve (smooth_edge).
 
 Output (in the track's folder, drift_rl/tracks/<track>/):
   <track>_course_edges.csv    one row per spline point: how far the course extends to
@@ -89,6 +91,17 @@ FOLD_MAX_DY_M = 2.5
 # under at least LINE_MATERIAL_SHARE of the racing line's points never is (RiverSide's course is
 # gravel); kerbs, rumble strips and other tarmac stay part of the course.
 OFF_TRACK_RUN_M = 0.75
+# Where the ground changes (a key that does not count as track, an off-track material) the edge is
+# found between the last good sample and the first bad one, BOUNDARY_BISECTIONS halvings of the
+# 0.25 m step (~2 mm): the first bad sample put it up to 0.25 m out on the apron.
+BOUNDARY_BISECTIONS = 7
+# Each point's edge is read on its own, so it stepped in and out by up to a metre from point to
+# point (kinks of 20 - 30 degrees in Klutch Kickers' zones, painted for the players to see). Where
+# paving, ground or a wall sets the edge (not markers), it is smoothed along the line: a running
+# minimum over SMOOTH_MIN_POINTS, then a running mean over SMOOTH_MEAN_POINTS (smooth_edge). It
+# moves the edge inward up to ~2 m at a notch and out by at most ~0.15 m.
+SMOOTH_MIN_POINTS = 5
+SMOOTH_MEAN_POINTS = 7
 OFF_TRACK_GRASS_SHARE = 0.5
 OFF_TRACK_NAME_WORDS = ('sand', 'grass', 'dirt', 'gravel', 'mud', 'soil', 'cement')
 LINE_MATERIAL_SHARE = 0.05
@@ -235,6 +248,18 @@ def slope_limit(width, line, slope=MAX_EDGE_SLOPE):
     return w
 
 
+def smooth_edge(width, low=SMOOTH_MIN_POINTS, mean=SMOOTH_MEAN_POINTS):
+    """The edge as one continuous curve: a running minimum over `low` points, then a centred running
+    mean over `mean`, both wrapping round the lap. The minimum keeps a narrowing, so the mean does
+    not carry the edge back out over it."""
+    w = np.asarray(width, dtype=float)
+    n = len(w)
+    lo = np.min([np.roll(w, k) for k in range(-(low // 2), low // 2 + 1)], axis=0) if n > low else w.copy()
+    if n <= mean:
+        return lo
+    return np.mean([np.roll(lo, k) for k in range(-(mean // 2), mean // 2 + 1)], axis=0)
+
+
 def off_track_materials(materials, ground_area, grass_area, line_counts, n_line):
     """The set of material names counted as off the track (see OFF_TRACK_GRASS_SHARE): `ground_area`
     and `grass_area` give each material's ground area in all and under keys that do not count as
@@ -316,18 +341,40 @@ def build(world, fs, de, materials=None):
         x0, z0 = sp[i, 0] + line.tan[i, 0] * along, sp[i, 2] + line.tan[i, 2] * along
         step = 0.25
         y = sp[i, 1]
+
+        def boundary(good, bad, is_bad):
+            """The distance between `good` and `bad` (0.25 m apart) where is_bad(x, z) starts, to ~2 mm."""
+            for _ in range(BOUNDARY_BISECTIONS):
+                mid = 0.5 * (good + bad)
+                if is_bad(x0 + nx * mid, z0 + nz * mid):
+                    bad = mid
+                else:
+                    good = mid
+            return 0.5 * (good + bad)
+
+        def off_key(px, pz):
+            return de.surface_under(world, px, y, pz) != track
+
+        def off_material(px, pz):
+            return ground_material(px, y, pz) in off_track
+
+        def strip_start(rs):
+            return boundary(rs - step, rs, off_material) if rs > 0.5 else rs
+
         run_start, run = None, 0       # the off-track drawn material run (OFF_TRACK_RUN_M)
         for d in np.arange(0.5, PAVED_EDGE_SEARCH_M + 0.01, step):
             x, z = x0 + nx * d, z0 + nz * d
             if de.surface_under(world, x, y, z) != track:
                 # an off-track strip narrower than OFF_TRACK_RUN_M against the grass is off-track too
-                return run_start if run_start is not None else d
+                if run_start is not None:
+                    return strip_start(run_start)
+                return boundary(d - step, d, off_key) if d > 0.5 else d
             if off_track:
                 if ground_material(x, y, z) in off_track:
                     run_start = d if run_start is None else run_start
                     run += 1
                     if run > run_steps:
-                        return run_start
+                        return strip_start(run_start)
                 else:
                     run_start, run = None, 0
             down, _ = fs.ground_below(x, y + 3.0, z, 12.0, *R)
@@ -336,7 +383,7 @@ def build(world, fs, de, materials=None):
             for h in WALL_PROBE_HEIGHTS_M:
                 hit, _ = fs.raycast(x, y + h, z, nx, 0.0, nz, step, *R, 2)
                 if hit >= 0:
-                    return run_start if run_start is not None else d + hit
+                    return strip_start(run_start) if run_start is not None else d + hit
         return PAVED_EDGE_SEARCH_M
 
     half = np.zeros((2, N))        # [0] = positive cross-track side, [1] = negative side
@@ -352,8 +399,9 @@ def build(world, fs, de, materials=None):
             joined = np.interp(line.arc, np.r_[s - line.lap, s, s + line.lap], np.r_[w, w, w])
         else:                      # no markers on this side: the paving (up to a wall) is the course
             joined = np.full(N, np.inf)
-        half[side] = np.maximum(slope_limit(np.minimum(joined, paved), line), MIN_HALF_WIDTH_M)
         from_marker[side] = joined <= paved
+        limited = slope_limit(np.minimum(joined, paved), line)
+        half[side] = np.maximum(np.where(from_marker[side], limited, smooth_edge(limited)), MIN_HALF_WIDTH_M)
     normal = np.c_[-line.tan[:, 2], line.tan[:, 0]]
     edge_pos = sp[:, [0, 2]] + normal * half[0][:, None]
     edge_neg = sp[:, [0, 2]] - normal * half[1][:, None]
