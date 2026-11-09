@@ -19,7 +19,8 @@ What it does:
   3. Joins up the markers on each side: the course edge at any point along the line is the
      straight-line interpolation (in distance along the line) between the neighbouring markers on
      that side, or the edge of the paved surface or the first wall where that is nearer (read
-     along three parallel rays and the middle one kept, so one crack or gap does not count).
+     along three parallel rays and the middle one kept, so one crack or gap does not count). With
+     the track's collision materials, paving drawn as sand or grass ends it too (OFF_TRACK_RUN_M).
   4. Tidies the edge: no nearer another stretch of the line than its own point (the inside of a
      tight corner, two stretches side by side), and widening at most MAX_EDGE_SLOPE m per m along
      the line, so open run-off reached for a point or two no longer spikes the edge out.
@@ -76,6 +77,20 @@ MAX_EDGE_SLOPE = 0.35
 # same reason. Line points more than FOLD_MAX_DY_M above or below do not count (a bridge).
 FOLD_TOLERANCE_M = 0.5
 FOLD_MAX_DY_M = 2.5
+# A track's builder sometimes gives the road's surface KEY (counts as track, full grip) to strips
+# drawn as sand, cement or grass beside the tarmac: on Klutch Kickers 44% of the road-keyed ground
+# is drawn with the satellite-photo ground of the grass around it, and a 1 m sand strip runs along
+# most of one side, so the edge ran 1 - 2 m past the visible tarmac. With the track's
+# <track>_collision_material.csv.gz the edge also ends where the ground under the ray is drawn with
+# an off-track material for OFF_TRACK_RUN_M or more (a painted line or a small patch does not end
+# it). Off-track: a material with at least OFF_TRACK_GRASS_SHARE of its ground area under a key that
+# does not count as track, or whose name says sand, grass, dirt, gravel, mud or soil. A material
+# under at least LINE_MATERIAL_SHARE of the racing line's points never is (RiverSide's course is
+# gravel); kerbs, rumble strips and other tarmac stay part of the course.
+OFF_TRACK_RUN_M = 0.75
+OFF_TRACK_GRASS_SHARE = 0.5
+OFF_TRACK_NAME_WORDS = ('sand', 'grass', 'dirt', 'gravel', 'mud', 'soil')
+LINE_MATERIAL_SHARE = 0.05
 # Markers that stand near the course but are NOT part of its edge (X, Z; matched within 1 m).
 # From the track's owner, checking course_layout.png: "the cones aren't part of the
 # track, just the tires in that spot" - the edge was bridging out to two cones around X 80-92,
@@ -219,7 +234,65 @@ def slope_limit(width, line, slope=MAX_EDGE_SLOPE):
     return w
 
 
-def build(world, fs, de):
+def off_track_materials(materials, ground_area, grass_area, line_counts, n_line):
+    """The set of material names counted as off the track (see OFF_TRACK_GRASS_SHARE): `ground_area`
+    and `grass_area` give each material's ground area in all and under keys that do not count as
+    track, `line_counts` how many of the racing line's `n_line` points stand on it."""
+    off = set()
+    for m in materials:
+        if line_counts.get(m, 0) >= LINE_MATERIAL_SHARE * n_line:
+            continue
+        area = ground_area.get(m, 0.0)
+        if (area > 0 and grass_area.get(m, 0.0) >= OFF_TRACK_GRASS_SHARE * area) \
+                or any(w in m.lower() for w in OFF_TRACK_NAME_WORDS):
+            off.add(m)
+    return off
+
+
+def material_lookup(world, fs, materials):
+    """(ground_material(x, y, z) -> material name or None, off-track set) from the collision rows'
+    material names (<track>_collision_material.csv.gz)."""
+    R = world.ray_arrays()
+    n0 = world.n_sensor
+    surf = world.tri_surf[n0:]
+    v = world.tri_v[n0:]
+    area = 0.5 * np.linalg.norm(np.cross(v[:, 1] - v[:, 0], v[:, 2] - v[:, 0]), axis=1)
+    ground_area, grass_area = {}, {}
+    for m, s, a in zip(materials, surf, area):
+        if s == fs.SURF_WALL:
+            continue
+        ground_area[m] = ground_area.get(m, 0.0) + a
+        if s == fs.SURF_GRASS:
+            grass_area[m] = grass_area.get(m, 0.0) + a
+
+    def ground_material(x, y, z):
+        for dx, dz in ((0.0, 0.0), (fs.CRACK_PROBE_M, 0.0), (-fs.CRACK_PROBE_M, 0.0),
+                       (0.0, fs.CRACK_PROBE_M), (0.0, -fs.CRACK_PROBE_M)):
+            ray_y, left = y + 3.0, 12.0
+            for _ in range(12):
+                d, idx = fs.raycast_index(x + dx, ray_y, z + dz, 0.0, -1.0, 0.0, left, *R, 1)
+                if d < 0.0:
+                    break
+                if world.tri_surf[idx] != fs.SURF_WALL:
+                    return materials[idx - n0]
+                ray_y -= d + 0.001
+                left -= d + 0.001
+                if left <= 0.0:
+                    break
+        return None
+
+    line_counts = {}
+    for p in world.sp_pos:
+        m = ground_material(p[0], p[1], p[2])
+        if m is not None:
+            line_counts[m] = line_counts.get(m, 0) + 1
+    off = off_track_materials(set(materials), ground_area, grass_area, line_counts, len(world.sp_pos))
+    return ground_material, off
+
+
+def build(world, fs, de, materials=None):
+    """`materials`: each collision row's material name (<track>_collision_material.csv.gz), or None
+    (the edge then ends only where the surface KEY stops counting as track, or at a wall)."""
     line = Line(world.sp_pos)
     sp, N = world.sp_pos, len(world.sp_pos)
     markers = find_markers(world, fs)
@@ -230,6 +303,8 @@ def build(world, fs, de):
     track = de.track_surface_code(world)
 
     R = world.ray_arrays()
+    ground_material, off_track = material_lookup(world, fs, materials) if materials is not None else (None, set())
+    run_steps = int(round(OFF_TRACK_RUN_M / 0.25))
 
     def paved_edge(i, sign, along=0.0):
         """How far the paving runs from the line at point i, stopping at the first wall: on a track
@@ -240,10 +315,19 @@ def build(world, fs, de):
         x0, z0 = sp[i, 0] + line.tan[i, 0] * along, sp[i, 2] + line.tan[i, 2] * along
         step = 0.25
         y = sp[i, 1]
+        run_start, run = None, 0       # the off-track drawn material run (OFF_TRACK_RUN_M)
         for d in np.arange(0.5, PAVED_EDGE_SEARCH_M + 0.01, step):
             x, z = x0 + nx * d, z0 + nz * d
             if de.surface_under(world, x, y, z) != track:
                 return d
+            if off_track:
+                if ground_material(x, y, z) in off_track:
+                    run_start = d if run_start is None else run_start
+                    run += 1
+                    if run > run_steps:
+                        return run_start
+                else:
+                    run_start, run = None, 0
             down, _ = fs.ground_below(x, y + 3.0, z, 12.0, *R)
             if down >= 0:
                 y = y + 3.0 - down
@@ -271,7 +355,8 @@ def build(world, fs, de):
     normal = np.c_[-line.tan[:, 2], line.tan[:, 0]]
     edge_pos = sp[:, [0, 2]] + normal * half[0][:, None]
     edge_neg = sp[:, [0, 2]] - normal * half[1][:, None]
-    return dict(line=line, markers=markers, half=half, from_marker=from_marker, edge_pos=edge_pos, edge_neg=edge_neg)
+    return dict(line=line, markers=markers, half=half, from_marker=from_marker, edge_pos=edge_pos, edge_neg=edge_neg,
+                off_track=off_track)
 
 
 def read_sides(folder, sp):
@@ -365,7 +450,17 @@ def main(argv=None):
     # the markers are found in what the track's model shows (sensor_view.py)
     visual = 'visual' if os.path.exists(tf.path(args.tracks, 'visual', track)) else 'triangles'
     world = fs.load_world(args.tracks, track=track, sensors=visual)
-    course = build_from_sides(world, args.sides) if args.sides else build(world, fs, de)
+    materials = None
+    material_path = tf.path(args.tracks, 'collision_material', track)
+    if not args.sides and os.path.exists(material_path):
+        import pandas as pd
+        materials = pd.read_csv(material_path, keep_default_na=False)['Material'].astype(str).tolist()
+        if len(materials) != len(world.tri_surf) - world.n_sensor:
+            print(f"WARNING: {material_path} has {len(materials)} rows, the collision file "
+                  f"{len(world.tri_surf) - world.n_sensor}: made from different track files, so the edge ignores "
+                  "how the ground is drawn (run setup_track.py again).", file=sys.stderr)
+            materials = None
+    course = build_from_sides(world, args.sides) if args.sides else build(world, fs, de, materials)
     edges, marks = write(course, args.tracks, track)
     if args.sides:
         width = course['half'][0] + course['half'][1]
@@ -386,6 +481,8 @@ def main(argv=None):
           f"{sum(1 for m in used if m['lateral'] < 0)} on the negative)")
     print(f"course width: {width.min():.1f} - {width.max():.1f} m, median {np.median(width):.1f} m; "
           f"edge set by markers on {course['from_marker'].mean():.0%} of it, by the paved edge or a wall on the rest")
+    if course.get('off_track'):
+        print(f"ground drawn as off the track ends the edge: {', '.join(sorted(course['off_track']))}")
     print(f"written: {edges}\n         {marks}")
     if args.plot:
         plot(world, course, track)
