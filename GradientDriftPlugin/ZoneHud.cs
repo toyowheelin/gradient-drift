@@ -222,7 +222,7 @@ public static class ZoneHud
           if not panel then panel = vec2(screen.x - 310, 96) end
           local k = scale
           local rows = math.min(#board, 5)
-          local size = vec2(290, 214 + (rows > 0 and 24 + rows * 20 or 0)) * k
+          local size = vec2(290, 232 + (rows > 0 and 34 + rows * 20 or 0)) * k
           local mouse = ui.mousePos()
           local over = mouse.x >= panel.x and mouse.x <= panel.x + size.x and mouse.y >= panel.y and mouse.y <= panel.y + size.y
           if ui.mouseDown(0) then
@@ -254,7 +254,7 @@ public static class ZoneHud
           T(live.zones .. ' ZONES', 11, 222, 12, grey)
 
           -- angle gauge: a half ring from 0 to 60 degrees, tier marks at 20, 30 and 45, a needle
-          local c, r = P(78, 104), 52 * k
+          local c, r = P(78, 96), 52 * k
           local function at(deg) return math.pi + math.min(deg, 60) / 60 * math.pi end
           arc(c, r, math.pi, 2 * math.pi, track, 7 * k)
           if shownAngle > 0.5 then arc(c, r, math.pi, at(shownAngle), angleColour(shownAngle), 7 * k) end
@@ -266,8 +266,8 @@ public static class ZoneHud
           local n = at(shownAngle)
           ui.drawLine(c, vec2(c.x + math.cos(n) * (r - 4 * k), c.y + math.sin(n) * (r - 4 * k)), white, 2.5 * k)
           ui.drawCircleFilled(c, 4 * k, white, 12)
-          centred(string.format('%.0f°', shownAngle), 26 * k, c.x, c.y - 34 * k, angleColour(shownAngle))
-          centred('ANGLE', 10 * k, c.x, c.y + 8 * k, grey)
+          centred(string.format('%.0f°', shownAngle), 24 * k, c.x, c.y + 6 * k, angleColour(shownAngle))
+          centred('ANGLE', 10 * k, c.x, c.y + 34 * k, grey)
 
           -- speed, right of the gauge
           T(string.format('%.0f', live.kmh), 30, 160, 54, white)
@@ -278,7 +278,7 @@ public static class ZoneHud
           T('OF PACE ' .. pct(live.ofPace), 10, 160, 114, grey)
 
           -- the zone the car is in: a fill bar and the points so far
-          local y = 136
+          local y = 154
           if live.zone > 0 then
             T('ZONE ' .. live.zone, 14, 16, y, yellow)
             T(string.format('%.0f PTS', live.points), 14, 200, y, white)
@@ -290,7 +290,7 @@ public static class ZoneHud
           end
 
           -- the run (counting up) and the player's best
-          y = 186
+          y = 204
           T('RUN', 10, 16, y, grey)
           T(live.running and string.format('%.1f', shownRun) or '-', 20, 16, y + 10, live.running and cyan or grey)
           T('BEST', 10, 120, y, grey)
@@ -299,7 +299,7 @@ public static class ZoneHud
 
           -- the server's top five
           if rows > 0 then
-            y = 222
+            y = 240
             ui.drawLine(P(16, y), P(274, y), track, 1)
             T('SERVER TOP', 10, 16, y + 6, yellow)
             for i = 1, rows do
