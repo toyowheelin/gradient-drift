@@ -77,3 +77,22 @@ def test_off_track_materials():
     off = bc.off_track_materials(mats, ground, grass, line, 100)
     # drawn like the grass around it, or named as run-off or an apron; the line's own gravel and the kerb are course
     assert off == {'Background', 'Sand02AC', 'Cement004'}
+
+
+def test_smooth_edge_removes_a_notch_and_wraps():
+    w = np.full(100, 6.0)
+    w[40:42] = 8.0                      # a notch out onto the apron, two points wide
+    w[0] = 7.5                          # one at the lap's seam
+    out = bc.smooth_edge(w)
+    assert np.allclose(out, 6.0)
+
+
+def test_smooth_edge_follows_a_gradual_change_and_keeps_a_narrowing():
+    w = np.linspace(4.0, 8.0, 100)
+    w = np.r_[w, w[::-1]]
+    out = bc.smooth_edge(w)
+    assert np.all(np.abs(out[10:90] - w[10:90]) < 0.2)
+    w = np.full(100, 6.0)
+    w[50:60] = 3.0                      # a real narrowing (a wall) ten points long
+    out = bc.smooth_edge(w)
+    assert np.all(out[52:58] <= 3.0 + 1e-9)
