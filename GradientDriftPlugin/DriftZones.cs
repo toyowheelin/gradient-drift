@@ -36,16 +36,22 @@ public static class DriftZones
 
     public sealed record Shape(bool OutsideZone, Vector3[] Frame, (Vector3 From, Vector3 To)[] Stripes);
 
-    // The zones' shapes, or null (the reason logged) when the files are missing, unreadable or not
-    // on this AI line's points.
-    public static List<Shape>? Load(string trackName, ReadOnlySpan<SplinePoint> points, float stripeSpacingM)
+    // A track's course as zones are drawn and judged on it: each AI-line point's two edges (spikes
+    // taken out, at the AI line's height there) and the zones on them (side +1 = the positive (left)
+    // edge, -1 the negative (right) one; first to last runs round the lap).
+    public sealed record Zone(bool OutsideZone, int Side, int First, int Last);
+    public sealed record Course(Vector3[] Positive, Vector3[] Negative, List<Zone> Zones);
+
+    // The course and its zones, or null (the reason logged, "what" saying what goes without them)
+    // when the files are missing, unreadable or not on this AI line's points.
+    public static Course? LoadCourse(string trackName, ReadOnlySpan<SplinePoint> points, string what = "no zones painted")
     {
         string zonesFile = trackName + FileSuffix;
         string edgesFile = trackName + CourseEdges.FileSuffix;
         if (!PluginData.Exists(zonesFile) || !PluginData.Exists(edgesFile))
         {
-            VerboseLog.Information("GradientDrift: no zones painted - {Zones} or {Edges} is not there (setup writes them with the track's other files)",
-                PluginData.Describe(zonesFile), PluginData.Describe(edgesFile));
+            VerboseLog.Information("GradientDrift: {What} - {Zones} or {Edges} is not there (setup writes them with the track's other files)",
+                what, PluginData.Describe(zonesFile), PluginData.Describe(edgesFile));
             return null;
         }
         try
@@ -55,8 +61,8 @@ public static class DriftZones
             List<string[]> zones = ReadTable(zonesFile, "Kind", "Side", "FirstPointId", "LastPointId");
             if (edges.Count != points.Length)
             {
-                Log.Warning("GradientDrift: no zones painted - {Edges} has {Rows} points, the AI line {Points}",
-                    PluginData.Describe(edgesFile), edges.Count, points.Length);
+                Log.Warning("GradientDrift: {What} - {Edges} has {Rows} points, the AI line {Points}",
+                    what, PluginData.Describe(edgesFile), edges.Count, points.Length);
                 return null;
             }
             int n = edges.Count;
@@ -73,24 +79,39 @@ public static class DriftZones
                 negativeM[i] = Number(edges[i][6]);
             }
             TakeOutSpikes(positive, negative, positiveM, negativeM);
-            var shapes = new List<Shape>();
+            var list = new List<Zone>();
             foreach (string[] z in zones)
             {
                 bool outside = !z[0].Trim().Equals("touch and go", StringComparison.OrdinalIgnoreCase);
                 int side = Number(z[1]) > 0 ? 1 : -1;
-                int first = Mod((int)Number(z[2]), n);
-                int last = Mod((int)Number(z[3]), n);
-                shapes.Add(Build(positive, negative, side, first, last, outside, stripeSpacingM));
+                list.Add(new Zone(outside, side, Mod((int)Number(z[2]), n), Mod((int)Number(z[3]), n)));
             }
-            VerboseLog.Information("GradientDrift: painting {Count} drift zones from {Path} for players with CSP", shapes.Count,
-                PluginData.Describe(zonesFile));
-            return shapes;
+            return new Course(positive, negative, list);
         }
         catch (Exception e) when (e is IOException or FormatException or OverflowException or UnauthorizedAccessException or InvalidDataException)
         {
-            Log.Warning(e, "GradientDrift: no zones painted - could not read {Path}", PluginData.Describe(zonesFile));
+            Log.Warning(e, "GradientDrift: {What} - could not read {Path}", what, PluginData.Describe(zonesFile));
             return null;
         }
+    }
+
+    // The zones' shapes, or null (the reason logged) when the files are missing, unreadable or not
+    // on this AI line's points.
+    public static List<Shape>? Load(string trackName, ReadOnlySpan<SplinePoint> points, float stripeSpacingM)
+    {
+        Course? course = LoadCourse(trackName, points);
+        return course == null ? null : Shapes(course, stripeSpacingM);
+    }
+
+    public static List<Shape> Shapes(Course course, float stripeSpacingM)
+    {
+        var shapes = new List<Shape>();
+        foreach (Zone z in course.Zones)
+        {
+            shapes.Add(Build(course.Positive, course.Negative, z.Side, z.First, z.Last, z.OutsideZone, stripeSpacingM));
+        }
+        VerboseLog.Information("GradientDrift: painting {Count} drift zones for players with CSP", shapes.Count);
+        return shapes;
     }
 
     // One zone's frame (its outer edge forward, then its inner side back) and stripes, from the

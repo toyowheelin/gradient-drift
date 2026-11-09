@@ -7,6 +7,15 @@ when releasing.
 
 ## Unreleased
 
+- Players' drift runs are scored through the track's zones, like a drift judge would: each zone
+  gets up to 100 for line (rear within 3 m of the zone's edge while sliding), angle and speed, a
+  tandem bonus for sliding close behind another car, 0 for a spin, and a run (first zone to last)
+  loses 5 for each wall hit. The server judges from the car status it already receives. Players
+  with Custom Shaders Patch get a HUD with live zone points, popups for each zone, spin, wall and
+  run, and the server's top five; everyone gets a chat line per run and `/zones` and `/top`. Each
+  server keeps its own runs in a SQLite file (`gradientdrift_zone_records.db`, the system's own
+  SQLite, no extra files). On by default (`ZoneScoring`, `ZoneHud`, `ZoneScoreChat`,
+  `ZoneRecordsFile`, `ZoneBoardSize`).
 - Setup has a zone editor: **Zones...** on its last page, or `gradient-drift-setup zones <server or
   track>`. It shows a track's drift zones as yellow striped boxes on a map of the course; drag a
   zone's ends, draw new ones, move one to the other edge, change its kind, delete, or put back the

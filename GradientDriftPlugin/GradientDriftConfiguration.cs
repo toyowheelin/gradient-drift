@@ -212,6 +212,17 @@ public class GradientDriftConfiguration
     public float ZoneLineWidthMeters { get; set; } = 0.3f;
     public float ZoneStripeSpacingMeters { get; set; } = 1.6f;
 
+    // Score players' drifting through the zones (ZoneScoring.cs, ZoneJudge.cs): line, angle and
+    // speed in each zone, a tandem bonus, spins and wall hits marked down, one score for a run from
+    // the first zone to the last. Players with CSP see it on a HUD (ZoneHud); everyone gets a chat
+    // line per run. Each server keeps its own runs in ZoneRecordsFile (SQLite, in the server's
+    // folder; empty = keep nothing) and its board shows each driver's best, ZoneBoardSize of them.
+    public bool ZoneScoring { get; set; } = true;
+    public bool ZoneHud { get; set; } = true;
+    public bool ZoneScoreChat { get; set; } = true;
+    public string ZoneRecordsFile { get; set; } = "gradientdrift_zone_records.db";
+    public int ZoneBoardSize { get; set; } = 10;
+
     // Every this many seconds, a line in the server log with the time the plugin took on the
     // server's update thread: milliseconds a tick, split into the network, the sensors (rays,
     // ground and wall checks), telemetry and the tandem followers, the worst tick, and the share
