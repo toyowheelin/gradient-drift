@@ -25,6 +25,14 @@ when releasing.
   (`ShowZones`; `ZoneColor`, `ZoneLineWidthMeters`, `ZoneStripeSpacingMeters`). Setup copies the
   track's `<track>_course_zones.csv` to the server with its other files, and copies it again after
   the zone editor changes it.
+- Course edges (`drift_rl/build_course.py`, which setup runs for each track) no longer spike out
+  across open run-off or cross into a neighbouring stretch of the course. Each side is read along
+  three rays and the middle one kept, so one crack in the mesh or one gap in a wall no longer
+  makes a dip or a spike. An edge may not reach nearer another stretch of the line than its own
+  point, which covers the inside of tight corners and stretches side by side. It may also widen
+  only gradually along the line. Klutch Kickers' widest edge drops from 30 m to under 11 m, and
+  its zones go from 10 scraps on spike tips to 5 real corners. Setup remakes the edges the next
+  time it builds a track.
 - AI Car Monitor (`tools/ai_car_monitor.py`) records about 15 times less: every car 20 times a
   second (was every frame), only the values the game really sends for another player's car (the
   always-zero columns are gone), written straight to `.csv.gz`. A full server is ~1 MB a minute,
