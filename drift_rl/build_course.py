@@ -320,7 +320,8 @@ def build(world, fs, de, materials=None):
         for d in np.arange(0.5, PAVED_EDGE_SEARCH_M + 0.01, step):
             x, z = x0 + nx * d, z0 + nz * d
             if de.surface_under(world, x, y, z) != track:
-                return d
+                # an off-track strip narrower than OFF_TRACK_RUN_M against the grass is off-track too
+                return run_start if run_start is not None else d
             if off_track:
                 if ground_material(x, y, z) in off_track:
                     run_start = d if run_start is None else run_start
@@ -335,7 +336,7 @@ def build(world, fs, de, materials=None):
             for h in WALL_PROBE_HEIGHTS_M:
                 hit, _ = fs.raycast(x, y + h, z, nx, 0.0, nz, step, *R, 2)
                 if hit >= 0:
-                    return d + hit
+                    return run_start if run_start is not None else d + hit
         return PAVED_EDGE_SEARCH_M
 
     half = np.zeros((2, N))        # [0] = positive cross-track side, [1] = negative side
