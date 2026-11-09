@@ -268,7 +268,7 @@ if (cases.RootElement.TryGetProperty("zones", out JsonElement zoneCase))
 // line fill the one setup's zones.score gives it; a sliding lap is one scored run, a straight one
 // scores nothing. Then the run records (ZoneRecords.cs, the system's SQLite) keep runs and rank
 // each driver's best.
-if (cases.RootElement.TryGetProperty("zones", out JsonElement judgeCase) && judgeCase.TryGetProperty("runs", out JsonElement runs))
+if (cases.RootElement.TryGetProperty("zones", out JsonElement judgeCase) && judgeCase.TryGetProperty("runs", out JsonElement judgeRuns))
 {
     string track = judgeCase.GetProperty("track").GetString()!;
     var line = judgeCase.GetProperty("line").EnumerateArray()
@@ -283,7 +283,7 @@ if (cases.RootElement.TryGetProperty("zones", out JsonElement judgeCase) && judg
     Directory.SetCurrentDirectory(Path.Combine(folder, "zones"));
     DriftZones.Course? course = DriftZones.LoadCourse(track, trackPoints);
     Directory.SetCurrentDirectory(before);
-    foreach (JsonElement run in runs.EnumerateArray())
+    foreach (JsonElement run in judgeRuns.EnumerateArray())
     {
         string problem = "";
         float worst = 0f;
