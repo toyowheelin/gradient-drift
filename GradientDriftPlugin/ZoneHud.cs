@@ -3,7 +3,8 @@ namespace GradientDriftPlugin;
 // The zone score HUD for players with CSP: a CSP online script (sent like DriftZones' paint) that
 // asks the server for the player's numbers a few times a second (ZoneScoreController) and draws
 //   - a panel: the zone the car is in and its points so far, the slip angle and speed right now,
-//     the run so far, the player's best and place, and the server's top drivers;
+//     the run so far, the player's best and place, and the server's top drivers (drag it with the
+//     left mouse button, size it with the wheel; remembered on the player's PC);
 //   - a popup as each zone is judged (its points, and line / angle / speed / tandem), for a spin
 //     or a wall hit, and for a run's score.
 // All scoring is the server's (ZoneJudge); the script only shows it.
@@ -117,6 +118,23 @@ public static class ZoneHud
           end
         end
 
+        -- the panel can be dragged with the left mouse button and sized with the wheel over it,
+        -- remembered on this PC (ac.store / ac.load, as other server HUDs do)
+        local panel = nil
+        local scale = 1
+        local dragFrom = nil
+        if ac.load then
+          local px, py, ps = ac.load('gdZonesPanelX'), ac.load('gdZonesPanelY'), ac.load('gdZonesPanelScale')
+          if px and py then panel = vec2(px, py) end
+          if ps and ps >= 0.6 and ps <= 2 then scale = ps end
+        end
+        local function remember()
+          if not ac.store then return end
+          ac.store('gdZonesPanelX', panel.x)
+          ac.store('gdZonesPanelY', panel.y)
+          ac.store('gdZonesPanelScale', scale)
+        end
+
         local function text(s, size, x, y, colour)
           ui.dwriteDrawText(s, size, vec2(x, y), colour)
         end
@@ -138,34 +156,58 @@ public static class ZoneHud
               y = y + 24
             end
           end
-          -- the panel, top right
-          local x0, y0, w = screen.x - 290, 110, 270
+          -- the panel, top right unless moved
+          if not panel then panel = vec2(screen.x - 300, 102) end
+          local k = scale
           local rows = 6 + math.min(#board, 5)
-          ui.drawRectFilled(vec2(x0 - 10, y0 - 8), vec2(x0 + w, y0 + rows * 22 + 12), back, 6)
-          text('DRIFT ZONES', 16, x0, y0, gold)
-          local yy = y0 + 24
+          local size = vec2(280, rows * 22 + 20) * k
+          local mouse = ui.mousePos()
+          local over = mouse.x >= panel.x and mouse.x <= panel.x + size.x and mouse.y >= panel.y and mouse.y <= panel.y + size.y
+          if ui.mouseDown(0) then
+            if dragFrom then
+              panel = panel + (mouse - dragFrom)
+              dragFrom = mouse
+            elseif over then
+              dragFrom = mouse
+            end
+          elseif dragFrom then
+            dragFrom = nil
+            remember()
+          end
+          if over and ui.mouseWheel() ~= 0 then
+            scale = math.max(0.6, math.min(2, scale + ui.mouseWheel() * 0.05))
+            remember()
+          end
+          ui.drawRectFilled(panel, panel + size, back, 6)
+          local function at(dx, dy) return panel.x + (10 + dx) * k, panel.y + (8 + dy) * k end
+          local function line(s, size, dx, dy, colour)
+            local x, y = at(dx, dy)
+            text(s, size * k, x, y, colour)
+          end
+          line('DRIFT ZONES', 16, 0, 0, gold)
+          local yy = 24
           if live.zone > 0 then
-            text(string.format('Zone %d/%d   line %s   %.0f pts', live.zone, live.zones, pct(live.fill), live.points), 15, x0, yy, white)
+            line(string.format('Zone %d/%d   line %s   %.0f pts', live.zone, live.zones, pct(live.fill), live.points), 15, 0, yy, white)
           else
-            text(live.running and string.format('Run: %d/%d zones', live.runZones, live.zones) or 'Next run starts at zone 1', 15, x0, yy, grey)
+            line(live.running and string.format('Run: %d/%d zones', live.runZones, live.zones) or 'Next run starts at zone 1', 15, 0, yy, grey)
           end
           yy = yy + 22
           local angle = live.kmh >= 25 and live.angle or 0
-          local ac_ = angle >= 45 and gold or angle >= 30 and green or angle >= 20 and white or grey
-          text(string.format('Angle %.0f°', angle), 15, x0, yy, ac_)
-          text(string.format('%.0f km/h  %s', live.kmh, pct(live.ofPace)), 15, x0 + 110, yy, white)
+          local tier = angle >= 45 and gold or angle >= 30 and green or angle >= 20 and white or grey
+          line(string.format('Angle %.0f°', angle), 15, 0, yy, tier)
+          line(string.format('%.0f km/h  %s', live.kmh, pct(live.ofPace)), 15, 110, yy, white)
           yy = yy + 22
-          text(live.running and string.format('Run %.1f   (%d/%d zones)', live.run, live.runZones, live.zones) or 'Run -', 15, x0, yy, white)
+          line(live.running and string.format('Run %.1f   (%d/%d zones)', live.run, live.runZones, live.zones) or 'Run -', 15, 0, yy, white)
           yy = yy + 22
-          text(live.rank > 0 and string.format('Best %.1f   #%d here', live.best, live.rank) or 'Best -', 15, x0, yy, white)
+          line(live.rank > 0 and string.format('Best %.1f   #%d here', live.best, live.rank) or 'Best -', 15, 0, yy, white)
           yy = yy + 26
           if #board > 0 then
-            text('SERVER TOP', 13, x0, yy, gold)
+            line('SERVER TOP', 13, 0, yy, gold)
             yy = yy + 20
             for i = 1, math.min(#board, 5) do
               local b = board[i]
-              text(b.rank .. '  ' .. b.driver, 14, x0, yy, white)
-              text(string.format('%.1f', b.score), 14, x0 + w - 60, yy, white)
+              line(b.rank .. '  ' .. b.driver, 14, 0, yy, white)
+              line(string.format('%.1f', b.score), 14, 205, yy, white)
               yy = yy + 20
             end
           end
