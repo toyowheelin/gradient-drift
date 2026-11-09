@@ -222,6 +222,9 @@ public static class DriftZones
         s.AppendLine("""
             local paint = ac.TrackPaint()
             paint.ageFactor = 0.2
+            -- the heights sent are the AI line's, which a cambered or crowned road rises above at its
+            -- edges: cast every line onto the road's surface rather than trusting them
+            paint.forceRecast = true
             for _, z in ipairs(zones) do
               local colour = z.o and solid or light
               local f = z.f
