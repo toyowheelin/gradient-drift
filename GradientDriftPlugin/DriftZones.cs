@@ -28,7 +28,7 @@ public static class DriftZones
     // course its edge is the paving up to the first wall, so it jumps out across an open corner's
     // run-off for a few points and zigzags from point to point. Each side's width is held within
     // SpikeM of its running median over SpikeWindow points, then averaged over SmoothPoints, before
-    // painting; a width that moves by no more than SmoothKeepM is left as it was.
+    // painting; only widths that come in by more than SmoothKeepM change (the edge never moves out).
     public const int SpikeWindow = 15;
     public const float SpikeM = 1f;
     public const int SmoothPoints = 5;
@@ -38,7 +38,7 @@ public static class DriftZones
 
     // The zones' shapes, or null (the reason logged) when the files are missing, unreadable or not
     // on this AI line's points.
-    public static List<Shape>? Load(string trackName, ReadOnlySpan<SplinePoint> points, float stripeSpacingM)
+    public static List<Shape>? Load(string trackName, ReadOnlySpan<SplinePoint> points, float stripeSpacingM, float lineWidthM)
     {
         string zonesFile = trackName + FileSuffix;
         string edgesFile = trackName + CourseEdges.FileSuffix;
@@ -80,7 +80,7 @@ public static class DriftZones
                 int side = Number(z[1]) > 0 ? 1 : -1;
                 int first = Mod((int)Number(z[2]), n);
                 int last = Mod((int)Number(z[3]), n);
-                shapes.Add(Build(positive, negative, side, first, last, outside, stripeSpacingM));
+                shapes.Add(Build(positive, negative, side, first, last, outside, stripeSpacingM, LineWidth(lineWidthM) / 2f));
             }
             VerboseLog.Information("GradientDrift: painting {Count} drift zones from {Path} for players with CSP", shapes.Count,
                 PluginData.Describe(zonesFile));
@@ -96,8 +96,10 @@ public static class DriftZones
     // One zone's frame (its outer edge forward, then its inner side back) and stripes, from the
     // course's edge points. side +1 = the positive (left) edge, -1 the negative (right) one; first to
     // last runs round the lap (past the start when first > last).
+    // insetM: the outer line is drawn this far in from the edge (half the line's width), so the paint
+    // stays inside the course; the inner side stays DepthM in from the edge.
     public static Shape Build(Vector3[] positive, Vector3[] negative, int side, int first, int last, bool outsideZone,
-        float stripeSpacingM)
+        float stripeSpacingM, float insetM = 0f)
     {
         int n = positive.Length;
         int count = Mod(last - first, n) + 1;
@@ -108,10 +110,10 @@ public static class DriftZones
         for (int k = 0; k < count; k++)
         {
             int p = (first + k) % n;
-            outer[k] = edge[p];
             Vector3 inward = other[p] - edge[p];
             inward.Y = 0f;
             float width = inward.Length();
+            outer[k] = width > 1e-6f ? edge[p] + inward * (MathF.Min(insetM, width) / width) : edge[p];
             inner[k] = width > 1e-6f ? edge[p] + inward * (MathF.Min(DepthM, width) / width) : edge[p];
         }
         var frame = new Vector3[2 * count];
@@ -186,7 +188,7 @@ public static class DriftZones
                 sum += held[Mod(i + j, n)];
             }
             float mean = (float)(sum / (2 * a + 1));
-            if (MathF.Abs(mean - half[i]) > SmoothKeepM) result[i] = mean;
+            if (half[i] - mean > SmoothKeepM) result[i] = mean;      // only ever pulled in, never out
         }
         return result;
     }
@@ -202,7 +204,7 @@ public static class DriftZones
         s.AppendLine("if not ac.TrackPaint then return end -- a CSP without track paint: nothing to draw");
         s.AppendLine(string.Format(c, "local solid = rgbm({0:0.###}, {1:0.###}, {2:0.###}, 1)", r, g, b));
         s.AppendLine(string.Format(c, "local light = rgbm({0:0.###}, {1:0.###}, {2:0.###}, 0.75)", r, g, b));
-        s.AppendLine(string.Format(c, "local width = {0:0.###}", Math.Clamp(lineWidthM, 0.05f, 1f)));
+        s.AppendLine(string.Format(c, "local width = {0:0.###}", LineWidth(lineWidthM)));
         s.AppendLine("local zones = {");
         foreach (Shape shape in shapes)
         {
@@ -238,6 +240,8 @@ public static class DriftZones
             """);
         return s.ToString();
     }
+
+    public static float LineWidth(float lineWidthM) => Math.Clamp(lineWidthM, 0.05f, 1f);
 
     public static (float R, float G, float B) Color(string? hex)
     {

@@ -78,8 +78,9 @@ class Course:
         m = metres % self.lap_m
         return int(np.argmin(np.abs(self.along - m)))
 
-    def zone_outline(self, zone, depth=DEPTH_M):
-        """(outer, inner): the zone's points along its edge and depth metres in from it, (k, 2) each."""
+    def zone_outline(self, zone, depth=DEPTH_M, inset=0.0):
+        """(outer, inner): the zone's points along its edge (inset metres in from it) and depth
+        metres in from it, (k, 2) each."""
         idx = self.points(zone['first'], zone['last'])
         outer = self.edge(zone['side'])[idx]
         other = self.edge(-zone['side'])[idx]
@@ -87,7 +88,7 @@ class Course:
         width = np.linalg.norm(inward, axis=1)
         inward /= np.maximum(width, 1e-6)[:, None]
         inner = outer + np.minimum(depth, width)[:, None] * inward
-        return outer, inner
+        return outer + np.minimum(inset, width)[:, None] * inward, inner
 
 
 def zones_path(tracks, track):
@@ -205,13 +206,15 @@ STRIPE_SLANT_M = 2.1        # GradientDriftPlugin/DriftZones.cs: the same number
 STRIPE_MARGIN_M = 0.6
 
 
-def paint_shapes(course, zones, stripe_spacing_m=1.6):
+def paint_shapes(course, zones, stripe_spacing_m=1.6, line_width_m=0.3):
     """What the plugin paints on the road for each zone (DriftZones.Build, the same geometry):
     (outside zone?, frame (k, 2): its outer edge forward then its inner side back, stripes (s, 2, 2):
-    each from the outer edge to the inner side STRIPE_SLANT_M further on)."""
+    each from the outer edge to the inner side STRIPE_SLANT_M further on). The outer line is half
+    line_width_m in from the edge (the plugin's ZoneLineWidthMeters) so the paint stays on the course."""
+    inset = min(max(line_width_m, 0.05), 1.0) / 2
     out = []
     for z in zones:
-        outer, inner = course.zone_outline(z)
+        outer, inner = course.zone_outline(z, inset=inset)
         along = np.r_[0.0, np.cumsum(np.linalg.norm(np.diff(outer, axis=0), axis=1))]
         spacing = max(0.3, stripe_spacing_m) * (1.0 if z['kind'] == KINDS[0] else 2.0)
         stripes = []

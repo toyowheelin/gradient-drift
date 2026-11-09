@@ -223,7 +223,8 @@ touch-and-go areas). Setup places them from the course's shape when it makes the
 (`<track>_course_zones.csv` in the track files folder). Where nothing marks the course, its edge is
 the paving up to the first wall, so on an open corner it can jump out across the run-off for a few
 points and zigzags from point to point; zones are placed, drawn and painted on a smoothed edge (each
-side held within 1 m of its neighbours' median, then averaged over 5 points). To see or change them, click **Zones...**
+side held within 1 m of its neighbours' median, then averaged over 5 points, only ever pulling the edge in; the painted outer line sits half its width
+inside the edge). To see or change them, click **Zones...**
 on the last page, or run `gradient-drift-setup zones <server folder or track>`:
 
 - The map shows the course, the direction of travel and the zones as yellow striped boxes. Click a

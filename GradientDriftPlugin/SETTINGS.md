@@ -161,7 +161,7 @@ stopped for 30 seconds, and a line when it moves again. Nothing while the bots d
 | `JoinMessage` | `Drift bots by Gradient Drift https://github.com/toyowheelin/gradient-drift` | A line added to the welcome message every player gets on joining, just above AssettoServer's "Powered by AssettoServer" line; the game shows it in chat. Empty (`JoinMessage: ""`) = no line. |
 | `ShowZones` | `true` | Paints the track's drift zones on the road for players with Custom Shaders Patch: yellow boxes along the outside edge of the corners, closed at both ends, striped inside (sparser for a touch-and-go area). The zones are the ones the bots are trained to fill, from `<track>_course_zones.csv` (setup writes it, and its zone editor changes it) on `<track>_course_edges.csv`'s points. Players without CSP, or with a CSP too old for its track paint, see nothing. |
 | `ZoneColor` | `F5C400` | The zones' colour, as RRGGBB. |
-| `ZoneLineWidthMeters` | `0.3` | How wide the zones' frame is painted; the stripes are 0.8 of it. |
+| `ZoneLineWidthMeters` | `0.3` | How wide the zones' frame is painted; the stripes are 0.8 of it. The outer line sits half its width in from the course edge, so the paint stays on the course. |
 | `ZoneStripeSpacingMeters` | `1.6` | The gap between stripes in an outside zone, along its edge; twice this in a touch-and-go area. |
 | `LogTimingIntervalSeconds` | `0` | Every this many seconds, a log line with how long the plugin took per server tick (network, sensors, telemetry, followers), the worst tick, and the share of one CPU core. 0 = off (every 60 s with `VerboseLogging`). |
 

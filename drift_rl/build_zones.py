@@ -57,7 +57,7 @@ REAR_AXLE_BEHIND_CENTRE_M = 1.3
 # it zigzag by a metre or two from point to point. Zones are placed, drawn, painted and scored on
 # an edge whose width each side is first held within SPIKE_M of its median over SPIKE_WINDOW points
 # around it, then averaged over SMOOTH_POINTS points (GradientDriftPlugin/DriftZones.cs does the
-# same). A width that moves by no more than SMOOTH_KEEP_M is left as it was. The trainer's own
+# same). Only widths that come in by more than SMOOTH_KEEP_M change: the edge never moves out. The trainer's own
 # course inputs are unchanged.
 SPIKE_WINDOW = 15
 SPIKE_M = 1.0
@@ -67,7 +67,8 @@ SMOOTH_KEEP_M = 0.01
 
 def smooth_widths(half):
     """One side's widths (m from the line, per point round the lap): held within SPIKE_M of their
-    running median over SPIKE_WINDOW points, then a running mean over SMOOTH_POINTS."""
+    running median over SPIKE_WINDOW points, then a running mean over SMOOTH_POINTS, kept only where
+    it pulls the edge in (a zone's paint must not reach past the road where the edge dips in)."""
     half = np.asarray(half, dtype=float)
     n = len(half)
     k = min(SPIKE_WINDOW // 2, (n - 1) // 2)
@@ -79,7 +80,7 @@ def smooth_widths(half):
     a = min(SMOOTH_POINTS // 2, (n - 1) // 2)
     idx = (np.arange(n)[:, None] + np.arange(-a, a + 1)[None, :]) % n
     mean = held[idx].mean(axis=1)
-    return np.where(np.abs(mean - half) > SMOOTH_KEEP_M, mean, half)
+    return np.where(half - mean > SMOOTH_KEEP_M, mean, half)        # only ever pulled in, never out
 
 
 def smooth_edges(edges):
