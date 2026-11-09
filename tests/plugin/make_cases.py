@@ -176,13 +176,14 @@ def judge_run(course, zones, Z, sliding, speed=15.0, dt=0.05):
     """One lap of made-up driving for ZoneJudge (the plugin's zone scoring) and the fill setup's
     zones.score gives each zone for it: the car runs round the course's middle at a steady speed, its
     rear axle wandering from one edge toward the other and its slip angle swinging across 20 deg
-    (sliding), or straight down the middle with no slip. It starts where no zone is, so the run meets
-    every zone in order."""
+    (sliding), or straight down the middle with no slip. It starts in the longest stretch with no
+    zone, so the run meets every zone in order."""
     n = course.n
-    inside = np.zeros(n, bool)
-    for z in zones:
-        inside[course.points(z['first'], z['last'])] = True
-    start = next(i for i in range(n) if not inside[[(i + k) % n for k in range(-5, 6)]].any())
+    # the middle of the longest stretch with no zone, where ZoneJudge starts a run's order
+    by_start = sorted(zones, key=lambda z: z['first'])
+    gaps = [((z['first'] - by_start[k - 1]['last']) % n, k) for k, z in enumerate(by_start)]
+    gap, k = max(gaps, key=lambda g: (g[0], -g[1]))     # the first of equal ones, as ZoneJudge picks
+    start = (by_start[k - 1]['last'] + gap // 2) % n
     order = np.r_[np.arange(start, n), np.arange(0, start + 1)]
     mid = course.mid[order]
     seg = np.linalg.norm(np.diff(mid, axis=0), axis=1)
