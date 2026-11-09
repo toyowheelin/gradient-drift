@@ -18,7 +18,11 @@ What it does:
      same sign convention as the plugin's CrossTrackErrorM) at its distance along the line.
   3. Joins up the markers on each side: the course edge at any point along the line is the
      straight-line interpolation (in distance along the line) between the neighbouring markers on
-     that side, or the edge of the paved surface or the first wall where that is nearer.
+     that side, or the edge of the paved surface or the first wall where that is nearer (read
+     along three parallel rays and the middle one kept, so one crack or gap does not count).
+  4. Tidies the edge: no nearer another stretch of the line than its own point (the inside of a
+     tight corner, two stretches side by side), and widening at most MAX_EDGE_SLOPE m per m along
+     the line, so open run-off reached for a point or two no longer spikes the edge out.
 
 Output (in the track's folder, drift_rl/tracks/<track>/):
   <track>_course_edges.csv    one row per spline point: how far the course extends to
@@ -55,6 +59,23 @@ PAVED_EDGE_SEARCH_M = 30.0
 # a wall crossing the line's normal ends the course there; probed this high above the ground (a low
 # tire wall and the gap under a guard rail)
 WALL_PROBE_HEIGHTS_M = (0.3, 0.9)
+# Each side's edge is read along RAYS_PER_POINT parallel rays RAY_SPREAD_M apart along the line,
+# and the middle reading kept: one ray alone read a single crack in the mesh or a gap between two
+# wall pieces as the edge (one-point dips to MIN_HALF_WIDTH_M, one-point spikes 15-18 m out).
+RAYS_PER_POINT = 3
+RAY_SPREAD_M = 0.75
+# How fast the edge may move away from the line, in metres sideways per metre along it (0.35 =
+# about 19 degrees). An edge that only ends where the paving ends or at the first wall ran 10 - 30 m
+# out across open run-off for a point or two and straight back (Klutch Kickers' corners); a real
+# course widens gradually. The limit only lowers an edge, never raises one.
+MAX_EDGE_SLOPE = 0.35
+# The edge may not reach a point nearer another stretch of the line than its own point (minus
+# FOLD_TOLERANCE_M): on the inside of a corner tighter than the walk, or between two stretches
+# side by side, the edge otherwise crossed into the other stretch's course. The racing-line tools
+# of TUM's global race trajectory optimisation refuse track widths whose normals cross for the
+# same reason. Line points more than FOLD_MAX_DY_M above or below do not count (a bridge).
+FOLD_TOLERANCE_M = 0.5
+FOLD_MAX_DY_M = 2.5
 # Markers that stand near the course but are NOT part of its edge (X, Z; matched within 1 m).
 # From the track's owner, checking course_layout.png: "the cones aren't part of the
 # track, just the tires in that spot" - the edge was bridging out to two cones around X 80-92,
@@ -153,6 +174,51 @@ class Line:
         return self.arc[i] + t[i] * self.seg_len[i], lat, i
 
 
+def fold_limit(line, sign, search_m=PAVED_EDGE_SEARCH_M, step=0.25):
+    """For each line point, how far out along its normal (on the `sign` side) the edge may reach
+    before a point there is nearer another stretch of the line than this one (FOLD_TOLERANCE_M):
+    the inside of a corner tighter than that, or the middle between two stretches side by side.
+    Line points more than FOLD_MAX_DY_M higher or lower are left out (a bridge over the course)."""
+    from scipy.spatial import cKDTree
+    sp = line.sp
+    N = len(sp)
+    xz = sp[:, [0, 2]]
+    kd = cKDTree(xz)
+    normal = np.c_[-line.tan[:, 2], line.tan[:, 0]] * sign
+    ds = np.arange(step, search_m + step / 2, step)
+    limit = np.full(N, search_m)
+    k = min(16, N)
+    for i in range(N):
+        pts = xz[i] + normal[i] * ds[:, None]
+        dist, idx = kd.query(pts, k=k)
+        level = np.abs(sp[idx, 1] - sp[i, 1]) <= FOLD_MAX_DY_M
+        nearest = np.where(level, dist, np.inf).min(axis=1)
+        # the segment from point i to its neighbours is where this point's own distance is
+        # measured from: a point on the normal is exactly ds away from point i
+        crossed = nearest < ds - FOLD_TOLERANCE_M
+        if crossed.any():
+            j = int(np.argmax(crossed))
+            limit[i] = ds[j - 1] if j > 0 else step
+    return limit
+
+
+def slope_limit(width, line, slope=MAX_EDGE_SLOPE):
+    """The widths lowered so that no point is more than `slope` x the distance along the line wider
+    than any other point (a closed lap): spikes become gentle bulges, narrow places stay narrow."""
+    w = np.asarray(width, dtype=np.float64).copy()
+    w[~np.isfinite(w)] = PAVED_EDGE_SEARCH_M
+    seg = line.seg_len
+    # two passes each way around the lap carry the limit across the start/finish
+    for _ in range(2):
+        for i in range(1, 2 * len(w)):
+            a, b = (i - 1) % len(w), i % len(w)
+            w[b] = min(w[b], w[a] + slope * seg[a])
+        for i in range(2 * len(w) - 2, -1, -1):
+            a, b = (i + 1) % len(w), i % len(w)
+            w[b] = min(w[b], w[a] + slope * seg[b])
+    return w
+
+
 def build(world, fs, de):
     line = Line(world.sp_pos)
     sp, N = world.sp_pos, len(world.sp_pos)
@@ -165,15 +231,17 @@ def build(world, fs, de):
 
     R = world.ray_arrays()
 
-    def paved_edge(i, sign):
+    def paved_edge(i, sign, along=0.0):
         """How far the paving runs from the line at point i, stopping at the first wall: on a track
         walled along a road that is paved beyond the walls too (a street circuit, House of RWD's
-        kind), the paving alone put the edge PAVED_EDGE_SEARCH_M out on both sides."""
+        kind), the paving alone put the edge PAVED_EDGE_SEARCH_M out on both sides. `along` moves
+        the ray's start that far along the line (RAYS_PER_POINT)."""
         nx, nz = -line.tan[i, 2] * sign, line.tan[i, 0] * sign
+        x0, z0 = sp[i, 0] + line.tan[i, 0] * along, sp[i, 2] + line.tan[i, 2] * along
         step = 0.25
         y = sp[i, 1]
         for d in np.arange(0.5, PAVED_EDGE_SEARCH_M + 0.01, step):
-            x, z = sp[i, 0] + nx * d, sp[i, 2] + nz * d
+            x, z = x0 + nx * d, z0 + nz * d
             if de.surface_under(world, x, y, z) != track:
                 return d
             down, _ = fs.ground_below(x, y + 3.0, z, 12.0, *R)
@@ -188,7 +256,9 @@ def build(world, fs, de):
     half = np.zeros((2, N))        # [0] = positive cross-track side, [1] = negative side
     from_marker = np.zeros((2, N), bool)
     for side, sign in ((0, +1), (1, -1)):
-        paved = np.array([paved_edge(i, sign) for i in range(N)])
+        offsets = (np.arange(RAYS_PER_POINT) - (RAYS_PER_POINT - 1) / 2) * RAY_SPREAD_M
+        paved = np.array([np.median([paved_edge(i, sign, a) for a in offsets]) for i in range(N)])
+        paved = np.minimum(paved, fold_limit(line, sign))
         ms = sorted((m for m in markers if m['used'] and m['lateral'] * sign > 0), key=lambda m: m['arc'])
         s = np.array([m['arc'] for m in ms])
         w = np.array([abs(m['lateral']) for m in ms])
@@ -196,7 +266,7 @@ def build(world, fs, de):
             joined = np.interp(line.arc, np.r_[s - line.lap, s, s + line.lap], np.r_[w, w, w])
         else:                      # no markers on this side: the paving (up to a wall) is the course
             joined = np.full(N, np.inf)
-        half[side] = np.maximum(np.minimum(joined, paved), MIN_HALF_WIDTH_M)
+        half[side] = np.maximum(slope_limit(np.minimum(joined, paved), line), MIN_HALF_WIDTH_M)
         from_marker[side] = joined <= paved
     normal = np.c_[-line.tan[:, 2], line.tan[:, 0]]
     edge_pos = sp[:, [0, 2]] + normal * half[0][:, None]
@@ -251,6 +321,8 @@ def build_from_sides(world, folder):
         if missing[side].any():
             good = ~missing[side]
             half[side] = np.interp(line.arc, line.arc[good], half[side, good], period=line.lap)
+    for side, sign in ((0, 1.0), (1, -1.0)):
+        half[side] = slope_limit(np.minimum(half[side], fold_limit(line, sign)), line)
     half = np.maximum(half, MIN_HALF_WIDTH_M)
     edge_pos = sp[:, [0, 2]] + normal * half[0][:, None]
     edge_neg = sp[:, [0, 2]] - normal * half[1][:, None]
