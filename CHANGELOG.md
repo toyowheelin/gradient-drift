@@ -25,6 +25,19 @@ when releasing.
   (`ShowZones`; `ZoneColor`, `ZoneLineWidthMeters`, `ZoneStripeSpacingMeters`). Setup copies the
   track's `<track>_course_zones.csv` to the server with its other files, and copies it again after
   the zone editor changes it.
+- Course edges are one continuous curve where paving, ground or a wall sets them (not markers): a
+  running minimum over 5 points, then a running mean over 7, so they no longer step in and out
+  by up to a metre from point to point. Where the ground changes, the edge is now put on the
+  boundary itself rather than at the first sample past it (up to 0.25 m out). On Klutch Kickers
+  the zones' outer edges no longer reach the cement and sand beside the tarmac, and their kinks
+  of 20 - 30 degrees are gone.
+- Course edges also end where the track's model draws the ground as sand, grass or the photo
+  ground around the track, even when its surface key counts it as track. Setup now writes each
+  track's collision materials (`<track>_collision_material.csv.gz`), and `build_course.py` stops
+  an edge at a run of 0.75 m or more of such a material (sand, grass, dirt, gravel, mud, soil,
+  cement). Kerbs, rumble strips, other tarmac and whatever the racing line itself drives on stay
+  part of the course. On Klutch Kickers the edges now follow the visible tarmac, where before they
+  ran up to 2 m onto sand strips, cement aprons and painted grass.
 - Course edges (`drift_rl/build_course.py`, which setup runs for each track) no longer spike out
   across open run-off or cross into a neighbouring stretch of the course. Each side is read along
   three rays and the middle one kept, so one crack in the mesh or one gap in a wall no longer
