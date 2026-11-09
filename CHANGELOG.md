@@ -10,9 +10,10 @@ when releasing.
 - Course edges also end where the track's model draws the ground as sand, grass or the photo
   ground around the track, even when its surface key counts it as track. Setup now writes each
   track's collision materials (`<track>_collision_material.csv.gz`), and `build_course.py` stops
-  an edge at a run of 0.75 m or more of such a material (sand, grass, dirt, gravel, mud, soil, cement). Kerbs, rumble strips, other tarmac and
-  whatever the racing line itself drives on stay part of the course. On Klutch Kickers the edges
-  now follow the visible tarmac, where before they ran up to 2 m onto sand strips and painted grass.
+  an edge at a run of 0.75 m or more of such a material (sand, grass, dirt, gravel, mud, soil,
+  cement). Kerbs, rumble strips, other tarmac and whatever the racing line itself drives on stay
+  part of the course. On Klutch Kickers the edges now follow the visible tarmac, where before they
+  ran up to 2 m onto sand strips, cement aprons and painted grass.
 - Course edges (`drift_rl/build_course.py`, which setup runs for each track) no longer spike out
   across open run-off or cross into a neighbouring stretch of the course. Each side is read along
   three rays and the middle one kept, so one crack in the mesh or one gap in a wall no longer

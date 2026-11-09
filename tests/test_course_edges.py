@@ -75,5 +75,5 @@ def test_off_track_materials():
     grass = {'Background': 850.0, 'curb': 10.0}
     line = {'Tarmac': 90, 'WB_Gravel_03': 10}
     off = bc.off_track_materials(mats, ground, grass, line, 100)
-    # drawn like the grass around it, or named as run-off; the line's own gravel and the kerb are course
-    assert off == {'Background', 'Sand02AC'}
+    # drawn like the grass around it, or named as run-off or an apron; the line's own gravel and the kerb are course
+    assert off == {'Background', 'Sand02AC', 'Cement004'}
