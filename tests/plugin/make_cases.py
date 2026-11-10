@@ -181,11 +181,11 @@ def main():
     add('deep', made_up(OBS_CHASE_SLOT, (256, 256, 128, 64), 3, 3, plugin_settings={
         'RoundTireCurve': 1.0, 'RearSpinGripShare': 0.95, 'SurfaceGrip': 1.0, 'CarOutlineContact': 1.0}),
         seed=3, why='four hidden layers with the newer model settings')
-    add('residual', with_residual(made_up(OBS_FULL, (128, 128), 3, 4, chase={}), 5), gate=OBS_CHASE_SLOT, seed=4,
-        why='a chase residual network, gated by the car-ahead input')
+    add('residual', with_residual(made_up(OBS_V7, (128, 128), 3, 4, chase={}), 5), gate=OBS_CHASE_SLOT, seed=4,
+        why='a chase residual network, gated by the car-ahead input (94 inputs: none were made with the zone inputs)')
     hist = made_up(OBS_FULL + 3 * 4, (128, 128), 3, 6, chase={},
                    history={'slots': [9, 10, 11, 12], 'frames': 3, 'every': 2, 'reset_slot': 0})
-    add('history', hist, seed=6, why='a history block (3 frames of 4 inputs)')
+    add('history', hist, seed=6, why='a history block (3 frames of 4 inputs) after the 100 inputs with the zone inputs')
     hist7 = made_up(OBS_V7 + 3 * 4, (128, 128), 3, 7, chase={},
                     history={'slots': [9, 10, 11, 12], 'frames': 3, 'every': 2, 'reset_slot': 0})
     add('history_before_zones', hist7, seed=7, why='a history block after the 94 inputs from before the zone inputs')
