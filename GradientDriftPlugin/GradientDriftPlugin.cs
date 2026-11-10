@@ -255,7 +255,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _roadMeshPoints = LoadRoadMesh(trackName + RoadMeshFileSuffix);
         _roadMeshTree = _roadMeshPoints.Length > 0 ? new MeshKdTree(_roadMeshPoints) : null;
 
-        if (_configuration.ShowZones)
+        if (_configuration.ShowZones && !_configuration.IsArcadeScoring())
         {
             // the track's drift zones painted on the road for players with CSP (DriftZones.cs)
             List<DriftZones.Shape>? zones = DriftZones.Load(trackName, spline.Points, _configuration.ZoneStripeSpacingMeters,

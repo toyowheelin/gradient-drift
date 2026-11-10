@@ -7,6 +7,14 @@ when releasing.
 
 ## Unreleased
 
+- Arcade drift scoring: `ZoneScoreMode: Arcade` scores players freestyle, with no zones (and no
+  zone paint), so it works on any track. A chain builds points every moment the car slides, from
+  angle x speed, times a combo that goes up with each transition and a bonus of up to x2 for
+  sliding close behind another car. Stopping sliding for 1.5 s banks the chain, and a spin or a
+  wall hit loses it. The HUD shows the chain, its multiplier and a tandem bar, with popups for
+  transitions and for banked and lost chains. Chat, `/zones`, `/top` and the board page show
+  chains too, and arcade chains keep their own board. `Zones` (the default) scores through the
+  zones as before.
 - Players' drift runs are scored through the track's zones, like a drift judge would: each zone
   gets up to 100 for line (rear within 3 m of the zone's edge while sliding), angle and speed, a
   tandem bonus for sliding close behind another car, 0 for a spin, and a run (first zone to last)

@@ -10,12 +10,15 @@ namespace GradientDriftPlugin;
 //   - a popup as each zone is judged: a grade word (PERFECT / GREAT / GOOD / OK) and points that
 //     pop in, with line / angle / speed / tandem under it; a shaking red one for a spin or a wall
 //     hit; a run's score, and NEW BEST when it beats the player's best.
-// All scoring is the server's (ZoneJudge); the script only shows it.
+// In arcade mode (ZoneScoreMode Arcade, ArcadeJudge) the zone part of the panel shows the chain
+// instead: its multiplier (combo x tandem), combo and transitions, a tandem bar, the chain's points
+// counting up; popups for each transition, a banked chain and a lost one.
+// All scoring is the server's (ZoneJudge, ArcadeJudge); the script only shows it.
 public static class ZoneHud
 {
     public const string ScriptName = "gradientdrift_zone_hud.lua";
 
-    public static string Script(int zoneCount) => """
+    public static string Script(int zoneCount, bool arcade = false) => """
         -- Gradient Drift: drift zone scores, sent by the GradientDrift server plugin
         -- (https://github.com/toyowheelin/gradient-drift, GradientDriftPlugin/ZoneHud.cs). The server judges;
         -- this only shows what it says.
@@ -48,6 +51,13 @@ public static class ZoneHud
           return f
         end
 
+        local function big(x)
+          local s = string.format('%d', math.floor(tonumber(x) + 0.5))
+          local out = s:reverse():gsub('(%d%d%d)', '%1,'):reverse()
+          return (out:gsub('^,', ''):gsub('^%-,', '-'))
+        end
+        local function arcade() return live and live.mode == 'A' end
+        local function score(x) if arcade() then return big(x) end return string.format('%.1f', x) end
         local function pct(x) return string.format('%d%%', math.floor(tonumber(x) * 100 + 0.5)) end
         local function alpha(c, a) return rgbm(c.r, c.g, c.b, c.mult * a) end
         local function mix(a, b, t) return rgbm(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, 1) end
@@ -71,6 +81,19 @@ public static class ZoneHud
 
         local function told(f)
           local kind, zone, points = f[3], f[4], tonumber(f[5])
+          if arcade() then
+            if kind == 'combo' then
+              popup({ word = 'TRANSITION', text = string.format('x%.2f', points), colour = cyan, small = true })
+            elseif kind == 'run' then
+              local best = live and (live.rank == 0 or points > live.best)
+              popup({ word = best and 'NEW BEST' or 'BANKED', text = big(points), sub = f[10] .. (tonumber(f[9]) > 0.005 and ('    TANDEM ' .. pct(f[9])) or ''),
+                colour = best and gold or green, big = true, rainbow = best })
+              ui.toast(ui.Icons.Confirm, 'Drift chain: ' .. big(points) .. ' points' .. (best and ' - new best!' or ''))
+            elseif kind == 'spin' or kind == 'wall' or kind == 'ended' then
+              popup({ word = 'CHAIN LOST', text = (kind == 'ended' and f[10] or kind:upper()) .. '  ' .. big(points), colour = red, shake = true })
+            end
+            return
+          end
           local parts = 'LINE ' .. pct(f[6]) .. '    ANGLE ' .. string.format('%.0f°', tonumber(f[7])) .. '    SPEED ' .. pct(f[8])
           if tonumber(f[9]) > 0.005 then parts = parts .. '    TANDEM ' .. pct(f[9]) end
           if kind == 'zone' then
@@ -118,7 +141,8 @@ public static class ZoneHud
               if f[1] == 'L' then
                 live = { running = f[2] == '1', zone = tonumber(f[3]), zones = tonumber(f[4]), fill = tonumber(f[5]),
                   points = tonumber(f[6]), angle = tonumber(f[7]), kmh = tonumber(f[8]), ofPace = tonumber(f[9]),
-                  run = tonumber(f[10]), runZones = tonumber(f[11]), best = tonumber(f[12]), rank = tonumber(f[13]) }
+                  run = tonumber(f[10]), runZones = tonumber(f[11]), best = tonumber(f[12]), rank = tonumber(f[13]),
+                  mode = f[15] or 'Z', combo = tonumber(f[16] or '1') or 1 }
                 local v = tonumber(f[14])
                 if v ~= boardVersion then boardVersion = v; getBoard() end
               elseif f[1] == 'E' then
@@ -141,9 +165,9 @@ public static class ZoneHud
           end
           if live then
             shownRun = ease(shownRun, live.running and live.run or 0, 6, dt)
-            shownFill = ease(shownFill, live.zone > 0 and live.fill or 0, 10, dt)
+            shownFill = ease(shownFill, (live.mode == 'A' or live.zone > 0) and live.fill or 0, 10, dt)
             shownAngle = ease(shownAngle, live.kmh >= 25 and live.angle or 0, 12, dt)
-            glow = ease(glow, live.zone > 0 and 1 or 0, 5, dt)
+            glow = ease(glow, (live.zone > 0 or (live.mode == 'A' and live.running)) and 1 or 0, 5, dt)
           end
           untilPoll = untilPoll - dt
           if untilPoll <= 0 then
@@ -250,8 +274,8 @@ public static class ZoneHud
             local breathe = 0.55 + 0.45 * math.sin(clock * 5)
             ui.drawRect(P(0, 0), P(290, size.y / k), alpha(yellow, glow * breathe), 8 * k, nil, 2 * k)
           end
-          T('DRIFT ZONES', 13, 16, 10, yellow)
-          T(live.zones .. ' ZONES', 11, 222, 12, grey)
+          T(arcade() and 'DRIFT' or 'DRIFT ZONES', 13, 16, 10, yellow)
+          T(arcade() and 'ARCADE' or (live.zones .. ' ZONES'), 11, 222, 12, grey)
 
           -- angle gauge: a half ring from 0 to 60 degrees, tier marks at 20, 30 and 45, a needle
           local c, r = P(78, 96), 52 * k
@@ -275,11 +299,18 @@ public static class ZoneHud
           local pace = math.min(1.2, live.ofPace)
           ui.drawRectFilled(P(160, 104), P(274, 110), track, 3 * k)
           ui.drawRectFilled(P(160, 104), P(160 + 114 * math.min(1, pace), 110), grade((pace - 0.6) / 0.4), 3 * k)
-          T('OF PACE ' .. pct(live.ofPace), 10, 160, 114, grey)
+          T(arcade() and 'SPEED' or ('OF PACE ' .. pct(live.ofPace)), 10, 160, 114, grey)
 
           -- the zone the car is in: a fill bar and the points so far
           local y = 154
-          if live.zone > 0 then
+          if arcade() then
+            -- the multiplier (combo x tandem), the combo and transitions, and how close behind a car
+            T(string.format('x%.2f', live.running and live.points or 1), 22, 16, y - 4, live.running and cyan or grey)
+            T(string.format('COMBO x%.2f   %d TRANS', live.combo, live.running and live.runZones or 0), 11, 120, y + 4, grey)
+            ui.drawRectFilled(P(16, y + 24), P(274, y + 32), track, 4 * k)
+            ui.drawRectFilled(P(16, y + 24), P(16 + 258 * math.min(1, shownFill), y + 32), mix(white, gold, shownFill), 4 * k)
+            T('TANDEM ' .. pct(shownFill), 10, 16, y + 35, grey)
+          elseif live.zone > 0 then
             T('ZONE ' .. live.zone, 14, 16, y, yellow)
             T(string.format('%.0f PTS', live.points), 14, 200, y, white)
             ui.drawRectFilled(P(16, y + 22), P(274, y + 32), track, 4 * k)
@@ -291,10 +322,10 @@ public static class ZoneHud
 
           -- the run (counting up) and the player's best
           y = 204
-          T('RUN', 10, 16, y, grey)
-          T(live.running and string.format('%.1f', shownRun) or '-', 20, 16, y + 10, live.running and cyan or grey)
+          T(arcade() and 'CHAIN' or 'RUN', 10, 16, y, grey)
+          T(live.running and score(shownRun) or '-', 20, 16, y + 10, live.running and cyan or grey)
           T('BEST', 10, 120, y, grey)
-          T(live.rank > 0 and string.format('%.1f', live.best) or '-', 20, 120, y + 10, gold)
+          T(live.rank > 0 and score(live.best) or '-', 20, 120, y + 10, gold)
           if live.rank > 0 then T('#' .. live.rank, 20, 222, y + 10, white) end
 
           -- the server's top five
@@ -308,9 +339,9 @@ public static class ZoneHud
               local colour = i == 1 and gold or white
               T(b.rank, 13, 16, yy, colour)
               T(#b.driver > 22 and b.driver:sub(1, 21) .. '…' or b.driver, 13, 40, yy, colour)
-              T(string.format('%.1f', b.score), 13, 230, yy, colour)
+              T(score(b.score), 13, 222, yy, colour)
             end
           end
         end
-        """ + $"\n-- {zoneCount} zones\n";
+        """ + $"\n-- {(arcade ? "arcade scoring" : $"{zoneCount} zones")}\n";
 }

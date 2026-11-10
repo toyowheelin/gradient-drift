@@ -43,7 +43,7 @@ public sealed class ZoneJudge
     public const float MaxSpeedMs = 110f, CheckSeconds = 1f, CheckMinPathM = 12f;
     public const float CheckMovedOverMax = 1.6f, CheckMovedUnderMin = 0.35f, CheckSlackM = 4f;
 
-    public enum Kind { Zone, Run, Ended, Spin, Wall }
+    public enum Kind { Zone, Run, Ended, Spin, Wall, Combo }     // Combo: arcade scoring's transitions (ArcadeJudge)
 
     // Something the driver is told: a zone judged (its parts), a run's score, why a run ended
     // without one, a spin, a wall hit.
@@ -64,8 +64,7 @@ public sealed class ZoneJudge
     private bool _running;
     private int _runWalls;
     private float _wrongWayS, _stoppedS;
-    private Vector2 _checkFrom;
-    private float _checkS = -1f, _checkPathM;
+    private readonly CarDataCheck _check = new();
 
     public List<Event> Events { get; } = new();
     public RunResult? LastRun { get; private set; }
@@ -139,9 +138,9 @@ public sealed class ZoneJudge
         if (jumped)
         {
             End("left the course");
-            _checkS = -1f;
+            _check.Reset();
         }
-        if (!jumped && !Plausible(position, speedMs, dt))
+        if (!jumped && !_check.Ok(position, speedMs, dt))
         {
             End("car data does not add up");
         }
@@ -201,35 +200,6 @@ public sealed class ZoneJudge
             t.SpeedSum += SpeedNowOfPace * dt;
             if (behindCar) t.TandemS += dt;
         }
-    }
-
-    // Whether what the game says of the car hangs together (see MaxSpeedMs).
-    private bool Plausible(Vector2 position, float speedMs, float dt)
-    {
-        if (speedMs > MaxSpeedMs)
-        {
-            _checkS = -1f;
-            return false;
-        }
-        if (_checkS < 0f)
-        {
-            (_checkFrom, _checkS, _checkPathM) = (position, 0f, 0f);
-            return true;
-        }
-        _checkS += dt;
-        _checkPathM += speedMs * dt;
-        if (_checkS < CheckSeconds)
-        {
-            return true;
-        }
-        float moved = Vector2.Distance(position, _checkFrom);
-        float path = _checkPathM;
-        (_checkFrom, _checkS, _checkPathM) = (position, 0f, 0f);
-        if (path < CheckMinPathM && moved < CheckMinPathM)
-        {
-            return true;
-        }
-        return moved <= CheckMovedOverMax * path + CheckSlackM && moved >= CheckMovedUnderMin * path - CheckSlackM;
     }
 
     private void StartRun()
@@ -442,4 +412,43 @@ public sealed class ZoneJudge
     }
 
     private static int Mod(int a, int n) => ((a % n) + n) % n;
+}
+
+// Whether what a player's game says of its car hangs together (see ZoneJudge.MaxSpeedMs): not faster
+// than any car, and over each CheckSeconds moved about as far as its reported speed says.
+public sealed class CarDataCheck
+{
+    private Vector2 _from;
+    private float _s = -1f, _pathM;
+
+    public void Reset() => _s = -1f;
+
+    public bool Ok(Vector2 position, float speedMs, float dt)
+    {
+        if (speedMs > ZoneJudge.MaxSpeedMs)
+        {
+            _s = -1f;
+            return false;
+        }
+        if (_s < 0f)
+        {
+            (_from, _s, _pathM) = (position, 0f, 0f);
+            return true;
+        }
+        _s += dt;
+        _pathM += speedMs * dt;
+        if (_s < ZoneJudge.CheckSeconds)
+        {
+            return true;
+        }
+        float moved = Vector2.Distance(position, _from);
+        float path = _pathM;
+        (_from, _s, _pathM) = (position, 0f, 0f);
+        if (path < ZoneJudge.CheckMinPathM && moved < ZoneJudge.CheckMinPathM)
+        {
+            return true;
+        }
+        return moved <= ZoneJudge.CheckMovedOverMax * path + ZoneJudge.CheckSlackM
+               && moved >= ZoneJudge.CheckMovedUnderMin * path - ZoneJudge.CheckSlackM;
+    }
 }

@@ -6,7 +6,9 @@
 //   - a car-on-car push (CarContact) differs from the trainer's, or
 //   - the drift zones painted for players (DriftZones) are not the shapes setup's zones.py makes, or
 //   - players' zone scores (ZoneJudge) fill zones otherwise than setup's zones.score, or the run
-//     records (ZoneRecords) do not keep and rank runs.
+//     records (ZoneRecords) do not keep and rank runs, or
+//   - arcade drift scoring (ArcadeJudge) does not bank a drifted chain, or keeps one after a spin,
+//     a wall hit or car data that does not add up.
 //
 //     dotnet run --project PluginChecks.csproj -- <cases folder>
 using System.Numerics;
@@ -370,6 +372,54 @@ if (cases.RootElement.TryGetProperty("zones", out JsonElement judgeCase) && judg
     foreach (string f in new[] { db, db + "-wal", db + "-shm" }) File.Delete(f);
     Console.WriteLine((recordsProblem == "" ? "ok   " : "FAIL ") + "ZoneRecords: " + (recordsProblem == "" ? "runs kept, each driver's best ranked, a board per set of zones" : recordsProblem));
     if (recordsProblem != "") failures++;
+}
+
+// ArcadeJudge: a car sliding along at 72 km/h, 30 degrees one way for 3 s, then the other way,
+// then straight. Banked once it straightens, with one transition; sliding 2 m behind another car
+// scores twice as much; a spin, a wall hit or a position pushed along loses the chain.
+{
+    const float dt = 0.05f, v = 20f;
+    (List<ZoneJudge.Event> events, ArcadeJudge judge) Drive(Func<float, float> heading, float gap = float.PositiveInfinity,
+        float wallAt = -1f, float push = 1f)
+    {
+        var judge = new ArcadeJudge();
+        var all = new List<ZoneJudge.Event>();
+        for (float t = 0f; t < 10f; t += dt)
+        {
+            int walls = wallAt >= 0f && t >= wallAt && t < wallAt + dt ? 1 : 0;
+            judge.Step(v * t * push, 0f, heading(t) * MathF.PI / 180f, v, 0f, dt, gap, walls);
+            all.AddRange(judge.Events);
+            judge.Events.Clear();
+        }
+        return (all, judge);
+    }
+    static float Slide(float t) => t < 3f ? 30f : t < 6f ? -30f : 0f;
+    string arcadeProblem = "";
+    var (plain, _) = Drive(Slide);
+    var banked = plain.Where(e => e.Kind == ZoneJudge.Kind.Run).ToList();
+    float expected = 100f * (30f / 45f) * (72f / 80f) * (3f + 3f * 1.25f);
+    if (banked.Count != 1) arcadeProblem = $"{banked.Count} chains banked from one drift";
+    else if (MathF.Abs(banked[0].Points - expected) > 0.05f * expected) arcadeProblem = $"chain {banked[0].Points:0} pts, expected about {expected:0}";
+    else if (plain.Count(e => e.Kind == ZoneJudge.Kind.Combo) != 1) arcadeProblem = "the transition was not counted once";
+    else
+    {
+        var (close, _) = Drive(Slide, gap: 2f);
+        float tandem = close.Where(e => e.Kind == ZoneJudge.Kind.Run).Select(e => e.Points).DefaultIfEmpty(0f).First();
+        var (spun, _) = Drive(t => t < 3f ? 30f : 150f);
+        var (wall, _) = Drive(Slide, wallAt: 4f);
+        var (pushed, _) = Drive(Slide, push: 5f);
+        var (straight, _) = Drive(_ => 0f);
+        if (MathF.Abs(tandem - 2f * banked[0].Points) > 0.05f * tandem) arcadeProblem = $"2 m behind a car scored {tandem:0}, not twice {banked[0].Points:0}";
+        else if (!spun.Any(e => e.Kind == ZoneJudge.Kind.Spin) || spun.Any(e => e.Kind == ZoneJudge.Kind.Run)) arcadeProblem = "a spin did not lose the chain";
+        else if (!wall.Any(e => e.Kind == ZoneJudge.Kind.Wall) || wall.Where(e => e.Kind == ZoneJudge.Kind.Run).Any(e => e.Points > 0.6f * banked[0].Points))
+            arcadeProblem = "a wall hit did not lose the chain";
+        else if (pushed.Any(e => e.Kind == ZoneJudge.Kind.Run)) arcadeProblem = "a chain with a made-up position was banked";
+        else if (straight.Count != 0) arcadeProblem = "driving straight was scored";
+    }
+    Console.WriteLine((arcadeProblem == "" ? "ok   " : "FAIL ") + "ArcadeJudge: " + (arcadeProblem == ""
+        ? $"a 6 s drift with one transition banks {banked[0].Points:0} pts, twice that in tandem; spin, wall and made-up data lose the chain"
+        : arcadeProblem));
+    if (arcadeProblem != "") failures++;
 }
 
 Console.WriteLine(failures == 0 ? "plugin checks passed" : $"{failures} plugin check(s) failed");
