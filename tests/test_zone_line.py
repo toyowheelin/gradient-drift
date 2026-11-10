@@ -45,3 +45,12 @@ def test_line_file_round_trip(tmp_path):
     xyz[:, 2] += 2.5
     back = zl.read_line(zl.write_line(bytes(raw), xyz))
     assert np.allclose(back, xyz)
+
+
+def test_never_writes_through_a_link(tmp_path):
+    target = tmp_path / 'shared.txt'
+    target.write_bytes(b'original')
+    link = tmp_path / 'link.txt'
+    link.symlink_to(target)
+    zl.write_file(str(link), b'moved')
+    assert target.read_bytes() == b'original' and link.read_bytes() == b'moved' and not link.is_symlink()

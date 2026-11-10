@@ -100,6 +100,15 @@ def side_widths(xz, edges):
     return out
 
 
+def write_file(path, data):
+    """Write a real file in place of a symbolic link (never through it: track folders are often links
+    into another copy's files)."""
+    if os.path.islink(path):
+        os.remove(path)
+    with open(path, 'wb') as f:
+        f.write(data)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     tf.tracks_arg(ap)
@@ -109,6 +118,10 @@ def main():
     ap.add_argument('--undo', action='store_true', help='put the original line and edges back')
     args = ap.parse_args()
 
+    folder = tf.folder(args.tracks, args.track)
+    if os.path.islink(folder):
+        sys.exit(f'{folder} is a link to {os.path.realpath(folder)}: copy the folder itself (cp -rL) so the '
+                 'line is not moved there too')
     line = tf.path(args.tracks, 'fast_lane', args.track)
     edges_path = tf.path(args.tracks, 'course_edges', args.track)
     zones_path = tf.path(args.tracks, 'course_zones', args.track)
@@ -120,6 +133,8 @@ def main():
         if not os.path.exists(line + BACKUP):
             sys.exit(f'{args.track}: the line was not moved (no {os.path.basename(line) + BACKUP})')
         for p in (line, edges_path):
+            if os.path.islink(p):
+                os.remove(p)
             os.replace(p + BACKUP, p)
         if os.path.exists(pace):
             os.replace(pace, pace + '.zone_line')
@@ -138,10 +153,9 @@ def main():
     shift = np.linalg.norm(moved - xyz[:, [0, 2]], axis=1)
     new = xyz.copy()
     new[:, 0], new[:, 2] = moved[:, 0], moved[:, 1]
-    with open(line, 'wb') as f:
-        f.write(write_line(raw, new))
+    write_file(line, write_line(raw, new))
     widths = side_widths(moved, edges)
-    widths.to_csv(edges_path, index=False)
+    write_file(edges_path, widths.to_csv(index=False).encode())
     if os.path.exists(pace):
         os.replace(pace, pace + BACKUP)
     moved_pts = shift > 0.05
