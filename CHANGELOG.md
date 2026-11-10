@@ -7,6 +7,11 @@ when releasing.
 
 ## Unreleased
 
+- `drift_rl/zone_line.py` moves a course's AI line into its drift zones (2.5 m inside each zone's
+  edge, eased in and out), keeping the originals beside it and `--undo` to put them back. The bots
+  follow the AI line, so this puts them in the zones with no new policy: in the simulator the
+  shipped policy's line score goes 0 -> 13 of 40 on Spirit Peaks, 16 -> 35 on Drift Playground and
+  24 -> 25 on Klutch Kickers. Run setup afterwards to put the moved line in the server.
 - Zone inputs for the policy: a policy can now read which edge of the course has a drift zone at
   its point and 15 m and 30 m on (`<track>_course_zones.csv`), so its bots drive to the zones the
   server shows rather than to the racing line. Before, zones only paid a reward in training: the

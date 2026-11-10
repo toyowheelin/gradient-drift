@@ -397,6 +397,7 @@ was trained with.
 | `crowd_fit.py` | How public drivers drift a track and follow each other, from AI Car Monitor recordings: their pace against the track's reference, and their gaps in tandem with the gap law that fits them. `--out` writes it for `train_ppo_gpu.py --chase-gap-crowd`; `--combine` pools several tracks. |
 | `chase_drops.py` | Why a chaser falls out of its drift: drops against throttle lifts, the front brake, the lead and the gap. |
 | `tandem_report.py` | How the tandem-train followers in a plugin telemetry file behaved (the replaying followers retired in v0.3.0; for older telemetry). |
+| `zone_line.py` | Moves a course's AI line into its drift zones (eased in and out, originals kept, `--undo`), so the bots drive through them; run setup afterwards to put it in the server. |
 | `zone_report.py` | How well policies fill each zone of a course, driving as the server does: share filled, where the rear axle runs against the zone's edge and against the AI line; `--layout K` uses one of the moved zone layouts, to see whether a policy follows the zones it is shown. |
 | `judge.py` | Drivers side by side on the same course (bots from the plugin's telemetry, a human from the in-game recorder), lap by lap and zone by zone, with a rough Formula Drift score (line 40, angle 40, style 20, measured rather than judged). |
 | `human_recording.py` | Speed, sideways acceleration, slip, RPM, gear and throttle of a human driver, from an in-game telemetry recording. |
