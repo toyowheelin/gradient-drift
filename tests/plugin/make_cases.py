@@ -34,7 +34,8 @@ OBS_PER_POLICY = 64
 # the plugin's input counts (DriftPolicy.cs ObservationSize*, ChaseInputs.Slot / Count)
 OBS_V1 = 46
 OBS_CHASE_SLOT = 67
-OBS_FULL = OBS_CHASE_SLOT + 13 + 10 + 4
+OBS_V7 = OBS_CHASE_SLOT + 13 + 10 + 4
+OBS_FULL = OBS_V7 + 6
 
 
 def made_up(obs_size, hidden, actions, seed, **extra):
@@ -128,6 +129,24 @@ def contact_cases(n=48, seed=5):
     return out
 
 
+def zone_case(out, n=200):
+    """A course edges file and a zones file for Program.cs's round 200-point line (one zone across the
+    line's start), and the zone side per point the trainer reads from them (fast_sim.zone_variants,
+    the layout a server's bots see)."""
+    import fast_sim as fs
+    zones = [(-1, 20, 41), (1, 90, 130), (-1, 185, 12), (1, 150, 150)]
+    with open(os.path.join(out, 'case_course_edges.csv'), 'w') as f:
+        f.write('PointId,PositiveSideM,NegativeSideM\n')
+        for i in range(n):
+            f.write(f'{i},6.0,7.0\n')
+    with open(os.path.join(out, 'case_course_zones.csv'), 'w') as f:
+        f.write('Zone,Kind,Side,FirstPointId,LastPointId,LengthM,Corner,CornerTurnsDeg,CornerRadiusM\n')
+        for k, (side, a, b) in enumerate(zones, 1):
+            f.write(f'{k},outside zone,{side},{a},{b},10.0,{k},120,20\n')
+    side = fs.zone_variants(np.array(zones, dtype=float), n, 1.57)[:, 0]
+    return {'edges': 'case_course_edges.csv', 'zones': 'case_course_zones.csv', 'side': side.astype(int).tolist()}
+
+
 def main():
     out = sys.argv[1]
     folder = os.path.join(out, 'policies')
@@ -167,6 +186,9 @@ def main():
     hist = made_up(OBS_FULL + 3 * 4, (128, 128), 3, 6, chase={},
                    history={'slots': [9, 10, 11, 12], 'frames': 3, 'every': 2, 'reset_slot': 0})
     add('history', hist, seed=6, why='a history block (3 frames of 4 inputs)')
+    hist7 = made_up(OBS_V7 + 3 * 4, (128, 128), 3, 7, chase={},
+                    history={'slots': [9, 10, 11, 12], 'frames': 3, 'every': 2, 'reset_slot': 0})
+    add('history_before_zones', hist7, seed=7, why='a history block after the 94 inputs from before the zone inputs')
 
     # --- what the plugin must refuse (it then leaves the cars to the stock AI) ---
     good = json.load(open(os.path.join(folder, 'shipped.json')))
@@ -200,6 +222,7 @@ def main():
     cases['policies'].append({'file': 'policies/not_json.json', 'expect': 'refused', 'why': 'a cut-off file'})
 
     cases['contacts'] = contact_cases()
+    cases['zones'] = zone_case(out)
     with open(os.path.join(out, 'cases.json'), 'w') as f:
         json.dump(cases, f)
     loads = sum(c['expect'] == 'loads' for c in cases['policies'])

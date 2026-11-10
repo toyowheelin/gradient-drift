@@ -112,6 +112,37 @@ def widen(W, b, n_inputs, hidden, rng, n_outputs=None, new_output_bias=0.0):
     return out
 
 
+def insert_columns(w, at, n):
+    """w (rows x inputs, numpy or torch) with n zero columns put in at column at."""
+    if hasattr(w, 'new_zeros'):
+        import torch
+        return torch.cat([w[:, :at], w.new_zeros((w.shape[0], n)), w[:, at:]], dim=1)
+    return np.concatenate([w[:, :at], np.zeros((w.shape[0], n)), w[:, at:]], axis=1)
+
+
+def widen_checkpoint(ck, at, n, new_mean, new_var):
+    """A checkpoint from before n inputs were added to the env (drift_env.OBS_NAMES grows at its end,
+    before any history block): n inputs put in at at with no weight in the driving and value networks
+    (and none in Adam's running moments), scaled by new_mean / new_var. It drives exactly as before."""
+    import torch
+    old_in = ck['obs_mean'].shape[0]
+    first = {k: v for k, v in ck['pi'].items() if k.endswith('weight') and v.dim() == 2 and v.shape[1] == old_in}
+    vf_first = ck['vf']['0.weight']
+    sizes = {old_in, vf_first.shape[1]}
+    for k in first:
+        ck['pi'][k] = insert_columns(ck['pi'][k], at, n)
+    ck['vf']['0.weight'] = insert_columns(vf_first, at, n)
+    for st in ck['opt']['state'].values():
+        for key in ('exp_avg', 'exp_avg_sq'):
+            t = st.get(key)
+            if t is not None and t.dim() == 2 and t.shape[1] in sizes:
+                st[key] = insert_columns(t, at, n)
+    m, v = ck['obs_mean'], ck['obs_var']
+    ck['obs_mean'] = torch.cat([m[:at], torch.as_tensor(new_mean, dtype=m.dtype, device=m.device), m[at:]])
+    ck['obs_var'] = torch.cat([v[:at], torch.as_tensor(new_var, dtype=v.dtype, device=v.device), v[at:]])
+    return ck
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     tf.tracks_arg(ap)
@@ -256,6 +287,10 @@ def main():
                     help='this share of episodes starts at speed and already sideways, a third of them mid '
                          'transition (drift_env EnvConfig.drift_start_*; randomised start states after Zhou et al. '
                          '2025, https://arxiv.org/abs/2507.23339). Evaluations still start on the line.')
+    ap.add_argument('--zone-variants', type=int, default=1, metavar='N',
+                    help='each episode shows one of the first N zone layouts of its course (fast_sim.zone_variants: the '
+                         'zones as given, then with moved ends and some left out), so a policy reading the zone inputs '
+                         'follows the zones it is shown; 1 = only the zones as given. Evaluations use the zones as given.')
     ap.add_argument('--ghost-starts', type=float, default=0.0, metavar='SHARE',
                     help='this share of the --drift-starts copies a sliding moment of the track\'s ghosts instead '
                          '(the bot leads and the people\'s laps: drift_env EnvConfig.drift_start_ghost_share)')
@@ -466,6 +501,7 @@ def main():
                  "(the recovery starts take the rest)")
     env_cfg.drift_start_fraction = args.drift_starts
     env_cfg.drift_start_ghost_share = args.ghost_starts
+    env_cfg.zone_variants = args.zone_variants
     grip_low_start = 1.0        # bottom of the range the starting network already handles
     if args.init_policy and not args.resume:
         init_meta = Policy.load_json(args.init_policy).meta
@@ -877,6 +913,14 @@ def main():
                 or ck.get('branch_layers', 0) != args.branch_layers:
             sys.exit(f"checkpoint was trained with --hidden {ck['hidden']} --layers {ck.get('layers', 2)} "
                      f"--vf-hidden {ck.get('vf_hidden', ck['hidden'])}; pass the same values.")
+        n_added = IN - ck['obs_mean'].shape[0]
+        if 0 < n_added and ck['log_std'].shape[0] == de.ACT_SIZE and not args.branch_layers:
+            at = de.OBS_SIZE - n_added
+            names = de.OBS_NAMES[at:de.OBS_SIZE]
+            norm = [de.NEW_INPUT_NORM.get(nm, (0.6, 0.5)) for nm in names]
+            ck = widen_checkpoint(ck, at, n_added, [mu for mu, _ in norm], [sd * sd for _, sd in norm])
+            print(f"{args.resume} reads {IN - n_added} inputs: inputs {at} - {de.OBS_SIZE - 1} ({', '.join(names)}) "
+                  "put in with no weight (it drives exactly as before)")
         if ck['log_std'].shape[0] != de.ACT_SIZE or ck['obs_mean'].shape[0] != IN:
             sys.exit(f"{args.resume} is from a run with {ck['obs_mean'].shape[0]} inputs and {ck['log_std'].shape[0]} "
                      f"outputs; this trainer has {de.OBS_SIZE} and {de.ACT_SIZE}. Start a new run from that run's "
@@ -915,6 +959,19 @@ def main():
         print(f"resumed from {args.resume} at {steps_done:,} ticks; best evaluation so far {best_eval:.2f}")
     elif args.init_policy:
         p0 = Policy.load_json(args.init_policy)
+        h0 = p0.meta.get('history') or {}
+        if h0:
+            # a policy with a history block: the env inputs it lacks go in before that block
+            base0 = len(p0.obs_mean) - int(h0['frames']) * len(h0['slots'])
+            if base0 < de.OBS_SIZE:
+                add = de.OBS_SIZE - base0
+                norm = [de.NEW_INPUT_NORM.get(nm, (0.6, 0.5)) for nm in de.OBS_NAMES[base0:]]
+                p0.mlp.W[0] = insert_columns(np.asarray(p0.mlp.W[0]), base0, add)
+                p0.obs_mean = np.r_[p0.obs_mean[:base0], [mu for mu, _ in norm], p0.obs_mean[base0:]]
+                p0.obs_std = np.r_[p0.obs_std[:base0], [sd for _, sd in norm], p0.obs_std[base0:]]
+                p0.meta = dict(p0.meta, obs_names=list(de.OBS_NAMES) + list(p0.meta.get('obs_names') or [])[base0:])
+                print(f"{args.init_policy}: inputs {base0} - {de.OBS_SIZE - 1} ({', '.join(de.OBS_NAMES[base0:])}) "
+                      "put in before its history block with no weight")
         old_hidden = p0.mlp.W[0].shape[0]
         if old_hidden > args.hidden:
             sys.exit(f"{args.init_policy} has {old_hidden}-unit layers; pass --hidden {old_hidden} or more.")
@@ -1267,7 +1324,8 @@ def main():
         policy = make_policy()
         episodes = max(32, args.eval_episodes // len(eval_worlds))
         for name, w in eval_worlds:
-            ev = de.evaluate(w, policy, episodes, seed=999, env_config=replace(env_cfg, privileged=False, dr_axle_grip=0.0, dr_peak_slip=0.0, dr_surface_grip=0.0),
+            ev = de.evaluate(w, policy, episodes, seed=999, env_config=replace(env_cfg, privileged=False, dr_axle_grip=0.0, dr_peak_slip=0.0, dr_surface_grip=0.0,
+                                                                                zone_variants=1),
                              reward_config=rew_cfg)
             per_track[name] = {k: float(ev[k].mean()) for k in EVAL_KEYS}
         last_eval = {k: float(np.mean([v[k] for v in per_track.values()])) for k in EVAL_KEYS}
@@ -1275,7 +1333,7 @@ def main():
             # chase episodes only, at the whole --chase-gap range (what chase_report.py shows)
             name, w = eval_worlds[0]
             ev = de.evaluate(w, policy, episodes, seed=998, env_config=replace(env_cfg, chase_share=1.0, chase_scenarios=False, dr_axle_grip=0.0, dr_peak_slip=0.0, dr_surface_grip=0.0,
-                                                                                 privileged=False),
+                                                                                 privileged=False, zone_variants=1),
                              reward_config=rew_cfg)
             had = ev['chase_fraction'] > 0
             wt = ev['chase_fraction'][had] * ev['length'][had]

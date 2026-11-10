@@ -3,7 +3,8 @@
 //   - a policy the plugin must run is refused, or gives other actions than the Python policy does
 //     (the trainer's and every tool's copy of the network) for the same inputs, or
 //   - a policy the plugin must refuse (broken, or needing a setting this build cannot apply) loads, or
-//   - a car-on-car push (CarContact) differs from the trainer's.
+//   - a car-on-car push (CarContact) differs from the trainer's, or
+//   - the drift zones file reads other zones than the trainer reads (CourseEdges.LoadZones).
 //
 //     dotnet run --project PluginChecks.csproj -- <cases folder>
 using System.Numerics;
@@ -191,6 +192,18 @@ if (cases.RootElement.TryGetProperty("contacts", out JsonElement contacts))
     bool ok = count > 0 && worst <= 1e-3f;
     Console.WriteLine((ok ? "ok   " : "FAIL ") + $"CarContact: {count} pushes match the trainer's to within {worst:G3}");
     if (!ok) failures++;
+}
+
+// The drift zones a zone policy reads (CourseEdges.LoadZones): the same side per point as the trainer
+if (cases.RootElement.TryGetProperty("zones", out JsonElement zoneCase))
+{
+    CourseEdges? course = CourseEdges.Load(Path.Combine(folder, zoneCase.GetProperty("edges").GetString()!));
+    int[] want = zoneCase.GetProperty("side").EnumerateArray().Select(v => v.GetInt32()).ToArray();
+    bool loaded = course != null && course.LoadZones(Path.Combine(folder, zoneCase.GetProperty("zones").GetString()!));
+    sbyte[] got = loaded ? course!.ZoneSide! : Array.Empty<sbyte>();
+    int wrong = got.Length == want.Length ? want.Where((w, k) => got[k] != w).Count() : want.Length;
+    Console.WriteLine((wrong == 0 ? "ok   " : "FAIL ") + $"zones: {want.Length - wrong} of {want.Length} points read as the trainer reads them");
+    if (wrong != 0) failures++;
 }
 
 Console.WriteLine(failures == 0 ? "plugin checks passed" : $"{failures} plugin check(s) failed");
