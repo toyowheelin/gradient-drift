@@ -313,6 +313,41 @@ public sealed class ZoneScoring : BackgroundService, IAssettoServerAutostart
         return s.ToString();
     }
 
+    // The board as a web page for people (/gradientdrift/leaderboard): the HUD reads BoardText.
+    public string BoardHtml()
+    {
+        var c = CultureInfo.InvariantCulture;
+        static string H(string t) => System.Net.WebUtility.HtmlEncode(t);
+        var s = new StringBuilder();
+        s.Append("<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\">")
+         .Append("<meta http-equiv=\"refresh\" content=\"30\"><title>Drift zone board</title><style>")
+         .Append("body{font-family:system-ui,sans-serif;background:#111318;color:#eee;margin:24px}h1{color:#f5c400;font-size:22px}")
+         .Append("table{border-collapse:collapse;min-width:min(640px,100%)}th,td{padding:6px 12px;text-align:left;border-bottom:1px solid #333}")
+         .Append("th{color:#aaa;font-weight:600}td.n{text-align:right;font-variant-numeric:tabular-nums}tr:first-child td{color:#ffd633}")
+         .Append(".note{color:#999}</style></head><body><h1>Drift zone board</h1>");
+        IReadOnlyList<ZoneRecords.Entry> board = Records?.Board ?? Array.Empty<ZoneRecords.Entry>();
+        if (Records is not { Open: true })
+        {
+            s.Append("<p class=\"note\">Runs are scored on this server but not kept (no SQLite database: see the server log).</p>");
+        }
+        else if (board.Count == 0)
+        {
+            s.Append(string.Format(c, "<p class=\"note\">No scored runs yet. A run goes from the first of the {0} zones to the last; it shows here once someone finishes one.</p>", ZoneCount));
+        }
+        else
+        {
+            s.Append("<table><tr><th>#</th><th>Driver</th><th>Car</th><th>Score</th><th>Angle</th><th>Speed of pace</th><th>When (UTC)</th></tr>");
+            foreach (ZoneRecords.Entry e in board)
+            {
+                s.AppendFormat(c, "<tr><td>{0}</td><td>{1}</td><td>{2}</td><td class=\"n\">{3:0.0}</td><td class=\"n\">{4:0}&deg;</td><td class=\"n\">{5:0}%</td><td>{6}</td></tr>",
+                    e.Rank, H(e.Driver), H(e.Car), e.Score, e.AngleDeg, e.SpeedOfPace * 100f, H(e.When));
+            }
+            s.Append("</table>");
+        }
+        s.Append(string.Format(c, "<p class=\"note\">Each driver's best run on this track with these {0} zones. Refreshes every 30 s.</p></body></html>", ZoneCount));
+        return s.ToString();
+    }
+
     private static string Clean(string text) => text.Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ');
 
     private sealed record LiveView(bool Running, int Zone, float Fill, float Points, float AngleDeg, float SpeedKmh,

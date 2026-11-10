@@ -321,4 +321,4 @@ loaded:
    hand-written controller drove). Since 2026-10-11 a policy trained on generated courses counts
    as one for every track.
 5. `EnableLearnedPolicy` defaults to on.
-| 47 | Player zone scoring (PR #70 build, on top of the zone paint of PR #67) on Spirit Peaks, 2026-11-09 evening, combo_all2 bots, the owner driving with CSP and the track's zones file copied into the server folder by hand. The owner: "seems to work well" (a first look; which parts were checked, run scores, the board and the records file not reported yet). |
+| 47 | Player zone scoring (PR #70 build, on top of the zone paint of PR #67) on Spirit Peaks, 2026-11-09 evening, combo_all2 bots, the owner driving with CSP and the track's zones file copied into the server folder by hand. The owner: "seems to work well": the HUD, its popups and the chat commands work in game. A scored run was not tried yet, so the board was empty (its plain-text feed showed a blank page; a readable `/gradientdrift/leaderboard` page was added after). |
