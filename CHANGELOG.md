@@ -34,6 +34,15 @@ when releasing.
   (`ShowZones`; `ZoneColor`, `ZoneLineWidthMeters`, `ZoneStripeSpacingMeters`). Setup copies the
   track's `<track>_course_zones.csv` to the server with its other files, and copies it again after
   the zone editor changes it.
+- Course edges follow the white lines a track paints along its sides. Setup now writes each track's
+  painted-line meshes (`<track>_paint_lines.csv.gz`: scenery whose name says paint, line or stripe
+  and that is a strip under 0.4 m wide). `build_course.py` keeps the strips that lie on the road
+  and run at least 30 m along the racing line, then puts each side's edge on the course side of
+  the line wherever the line is no more than 3 m past the edge it found before. The edge only
+  moves in, so tyre stacks inside the line still set it. Gaps of up to 10 m are bridged, and a
+  longer unpainted stretch keeps the old edge, blended in over 10 m. On Spirit Peaks the edges,
+  and with them the zones, move in by about 1 m (up to ~2 m) and sit on the white lines, except on
+  the unpainted main straight. Tracks without painted side lines are unchanged.
 - Course edges are one continuous curve where paving, ground or a wall sets them (not markers): a
   running minimum over 5 points, then a running mean over 7, so they no longer step in and out
   by up to a metre from point to point. Where the ground changes, the edge is now put on the
