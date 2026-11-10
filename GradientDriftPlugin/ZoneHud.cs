@@ -6,7 +6,8 @@ namespace GradientDriftPlugin;
 //     bar and its points so far, speed against the track's pace, the run so far (counting up),
 //     the player's best and place, and the server's top drivers. Its edge glows in the zones'
 //     yellow while the car is in a zone. Drag it with the left mouse button, size it with the
-//     wheel; remembered on the player's PC;
+//     wheel, switch km/h and mph with a right click (it starts in the game's units where CSP
+//     says which); remembered on the player's PC;
 //   - a popup as each zone is judged: a grade word (PERFECT / GREAT / GOOD / OK) and points that
 //     pop in, with line / angle / speed / tandem under it; a shaking red one for a spin or a wall
 //     hit; a run's score, and NEW BEST when it beats the player's best.
@@ -181,17 +182,28 @@ public static class ZoneHud
         local panel = nil
         local scale = 1
         local dragFrom = nil
+        -- speed in mph or km/h: the game's own setting where this CSP tells it, else km/h;
+        -- a right click on the panel switches (remembered)
+        local mph = false
+        pcall(function () if ac.isImperialUnits then mph = ac.isImperialUnits() == true end end)
         if ac.load then
           local px, py, ps = ac.load('gdZonesPanelX'), ac.load('gdZonesPanelY'), ac.load('gdZonesPanelScale')
           if px and py then panel = vec2(px, py) end
           if ps and ps >= 0.6 and ps <= 2 then scale = ps end
+          local u = ac.load('gdZonesPanelMph')
+          if u == 0 or u == 1 then mph = u == 1 end
         end
         local function remember()
           if not ac.store then return end
-          ac.store('gdZonesPanelX', panel.x)
-          ac.store('gdZonesPanelY', panel.y)
+          if panel then
+            ac.store('gdZonesPanelX', panel.x)
+            ac.store('gdZonesPanelY', panel.y)
+          end
           ac.store('gdZonesPanelScale', scale)
+          ac.store('gdZonesPanelMph', mph and 1 or 0)
         end
+        local function speedText(kmh) return string.format('%.0f', mph and kmh * 0.621371 or kmh) end
+        local function speedUnit() return mph and 'MPH' or 'KM/H' end
 
         local function text(s, size, pos, colour)
           ui.dwriteDrawText(s, size, pos, colour)
@@ -260,6 +272,10 @@ public static class ZoneHud
             dragFrom = nil
             remember()
           end
+          if over and ui.mouseClicked(1) then
+            mph = not mph
+            remember()
+          end
           if over and ui.mouseWheel() ~= 0 then
             scale = math.max(0.6, math.min(2, scale + ui.mouseWheel() * 0.05))
             remember()
@@ -294,8 +310,8 @@ public static class ZoneHud
           centred('ANGLE', 10 * k, c.x, c.y + 34 * k, grey)
 
           -- speed, right of the gauge
-          T(string.format('%.0f', live.kmh), 30, 160, 54, white)
-          T('KM/H', 10, 162, 88, grey)
+          T(speedText(live.kmh), 30, 160, 54, white)
+          T(speedUnit(), 10, 162, 88, grey)
           local pace = math.min(1.2, live.ofPace)
           ui.drawRectFilled(P(160, 104), P(274, 110), track, 3 * k)
           ui.drawRectFilled(P(160, 104), P(160 + 114 * math.min(1, pace), 110), grade((pace - 0.6) / 0.4), 3 * k)

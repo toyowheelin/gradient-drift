@@ -7,6 +7,8 @@ when releasing.
 
 ## Unreleased
 
+- The drift HUD shows speed in mph or km/h. It starts in the game's units where the player's CSP
+  says which, and a right click on the panel switches it (remembered on their PC).
 - Arcade drift scoring: `ZoneScoreMode: Arcade` scores players freestyle, with no zones (and no
   zone paint), so it works on any track. A chain builds points every moment the car slides, from
   angle x speed, times a combo that goes up with each transition and a bonus of up to x2 for
