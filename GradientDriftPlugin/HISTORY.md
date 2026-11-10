@@ -321,4 +321,4 @@ loaded:
    hand-written controller drove). Since 2026-10-11 a policy trained on generated courses counts
    as one for every track.
 5. `EnableLearnedPolicy` defaults to on.
-| 47 | Player zone scoring (PR #70 build, on top of the zone paint of PR #67) on Spirit Peaks, 2026-11-09 evening, combo_all2 bots, the owner driving with CSP and the track's zones file copied into the server folder by hand. Zones painted, the HUD panel and popups showed, runs were scored and kept in the server's SQLite file (Windows' own winsqlite3 loaded). The owner: "seems to work well". No scores or numbers recorded from this first look. |
+| 47 | Player zone scoring (PR #70 build, on top of the zone paint of PR #67) on Spirit Peaks, 2026-11-09 evening, combo_all2 bots, the owner driving with CSP and the track's zones file copied into the server folder by hand. The owner: "seems to work well" (a first look; which parts were checked, run scores, the board and the records file not reported yet). |
