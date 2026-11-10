@@ -37,7 +37,8 @@ when releasing.
 - Course edges follow the white lines a track paints along its sides. Setup now writes each track's
   painted-line meshes (`<track>_paint_lines.csv.gz`: scenery whose name says paint, line or stripe
   and that is a strip under 0.4 m wide). `build_course.py` keeps the strips that lie on the road
-  and run at least 30 m along the racing line, then puts each side's edge on the course side of
+  and run at least 30 m along the racing line at least 4 m from it on average (a line the cars drive
+  along, like the one round Klutch Kickers' hairpin, is not the side), then puts each side's edge on the course side of
   the line wherever the line is no more than 3 m past the edge it found before. The edge only
   moves in, so tyre stacks inside the line still set it. Gaps of up to 10 m are bridged, and a
   longer unpainted stretch keeps the old edge, blended in over 10 m. On Spirit Peaks the edges,

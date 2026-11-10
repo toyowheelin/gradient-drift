@@ -111,13 +111,16 @@ SMOOTH_MEAN_POINTS = 7
 # PAINT_MIN_RUN_M (its pieces heading within PAINT_MAX_ANGLE_DEG of the line): clipping-point
 # chevrons, grid boxes and power lines are not the course's side. Where a side has no line for up
 # to PAINT_GAP_M the line's distance is carried across; over a longer stretch (a start/finish
-# straight left unpainted) the edge found above is kept, blended in over PAINT_BLEND_M.
+# straight left unpainted) the edge found above is kept, blended in over PAINT_BLEND_M. A painted
+# mesh lying a median under PAINT_MIN_OFFSET_M from the racing line is a line the cars drive along
+# (Klutch Kickers paints one round its hairpin ~2.3 m off the line), not the course's side.
 PAINT_SEARCH_PAST_M = 3.0
 PAINT_MAX_HEIGHT_M = 0.05
 PAINT_MIN_RUN_M = 30.0
 PAINT_MAX_ANGLE_DEG = 20.0
 PAINT_GAP_M = 10.0
 PAINT_BLEND_M = 10.0
+PAINT_MIN_OFFSET_M = 4.0
 OFF_TRACK_GRASS_SHARE = 0.5
 OFF_TRACK_NAME_WORDS = ('sand', 'grass', 'dirt', 'gravel', 'mud', 'soil', 'cement')
 LINE_MATERIAL_SHARE = 0.05
@@ -351,11 +354,14 @@ def paint_strips(line, tris, names, ground_y):
         sides = np.stack([t[:, 1] - t[:, 0], t[:, 2] - t[:, 1], t[:, 0] - t[:, 2]], axis=1)[:, :, [0, 2]]
         longest = sides[np.arange(len(t)), np.argmax(np.linalg.norm(sides, axis=2), axis=1)]
         arc = np.empty(len(t))
+        lat = np.empty(len(t))
         aligned = np.zeros(len(t), bool)
         for k in range(len(t)):
-            arc[k], _, i = line.project(c[k, 0], c[k, 2])
+            arc[k], lat[k], i = line.project(c[k, 0], c[k, 2])
             d = longest[k] / max(np.linalg.norm(longest[k]), 1e-9)
             aligned[k] = abs(d[0] * line.tan[i, 0] + d[1] * line.tan[i, 2]) >= cos_max
+        if np.median(np.abs(lat)) < PAINT_MIN_OFFSET_M:
+            continue
         # the longest unbroken stretch of the lap (1 m bins) covered by aligned pieces
         bins = np.zeros(int(math.ceil(line.lap)) + 1, bool)
         bins[(arc[aligned] % line.lap).astype(int)] = True

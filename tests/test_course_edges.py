@@ -123,6 +123,9 @@ def test_painted_side_line_sets_the_edge_and_chevrons_do_not():
     high = _strip_along(line, 4.0, 0, 300, y=10.0)    # power lines overhead
     tris += high
     names += ['wire'] * len(high)
+    near = _strip_along(line, 2.3, 100, 140, sign=-1)  # a line the cars drive along, 2.3 m off
+    tris += near
+    names += ['hairpin line'] * len(near)
     strips = bc.paint_strips(line, tris, names, lambda x, y, z: 0.0)
     assert len(strips) == 2 * 300
     d = bc.paint_distance(line, strips, +1)
