@@ -426,10 +426,10 @@ public sealed class DriftPolicy
             {
                 residualGate = residualElement.GetProperty("gate_input").GetInt32();
                 residualGateAbove = (float)residualElement.GetProperty("gate_above").GetDouble();
-                if (residualGate != ChaseInputs.Slot || obsSize < ObservationSizeV7 || historyFrames > 0)
+                if (residualGate != ChaseInputs.Slot || obsSize != ObservationSizeV7 || historyFrames > 0)
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a residual network gated by input {Gate} of {ObsSize}; this build runs one gated by the car ahead (input {Slot} of {BuildObs})",
-                        PluginData.Describe(path), residualGate, obsSize, ChaseInputs.Slot, ObservationSize);
+                        PluginData.Describe(path), residualGate, obsSize, ChaseInputs.Slot, ObservationSizeV7);
                     return null;
                 }
                 if (!TryReadLayers(path, residualElement.GetProperty("layers"), obsSize, "residual ", out residualWeights, out residualBiases))

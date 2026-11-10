@@ -91,9 +91,10 @@ def features():
         # GradientDriftPlugin.bundle.zip beside the plugin (PluginData.cs)
         'bundle': os.path.exists(os.path.join(PLUGIN, 'PluginData.cs')),
     }
-    m = re.search(r'baseSize != (\w+)', load)
-    if m and 'DriftPolicy.MaxHistoryInputs' in const:
-        out['history'] = {'base_obs_size': const[f'DriftPolicy.{m.group(1)}'],
+    bases = sorted({const[f'DriftPolicy.{n}'] for n in re.findall(r'baseSize != (ObservationSize\w*)', load)})
+    if bases and 'DriftPolicy.MaxHistoryInputs' in const:
+        # base_obs_size (the smallest) for setups from before a plugin took more than one
+        out['history'] = {'base_obs_size': bases[0], 'base_obs_sizes': bases,
                           'max_inputs': const['DriftPolicy.MaxHistoryInputs']}
     m = re.search(r'residualGate != (\w+)\.(\w+) \|\| obsSize != (\w+)', load)
     if m:
