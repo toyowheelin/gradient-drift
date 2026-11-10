@@ -324,9 +324,23 @@ if (cases.RootElement.TryGetProperty("zones", out JsonElement judgeCase) && judg
             if (problem == "" && sliding && !(result!.Value.Points > 1f && result.Value.Points <= 110f)) problem = $"a run score of {result!.Value.Points}";
             if (problem == "" && !sliding && result != null) problem = $"a straight lap scored {result.Value.Points}";
         }
+        if (problem == "" && sliding && course != null)
+        {
+            // the same lap with a speed five times what the car moves: made-up numbers, not scored
+            var judge = new ZoneJudge(new ZoneJudge.Course(course, null));
+            bool scored = false, said = false;
+            for (int i = 0; i < x.Length; i++)
+            {
+                judge.StepAt(new Vector2(x[i], z[i]), new Vector2(rx[i], rz[i]), slip[i], 5f * new Vector2(vx[i], vz[i]), dt, false, 0);
+                scored |= judge.Events.Any(e => e.Kind == ZoneJudge.Kind.Run);
+                said |= judge.Events.Any(e => e.Kind == ZoneJudge.Kind.Ended && e.Text.Contains("add up"));
+                judge.Events.Clear();
+            }
+            if (scored || !said) problem = "a lap whose speed does not match its movement was scored";
+        }
         bool ok = problem == "";
         Console.WriteLine((ok ? "ok   " : "FAIL ") + $"ZoneJudge ({(sliding ? "sliding" : "straight")} lap): "
-            + (ok ? $"{judged.Count} zones judged as zones.score fills them (to within {worst:G3}), " + (result is { } res ? $"run {res.Points:0.0} pts" : "not scored as a run") : problem));
+            + (ok ? $"{judged.Count} zones judged as zones.score fills them (to within {worst:G3}), " + (result is { } res ? $"run {res.Points:0.0} pts; the same lap with a made-up speed not scored" : "not scored as a run") : problem));
         if (!ok) failures++;
     }
 

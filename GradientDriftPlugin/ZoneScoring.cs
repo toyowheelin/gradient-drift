@@ -65,6 +65,10 @@ public sealed class ZoneScoring : BackgroundService, IAssettoServerAutostart
         _course = new ZoneJudge.Course(course, pace);
         string track = trackName + (string.IsNullOrWhiteSpace(serverConfiguration.Server.TrackConfig)
             ? "" : "/" + serverConfiguration.Server.TrackConfig.Trim());
+        if (!serverConfiguration.Extra.UseSteamAuth)
+        {
+            Log.Warning("GradientDrift: UseSteamAuth is off, so a player's Steam ID is not checked - anyone could keep runs under someone else's ID on the zone board (turn it on in extra_cfg.yml to stop that)");
+        }
         if (!string.IsNullOrWhiteSpace(configuration.ZoneRecordsFile))
         {
             Records = new ZoneRecords(configuration.ZoneRecordsFile, track, Fingerprint(course), configuration.ZoneBoardSize);
@@ -239,7 +243,7 @@ public sealed class ZoneScoring : BackgroundService, IAssettoServerAutostart
         {
             return;
         }
-        string name = client.Name ?? $"car {car.SessionId}";
+        string name = Name(client.Name, car.SessionId);
         string line = string.Format(c, "Zone run {0:0.0} pts (line {1:0}%, angle {2:0}°, speed {3:0}% of pace{4})",
             run.Score, run.MeanFill * 100f, run.MeanAngleDeg, run.MeanSpeedOfPace * 100f,
             run.Walls > 0 ? $", {run.Walls} wall hit{(run.Walls > 1 ? "s" : "")}" : "");
@@ -346,6 +350,16 @@ public sealed class ZoneScoring : BackgroundService, IAssettoServerAutostart
         }
         s.Append(string.Format(c, "<p class=\"note\">Each driver's best run on this track with these {0} zones. Refreshes every 30 s.</p></body></html>", ZoneCount));
         return s.ToString();
+    }
+
+    // A player's name as kept and shown: what their game sent, without control characters, at most
+    // NameLength characters.
+    public const int NameLength = 32;
+    public static string Name(string? sent, byte sessionId)
+    {
+        string name = new string((sent ?? "").Where(ch => !char.IsControl(ch)).ToArray()).Trim();
+        if (name.Length > NameLength) name = name[..NameLength];
+        return name.Length > 0 ? name : $"car {sessionId}";
     }
 
     private static string Clean(string text) => text.Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ');

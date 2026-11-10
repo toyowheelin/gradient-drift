@@ -36,6 +36,12 @@ public sealed class ZoneJudge
     public const float MinZoneSeconds = 0.25f; // judged time a zone needs to count as driven through
     public const float MinRunScore = 1f;       // a run scoring less is not a drift run (not told, not kept)
     public const float WrongWaySeconds = 1.5f, StoppedSeconds = 8f, JumpM = 40f;
+    // The car's status comes from the player's game, so a run whose numbers do not add up is not
+    // scored: faster than any car (MaxSpeedMs), or, over each CheckSeconds, moved much further than
+    // its reported speed says (a position pushed along) or much less (a speed made up for points).
+    // A curve's chord is never under 0.7 of its arc in a second of driving, so honest cars pass.
+    public const float MaxSpeedMs = 110f, CheckSeconds = 1f, CheckMinPathM = 12f;
+    public const float CheckMovedOverMax = 1.6f, CheckMovedUnderMin = 0.35f, CheckSlackM = 4f;
 
     public enum Kind { Zone, Run, Ended, Spin, Wall }
 
@@ -58,6 +64,8 @@ public sealed class ZoneJudge
     private bool _running;
     private int _runWalls;
     private float _wrongWayS, _stoppedS;
+    private Vector2 _checkFrom;
+    private float _checkS = -1f, _checkPathM;
 
     public List<Event> Events { get; } = new();
     public RunResult? LastRun { get; private set; }
@@ -131,6 +139,11 @@ public sealed class ZoneJudge
         if (jumped)
         {
             End("left the course");
+            _checkS = -1f;
+        }
+        if (!jumped && !Plausible(position, speedMs, dt))
+        {
+            End("car data does not add up");
         }
         if (wallHits > 0 && _running)
         {
@@ -188,6 +201,35 @@ public sealed class ZoneJudge
             t.SpeedSum += SpeedNowOfPace * dt;
             if (behindCar) t.TandemS += dt;
         }
+    }
+
+    // Whether what the game says of the car hangs together (see MaxSpeedMs).
+    private bool Plausible(Vector2 position, float speedMs, float dt)
+    {
+        if (speedMs > MaxSpeedMs)
+        {
+            _checkS = -1f;
+            return false;
+        }
+        if (_checkS < 0f)
+        {
+            (_checkFrom, _checkS, _checkPathM) = (position, 0f, 0f);
+            return true;
+        }
+        _checkS += dt;
+        _checkPathM += speedMs * dt;
+        if (_checkS < CheckSeconds)
+        {
+            return true;
+        }
+        float moved = Vector2.Distance(position, _checkFrom);
+        float path = _checkPathM;
+        (_checkFrom, _checkS, _checkPathM) = (position, 0f, 0f);
+        if (path < CheckMinPathM && moved < CheckMinPathM)
+        {
+            return true;
+        }
+        return moved <= CheckMovedOverMax * path + CheckSlackM && moved >= CheckMovedUnderMin * path - CheckSlackM;
     }
 
     private void StartRun()

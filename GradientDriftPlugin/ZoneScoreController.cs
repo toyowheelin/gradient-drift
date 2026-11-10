@@ -19,6 +19,7 @@ public class ZoneScoreController : ControllerBase
     public IActionResult Live(int car, [FromQuery] int since = 0)
     {
         if (!_scoring.On || car < 0 || car > 255) return NotFound();
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
         return Content(_scoring.LiveText((byte)car, since), "text/plain");
     }
 
@@ -34,6 +35,9 @@ public class ZoneScoreController : ControllerBase
     public IActionResult Leaderboard()
     {
         if (!_scoring.On) return NotFound();
+        // players' names are in it (encoded); nothing on the page may run or load anything else
+        Response.Headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'";
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
         return Content(_scoring.BoardHtml(), "text/html; charset=utf-8");
     }
 }
