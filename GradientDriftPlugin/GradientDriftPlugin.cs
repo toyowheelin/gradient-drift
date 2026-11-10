@@ -258,7 +258,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         if (_configuration.ShowZones)
         {
             // the track's drift zones painted on the road for players with CSP (DriftZones.cs)
-            List<DriftZones.Shape>? zones = DriftZones.Load(trackName, spline.Points, _configuration.ZoneStripeSpacingMeters);
+            List<DriftZones.Shape>? zones = DriftZones.Load(trackName, spline.Points, _configuration.ZoneStripeSpacingMeters,
+                _configuration.ZoneLineWidthMeters);
             if (zones is { Count: > 0 })
             {
                 cspServerScriptProvider.AddScript(DriftZones.Script(zones, _configuration.ZoneColor, _configuration.ZoneLineWidthMeters),

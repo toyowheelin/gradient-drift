@@ -216,7 +216,8 @@ if (cases.RootElement.TryGetProperty("zones", out JsonElement zoneCase))
     PluginData.Init(Path.Combine(folder, "zones"));
     string before = Directory.GetCurrentDirectory();
     Directory.SetCurrentDirectory(Path.Combine(folder, "zones"));       // the track's files sit in the server folder
-    List<DriftZones.Shape>? shapes = DriftZones.Load(track, trackPoints, (float)zoneCase.GetProperty("spacing").GetDouble());
+    List<DriftZones.Shape>? shapes = DriftZones.Load(track, trackPoints, (float)zoneCase.GetProperty("spacing").GetDouble(),
+        (float)zoneCase.GetProperty("line_width").GetDouble());
     Directory.SetCurrentDirectory(before);
     var expected = zoneCase.GetProperty("shapes").EnumerateArray().ToArray();
     string problem = "";
@@ -254,7 +255,7 @@ if (cases.RootElement.TryGetProperty("zones", out JsonElement zoneCase))
             }
         }
     }
-    string script = shapes != null ? DriftZones.Script(shapes, "#F5C400", 0.3f) : "";
+    string script = shapes != null ? DriftZones.Script(shapes, "#F5C400", (float)zoneCase.GetProperty("line_width").GetDouble()) : "";
     if (problem == "" && !(worst <= 0.02f))
         problem = $"shapes differ from setup's by up to {worst:G3} m";
     if (problem == "" && (!script.Contains("ac.TrackPaint()") || script.Split("{o=").Length - 1 != shapes!.Count))

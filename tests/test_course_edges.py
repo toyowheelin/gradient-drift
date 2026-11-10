@@ -66,3 +66,33 @@ def test_fold_limit_ignores_a_stretch_on_a_bridge():
     sp[len(sp) // 2:, 1] = 6.0          # half the lap 6 m higher: never nearer in the fold sense
     lim = bc.fold_limit(bc.Line(sp), +1)
     assert lim[len(sp) // 4] > 12.0
+
+
+def test_off_track_materials():
+    mats = {'Tarmac', 'Background', 'Sand02AC', 'curb', 'WB_Gravel_03', 'Cement004'}
+    ground = {'Tarmac': 1000.0, 'Background': 900.0, 'Sand02AC': 40.0, 'curb': 50.0, 'WB_Gravel_03': 500.0,
+              'Cement004': 30.0}
+    grass = {'Background': 850.0, 'curb': 10.0}
+    line = {'Tarmac': 90, 'WB_Gravel_03': 10}
+    off = bc.off_track_materials(mats, ground, grass, line, 100)
+    # drawn like the grass around it, or named as run-off or an apron; the line's own gravel and the kerb are course
+    assert off == {'Background', 'Sand02AC', 'Cement004'}
+
+
+def test_smooth_edge_removes_a_notch_and_wraps():
+    w = np.full(100, 6.0)
+    w[40:42] = 8.0                      # a notch out onto the apron, two points wide
+    w[0] = 7.5                          # one at the lap's seam
+    out = bc.smooth_edge(w)
+    assert np.allclose(out, 6.0)
+
+
+def test_smooth_edge_follows_a_gradual_change_and_keeps_a_narrowing():
+    w = np.linspace(4.0, 8.0, 100)
+    w = np.r_[w, w[::-1]]
+    out = bc.smooth_edge(w)
+    assert np.all(np.abs(out[10:90] - w[10:90]) < 0.2)
+    w = np.full(100, 6.0)
+    w[50:60] = 3.0                      # a real narrowing (a wall) ten points long
+    out = bc.smooth_edge(w)
+    assert np.all(out[52:58] <= 3.0 + 1e-9)

@@ -20,6 +20,11 @@ reads the layout. The plugin and the trainer load the same two files.
     SurfaceGrip setting scales the tyres' grip by it. Plugins and trainers without that setting
     never read the file.
 
+<name>_collision_material.csv.gz - one row per row of the collision file, in the same order: the
+    material the model draws that triangle with. A track's builder sometimes gives the road's
+    surface KEY to strips drawn as sand, cement or grass beside the tarmac (Klutch Kickers);
+    build_course.py ends the course's edge where the drawing changes to such a material.
+
 <name> is the track folder's name unless --name gives another. Each row: X1,Y1,Z1,X2,Y2,Z2,X3,Y3,Z3,
 SurfaceType in world coordinates (to 0.1 mm), after one header line; gzip-compressed.
 
@@ -38,6 +43,7 @@ The model files are read by kn5_reader.py (from KN5 Blender Tools, GPL-3.0-or-la
 import argparse
 import collections
 import configparser
+import csv
 import gzip
 import os
 import re
@@ -187,9 +193,10 @@ def normal_agreement(mesh):
     return out
 
 
-def meshes(node, world, out, agreement=None):
-    """Appends (mesh name, triangles in world coordinates) for node and its children; with
-    `agreement` (a dict), also mesh name -> normal_agreement(mesh) for the colliding meshes."""
+def meshes(node, world, out, agreement=None, materials=None):
+    """Appends (mesh name, triangles in world coordinates, material name) for node and its children;
+    with `agreement` (a dict), also mesh name -> normal_agreement(mesh) for the colliding meshes.
+    `materials` is the model's material list (the name is '' without it)."""
     if node.kind == 1:
         own = times([list(row) for row in node.matrix], world)
     else:
@@ -200,12 +207,14 @@ def meshes(node, world, out, agreement=None):
                   m[0][1] * x + m[1][1] * y + m[2][1] * z + m[3][1],
                   m[0][2] * x + m[1][2] * y + m[2][2] * z + m[3][2]) for x, y, z in node.mesh.positions]
             index = node.mesh.indices
+            mid = node.mesh.material_id
+            material = materials[mid].name if materials and 0 <= mid < len(materials) else ''
             out.append((node.name, [(*p[index[i]], *p[index[i + 1]], *p[index[i + 2]])
-                                    for i in range(0, len(index) - 2, 3)]))
+                                    for i in range(0, len(index) - 2, 3)], material))
             if agreement is not None and node.name[:1].isdigit():
                 agreement.setdefault(node.name, []).extend(normal_agreement(node.mesh))
     for child in node.children:
-        meshes(child, own, out, agreement)
+        meshes(child, own, out, agreement, materials)
 
 
 def main(argv=None):
@@ -251,7 +260,7 @@ def main(argv=None):
     unplaced = collections.Counter()
     road_count = collections.Counter()
     road_agreement = []
-    sensors, collision, collision_keys = [], [], []
+    sensors, collision, collision_keys, collision_materials = [], [], [], []
     for file, (dx, dy, dz) in layout_files(track, args.layout):
         path = find(track, file)
         if path is None:
@@ -259,15 +268,18 @@ def main(argv=None):
             continue
         found = []
         agreement = {}
-        meshes(parse(path).root, [[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)], found, agreement)
+        model = parse(path)
+        meshes(model.root, [[1.0 if i == j else 0.0 for j in range(4)] for i in range(4)], found, agreement,
+               model.materials)
         before = len(sensors), len(collision)
-        for mesh_name, tris in found:
+        for mesh_name, tris, material in found:
             surface, key = collision_surface(mesh_name)
             moved = [(t[0] + dx, t[1] + dy, t[2] + dz, t[3] + dx, t[4] + dy, t[5] + dz,
                       t[6] + dx, t[7] + dy, t[8] + dz) for t in tris]
             if surface:
                 collision.extend(t + (surface,) for t in moved)
                 collision_keys.extend([key] * len(moved))
+                collision_materials.extend([material] * len(moved))
                 if surface == 'Road':
                     road_count[key] += len(moved)
                     road_agreement.extend(agreement.get(mesh_name, []))
@@ -300,10 +312,21 @@ def main(argv=None):
         print(f'Wrote {len(rows)} triangles to {out_path}: '
               + ', '.join(f'{k} {v}' for k, v in sorted(by_type.items())))
     write_grip(os.path.join(args.output, f'{name}_collision_grip.csv.gz'), collision, collision_keys, friction)
+    write_materials(os.path.join(args.output, f'{name}_collision_material.csv.gz'), collision_materials)
     if unplaced:
         print('  numbered meshes with no known surface: ' + ', '.join(f'{k} ({v})' for k, v in unplaced.most_common(12)))
     if not any(r[9] != 'Wall' for r in collision):
         print('  warning: no ground found - the layout names no colliding <number><KEY> meshes')
+
+
+def write_materials(out_path, materials):
+    """<name>_collision_material.csv.gz: each collision row's material, as the model draws it (one
+    column, quoted as CSV)."""
+    with gzip.open(out_path, 'wt', compresslevel=6, newline='') as out:
+        w = csv.writer(out)
+        w.writerow(['Material'])
+        for m in materials:
+            w.writerow([m])
 
 
 def write_grip(out_path, collision, collision_keys, friction):

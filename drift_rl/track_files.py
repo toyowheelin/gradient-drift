@@ -37,7 +37,10 @@ PACE_REFERENCE = 'pace_reference.csv'
 # those markers. Stays in the track's folder; the server does not need it.
 # Each collision triangle's surface KEY and grip (tools/track_triangles.py): read only with the
 # SurfaceGrip setting, every surface 1 without it.
-OPTIONAL = {'pace_reference': PACE_REFERENCE, 'visual': 'visual.csv.gz', 'collision_grip': 'collision_grip.csv.gz'}
+# Each collision triangle's material as the model draws it (tools/track_triangles.py): read only by
+# build_course.py, to end the course's edge where road-keyed ground is drawn as sand or grass.
+OPTIONAL = {'pace_reference': PACE_REFERENCE, 'visual': 'visual.csv.gz', 'collision_grip': 'collision_grip.csv.gz',
+            'collision_material': 'collision_material.csv.gz'}
 
 
 def name(kind, track=TRACK):

@@ -170,7 +170,7 @@ def test_paint_shapes(track):
     (oz, f1, s1), (tg, f2, s2), (_, f3, s3) = Z.paint_shapes(course, [long_oz, long_tg, tiny], 1.6)
     assert oz and not tg and len(f1) == 2 * 61 and len(s3) == 0
     assert len(s1) > 10 and abs(len(s1) / max(len(s2), 1) - 2) < 0.3
-    outer, inner = course.zone_outline(long_oz)
+    outer, inner = course.zone_outline(long_oz, inset=0.15)      # the outer line half its 0.3 m width in
 
     def off(line, p):                                 # distance from p to a polyline
         a, b = line[:-1], line[1:]
@@ -200,7 +200,10 @@ def test_spikes_taken_out(tracks_dir):
     smooth = bz.smooth_edges(spiked)
     assert smooth.attrs['smoothed'] and bz.smooth_edges(smooth) is smooth
     p_new, _ = bz.edge_arrays(spiked)
-    assert np.abs(p_new - pos).max() < bz.SPIKE_M + 0.01            # back within a metre of where it was
+    assert np.abs(p_new[[50, 51, 52]] - pos[[50, 51, 52]]).max() < bz.SPIKE_M + 0.01   # back within a metre
+    assert np.allclose(p_new[200], spiked.loc[200, ['PositiveEdgeX', 'PositiveEdgeZ']].to_numpy(float))  # a dip stays
+    widths = bz.smooth_edges(spiked).PositiveSideM.to_numpy()
+    assert (widths <= spiked.PositiveSideM.to_numpy() + 1e-9).all()              # the edge only ever comes in
     near = [i for c in (50, 51, 52, 200) for i in range(c - bz.SMOOTH_POINTS // 2, c + bz.SMOOTH_POINTS // 2 + 1)]
     assert np.allclose(np.delete(p_new, near, 0), np.delete(pos, near, 0))
     assert [(z['side'], z['first'], z['last']) for z in bz.place_zones(spiked)] == \

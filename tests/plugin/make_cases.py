@@ -164,10 +164,10 @@ def zone_case(out):
         shutil.copyfile(tf.path(tracks, kind, name), os.path.join(folder, tf.name(kind, name)))
     line, _ = lt.read_line(tf.path(tracks, 'fast_lane', name))
     course, zones, _ = Z.load(tracks, name)
-    shapes = Z.paint_shapes(course, zones, 1.6)
+    shapes = Z.paint_shapes(course, zones, 1.6, 0.3)
     runs = [judge_run(course, zones, Z, sliding) for sliding in (True, False)]
     shutil.rmtree(tracks)
-    return {'track': name, 'spacing': 1.6, 'line': line.tolist(),
+    return {'track': name, 'spacing': 1.6, 'line_width': 0.3, 'line': line.tolist(),
             'shapes': [{'outside': bool(o), 'frame': f.tolist(), 'stripes': st.tolist()} for o, f, st in shapes],
             'runs': runs}
 
