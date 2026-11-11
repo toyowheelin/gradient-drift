@@ -316,3 +316,25 @@ def test_protected_model_files_are_found():
     moved = SimpleNamespace(positions=[(0, 0, 0), (0, 3, 4), (4, -2, 0)], normals=[up] * 3, indices=[0, 1, 2])
     assert tt.normal_agreement(flat)[0] > 0.999
     assert tt.normal_agreement(moved)[0] < tt.SCRAMBLED_AGREEMENT
+
+
+def test_a_drift_line_gets_its_own_pace_reference(world):
+    """zone_line.py moves the track files' AI line and sets their pace reference aside: setup puts the
+    moved line in the server and works out a pace reference for it (the server's old one follows the
+    old line's corners, and the track check would judge the new line by it)."""
+    from gradientdrift_setup.apply import apply_plan
+    import zone_line
+    server, game, plugin, data, track = world
+    apply_plan(plan(world), log=lambda *_: None)
+    if not os.path.exists(os.path.join(data, track, f'{track}_course_zones.csv')):
+        pytest.skip('the test course has no zones')
+    zone_line.main(['--tracks', data, '--track', track])
+    p = plan(world)
+    assert not p.blockers, p.blockers
+    pace = f'{track}_pace_reference.csv'
+    assert any(c.file == pace and c.op[0] == 'pace_reference' for c in p.changes), [c.what for c in p.changes]
+    assert any(c.op[0] == 'copy' and c.op[2].endswith('fast_lane.ai') for c in p.changes)
+    apply_plan(p, log=lambda *_: None)
+    assert os.path.exists(os.path.join(data, track, pace))
+    with open(os.path.join(data, track, pace), 'rb') as a, open(os.path.join(server, pace), 'rb') as b:
+        assert a.read() == b.read()

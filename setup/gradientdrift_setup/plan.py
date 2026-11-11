@@ -390,6 +390,15 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
             ai_copy = None
     if ai_copy:
         p.changes.append(ai_copy)
+        # a new AI line (moved into the zones, or rebuilt) needs its own pace reference: the server's
+        # follows the old line's points and corners. The track files' one is set aside when the line
+        # changes (zone_line.py), so it is made again here from the new line's shape
+        pace_name = f'{server.track}_pace_reference.csv'
+        if (inputs > 54 and track_data and not any(c.file == pace_name for c in p.changes)
+                and not os.path.exists(os.path.join(track_data, server.track, pace_name))):
+            p.changes.append(Change(pace_name, "work out the track's reference speed round the lap for the new AI "
+                                    f"line, from its shape, into {os.path.join(track_data, server.track)}, and copy "
+                                    "it for the plugin", op=('pace_reference', policy, track_data, server.track)))
     needed_missing = [m for m in missing if not m.endswith(OPTIONAL_TRACK_FILES)
                       or (m.endswith('_course_edges.csv') and inputs > 46)
                       or (m.endswith('_pace_reference.csv') and inputs > 54)]

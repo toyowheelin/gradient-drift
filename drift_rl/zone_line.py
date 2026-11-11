@@ -38,20 +38,40 @@ BACKUP = '.before_zone_line'
 INSIDE_M = 3.0
 RAMP_POINTS = 5
 SMOOTH_POINTS = 5         # each side: an 11-point moving average
+MAX_SLOPE = 0.2           # the line moves sideways at most 0.2 m per metre along it (a short zone far
+                          # from the racing line gets less of the move rather than a kink)
+
+
+def _layout(raw):
+    """(points, offset of the first position) of a fast_lane.ai: version 7 (the game's) or -1 (the
+    short form generated courses use); either way 20 bytes a point, the position first."""
+    version, n = struct.unpack_from('<ii', raw, 0)
+    if version == 7:
+        return n, 16
+    if version == -1:
+        return n, 8
+    raise ValueError(f'fast_lane.ai version {version}: only versions 7 and -1 can be moved')
 
 
 def read_line(raw):
-    """Positions (n, 3) of a version 7 fast_lane.ai."""
-    version, n = struct.unpack_from('<ii', raw, 0)
-    if version != 7:
-        raise ValueError(f'fast_lane.ai version {version}: only version 7 lines can be moved')
-    return np.array([struct.unpack_from('<fff', raw, 16 + 20 * i) for i in range(n)], dtype=np.float64)
+    """Positions (n, 3) of a fast_lane.ai."""
+    n, start = _layout(raw)
+    return np.array([struct.unpack_from('<fff', raw, start + 20 * i) for i in range(n)], dtype=np.float64)
 
 
 def write_line(raw, xyz):
+    """The line with its points at xyz, and each point's corner radius worked out again for them (the
+    simulator and the plugin read it: straights, the inside of a corner, the tightest corner ahead)."""
+    from line_tools import radius_3pt
+    n, start = _layout(raw)
+    radius = radius_3pt(np.asarray(xyz)[:, [0, 2]])
     out = bytearray(raw)
     for i, p in enumerate(xyz):
-        struct.pack_into('<fff', out, 16 + 20 * i, *p)
+        struct.pack_into('<fff', out, start + 20 * i, *p)
+        if start == 8:                                   # version -1: position, radius, camber
+            struct.pack_into('<f', out, start + 20 * i + 12, radius[i])
+        else:                                            # version 7: radius is the 5th of 18 extras
+            struct.pack_into('<f', out, 16 + 20 * n + 4 + 72 * i + 16, radius[i])
     return bytes(out)
 
 
@@ -65,25 +85,46 @@ def zone_points(zones, n):
     return out
 
 
-def move_line(xz, edges, zones, inside_m=INSIDE_M, ramp=RAMP_POINTS, smooth=SMOOTH_POINTS):
+def move_line(xz, edges, zones, inside_m=INSIDE_M, ramp=RAMP_POINTS, smooth=SMOOTH_POINTS, max_slope=MAX_SLOPE):
     """The AI line's (x, z) moved into the zones: (n, 2)."""
     n = len(xz)
     pos = edges[['PositiveEdgeX', 'PositiveEdgeZ']].to_numpy(dtype=np.float64)
     neg = edges[['NegativeEdgeX', 'NegativeEdgeZ']].to_numpy(dtype=np.float64)
     off = np.zeros((n, 2))
     weight = np.zeros(n)
+    spacing = float(np.median(np.linalg.norm(np.roll(xz, -1, 0) - xz, axis=1)))
     for side, ids in zone_points(zones, n):
         edge = pos if side > 0 else neg
         m = len(ids)
-        for k in range(-ramp, m + ramp):
+        r = ramp
+        if max_slope > 0:
+            # a longer ramp for a bigger move, so the line eases over at no more than max_slope
+            inward = (pos[ids] + neg[ids]) / 2 - edge[ids]
+            inward /= np.linalg.norm(inward, axis=1)[:, None] + 1e-9
+            peak = np.linalg.norm(edge[ids] + inward * inside_m - xz[ids], axis=1).max()
+            r = max(ramp, int(np.ceil(peak / (max_slope * spacing))))
+        for k in range(-r, m + r):
             i = (ids[0] + k) % n
-            w = 1.0 if 0 <= k < m else 1.0 - ((-k) if k < 0 else k - m + 1) / (ramp + 1)
+            w = 1.0 if 0 <= k < m else 1.0 - ((-k) if k < 0 else k - m + 1) / (r + 1)
             if w <= weight[i]:
                 continue
             inward = (pos[i] + neg[i]) / 2 - edge[i]
             inward /= np.linalg.norm(inward) + 1e-9
             off[i] = (edge[i] + inward * inside_m - xz[i]) * w
             weight[i] = w
+    if max_slope > 0:
+        # how far each point may move: no more than max_slope per metre from its neighbours' allowance,
+        # both ways round the lap (a closed loop: three passes settle it)
+        step = np.linalg.norm(np.roll(xz, -1, 0) - xz, axis=1)
+        want = np.linalg.norm(off, axis=1)
+        allow = want.copy()
+        for _ in range(3):
+            for i in range(n):
+                allow[i] = min(allow[i], allow[i - 1] + max_slope * step[i - 1])
+            for i in range(n - 1, -1, -1):
+                j = (i + 1) % n
+                allow[i] = min(allow[i], allow[j] + max_slope * step[i])
+        off *= (allow / np.maximum(want, 1e-9))[:, None]
     if smooth > 0:
         kernel = np.ones(2 * smooth + 1) / (2 * smooth + 1)
         off = np.stack([np.convolve(np.r_[off[-smooth:, j], off[:, j], off[:smooth, j]], kernel, 'valid')
