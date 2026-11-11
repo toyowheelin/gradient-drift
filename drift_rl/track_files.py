@@ -39,8 +39,10 @@ PACE_REFERENCE = 'pace_reference.csv'
 # SurfaceGrip setting, every surface 1 without it.
 # Each collision triangle's material as the model draws it (tools/track_triangles.py): read only by
 # build_course.py, to end the course's edge where road-keyed ground is drawn as sand or grass.
+# Painted lines drawn as their own meshes (tools/track_triangles.py): read only by build_course.py, to
+# put the course's edge on white lines painted along the track's sides.
 OPTIONAL = {'pace_reference': PACE_REFERENCE, 'visual': 'visual.csv.gz', 'collision_grip': 'collision_grip.csv.gz',
-            'collision_material': 'collision_material.csv.gz'}
+            'collision_material': 'collision_material.csv.gz', 'paint_lines': 'paint_lines.csv.gz'}
 
 
 def name(kind, track=TRACK):

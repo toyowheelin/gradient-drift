@@ -165,9 +165,51 @@ def zone_case(out):
     line, _ = lt.read_line(tf.path(tracks, 'fast_lane', name))
     course, zones, _ = Z.load(tracks, name)
     shapes = Z.paint_shapes(course, zones, 1.6, 0.3)
+    runs = [judge_run(course, zones, Z, sliding) for sliding in (True, False)]
     shutil.rmtree(tracks)
     return {'track': name, 'spacing': 1.6, 'line_width': 0.3, 'line': line.tolist(),
-            'shapes': [{'outside': bool(o), 'frame': f.tolist(), 'stripes': st.tolist()} for o, f, st in shapes]}
+            'shapes': [{'outside': bool(o), 'frame': f.tolist(), 'stripes': st.tolist()} for o, f, st in shapes],
+            'runs': runs}
+
+
+def judge_run(course, zones, Z, sliding, speed=15.0, dt=0.05):
+    """One lap of made-up driving for ZoneJudge (the plugin's zone scoring) and the fill setup's
+    zones.score gives each zone for it: the car runs round the course's middle at a steady speed, its
+    rear axle wandering from one edge toward the other and its slip angle swinging across 20 deg
+    (sliding), or straight down the middle with no slip. It starts in the longest stretch with no
+    zone, so the run meets every zone in order."""
+    n = course.n
+    # the middle of the longest stretch with no zone, where ZoneJudge starts a run's order
+    by_start = sorted(zones, key=lambda z: z['first'])
+    gaps = [((z['first'] - by_start[k - 1]['last']) % n, k) for k, z in enumerate(by_start)]
+    gap, k = max(gaps, key=lambda g: (g[0], -g[1]))     # the first of equal ones, as ZoneJudge picks
+    start = (by_start[k - 1]['last'] + gap // 2) % n
+    order = np.r_[np.arange(start, n), np.arange(0, start + 1)]
+    mid = course.mid[order]
+    seg = np.linalg.norm(np.diff(mid, axis=0), axis=1)
+    along = np.r_[0.0, np.cumsum(seg)]
+    t = np.arange(0.0, along[-1], speed * dt)
+    cx, cz = np.interp(t, along, mid[:, 0]), np.interp(t, along, mid[:, 1])
+    pos, neg = course.pos[order], course.neg[order]
+    across = pos - neg
+    ax, az = np.interp(t, along, across[:, 0]), np.interp(t, along, across[:, 1])
+    width = np.hypot(ax, az)
+    ux, uz = ax / width, az / width
+    fx, fz = np.gradient(cx), np.gradient(cz)
+    fl = np.hypot(fx, fz)
+    fx, fz = fx / fl, fz / fl
+    if sliding:
+        lat = 0.5 * width * np.sin(t * 0.9) * 0.95       # m toward the positive edge
+        slip = 30.0 + 14.0 * np.sin(t * 1.7)
+    else:
+        lat = np.zeros_like(t)
+        slip = np.zeros_like(t)
+    rx, rz = cx + lat * ux - 1.3 * fx, cz + lat * uz - 1.3 * fz
+    run = Z.Run('made up', cx, cz, rx, rz, slip, None)
+    fills = [r[0] for r in Z.score(course, zones, run)]
+    return {'sliding': sliding, 'dt': dt, 'x': cx.tolist(), 'z': cz.tolist(), 'rear_x': rx.tolist(), 'rear_z': rz.tolist(),
+            'slip': slip.tolist(), 'vx': (fx * speed).tolist(), 'vz': (fz * speed).tolist(),
+            'fills': [None if np.isnan(f) else float(f) for f in fills]}
 
 
 def main():

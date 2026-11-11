@@ -7,6 +7,25 @@ when releasing.
 
 ## Unreleased
 
+- The drift HUD shows speed in mph or km/h. It starts in the game's units where the player's CSP
+  says which, and a right click on the panel switches it (remembered on their PC).
+- Arcade drift scoring: `ZoneScoreMode: Arcade` scores players freestyle, with no zones (and no
+  zone paint), so it works on any track. A chain builds points every moment the car slides, from
+  angle x speed, times a combo that goes up with each transition and a bonus of up to x2 for
+  sliding close behind another car. Stopping sliding for 1.5 s banks the chain, and a spin or a
+  wall hit loses it. The HUD shows the chain, its multiplier and a tandem bar, with popups for
+  transitions and for banked and lost chains. Chat, `/zones`, `/top` and the board page show
+  chains too, and arcade chains keep their own board. `Zones` (the default) scores through the
+  zones as before.
+- Players' drift runs are scored through the track's zones, like a drift judge would: each zone
+  gets up to 100 for line (rear within 3 m of the zone's edge while sliding), angle and speed, a
+  tandem bonus for sliding close behind another car, 0 for a spin, and a run (first zone to last)
+  loses 5 for each wall hit. The server judges from the car status it already receives. Players
+  with Custom Shaders Patch get a HUD with live zone points, popups for each zone, spin, wall and
+  run, and the server's top five; everyone gets a chat line per run and `/zones` and `/top`. Each
+  server keeps its own runs in a SQLite file (`gradientdrift_zone_records.db`, the system's own
+  SQLite, no extra files). On by default (`ZoneScoring`, `ZoneHud`, `ZoneScoreChat`,
+  `ZoneRecordsFile`, `ZoneBoardSize`).
 - Setup has a zone editor: **Zones...** on its last page, or `gradient-drift-setup zones <server or
   track>`. It shows a track's drift zones as yellow striped boxes on a map of the course; drag a
   zone's ends, draw new ones, move one to the other edge, change its kind, delete, or put back the
@@ -25,6 +44,16 @@ when releasing.
   (`ShowZones`; `ZoneColor`, `ZoneLineWidthMeters`, `ZoneStripeSpacingMeters`). Setup copies the
   track's `<track>_course_zones.csv` to the server with its other files, and copies it again after
   the zone editor changes it.
+- Course edges follow the white lines a track paints along its sides. Setup now writes each track's
+  painted-line meshes (`<track>_paint_lines.csv.gz`: scenery whose name says paint, line or stripe
+  and that is a strip under 0.4 m wide). `build_course.py` keeps the strips that lie on the road
+  and run at least 30 m along the racing line at least 4 m from it on average (a line the cars drive
+  along, like the one round Klutch Kickers' hairpin, is not the side), then puts each side's edge on the course side of
+  the line wherever the line is no more than 3 m past the edge it found before. The edge only
+  moves in, so tyre stacks inside the line still set it. Gaps of up to 10 m are bridged, and a
+  longer unpainted stretch keeps the old edge, blended in over 10 m. On Spirit Peaks the edges,
+  and with them the zones, move in by about 1 m (up to ~2 m) and sit on the white lines, except on
+  the unpainted main straight. Tracks without painted side lines are unchanged.
 - `drift_rl/zone_line.py` moves a course's AI line into its drift zones (3 m inside each zone's
   edge, eased in and out), keeping the originals beside it and `--undo` to put them back. The bots
   follow the AI line, so this puts them in the zones with no new policy: in the simulator the
