@@ -11,7 +11,10 @@ when releasing.
   edge, eased in and out), keeping the originals beside it and `--undo` to put them back. The bots
   follow the AI line, so this puts them in the zones with no new policy: in the simulator the
   shipped policy's line score goes from 0 to 8 - 14 of 40 on Spirit Peaks, 16 to 35 on Drift
-  Playground and 24 to 26 on Klutch Kickers, with a little more running off the course edge. Run setup afterwards to put the moved line in the server.
+  Playground and 24 to 26 on Klutch Kickers, with a little more running off the course edge.
+  Track prep (`setup_track.py`, which setup runs for a new track) now builds this drift line itself
+  after the zones (`--drift-line off` keeps the AI line as it is); for track data made before, run
+  `zone_line.py` once, and again after editing the zones. Run setup afterwards to put the moved line in the server.
 - Zone inputs for the policy: a policy can now read which edge of the course has a drift zone at
   its point and 15 m and 30 m on (`<track>_course_zones.csv`), so its bots drive to the zones the
   server shows rather than to the racing line. Before, zones only paid a reward in training: the

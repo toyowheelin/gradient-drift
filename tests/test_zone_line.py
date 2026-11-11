@@ -54,3 +54,37 @@ def test_never_writes_through_a_link(tmp_path):
     link.symlink_to(target)
     zl.write_file(str(link), b'moved')
     assert target.read_bytes() == b'original' and link.read_bytes() == b'moved' and not link.is_symlink()
+
+
+def _track(tmp_path, n=120):
+    import struct
+    xz, edges = straight(n)
+    folder = tmp_path / 't'
+    folder.mkdir()
+    raw = bytearray(16 + 20 * n)
+    struct.pack_into('<iiii', raw, 0, 7, n, 0, 0)
+    for i in range(n):
+        struct.pack_into('<fff', raw, 16 + 20 * i, xz[i, 0], 0.0, 0.0)
+    (folder / 't_fast_lane.ai').write_bytes(bytes(raw))
+    edges.to_csv(folder / 't_course_edges.csv', index=False)
+    pd.DataFrame({'Zone': [1], 'Kind': ['outside zone'], 'Side': [1], 'FirstPointId': [30],
+                  'LastPointId': [55]}).to_csv(folder / 't_course_zones.csv', index=False)
+    return folder
+
+
+def test_command_line_moves_undoes_and_starts_fresh(tmp_path):
+    folder = _track(tmp_path)
+    line = folder / 't_fast_lane.ai'
+    original = line.read_bytes()
+    zl.main(['--tracks', str(tmp_path), '--track', 't', '--inside', '2'])
+    assert np.isclose(zl.read_line(line.read_bytes())[42, 2], 4.0)
+    zl.main(['--tracks', str(tmp_path), '--track', 't', '--inside', '3'])     # again: from the original
+    assert np.isclose(zl.read_line(line.read_bytes())[42, 2], 3.0)
+    zl.main(['--tracks', str(tmp_path), '--track', 't', '--undo'])
+    assert line.read_bytes() == original
+    # a rebuilt line (setup_track): --fresh keeps what is there now as the original
+    zl.main(['--tracks', str(tmp_path), '--track', 't'])
+    line.write_bytes(original)
+    zl.main(['--tracks', str(tmp_path), '--track', 't', '--fresh'])
+    assert (folder / 't_fast_lane.ai.before_zone_line.old').exists()
+    assert (folder / 't_fast_lane.ai.before_zone_line').read_bytes() == original

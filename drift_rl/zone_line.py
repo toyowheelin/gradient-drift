@@ -109,14 +109,16 @@ def write_file(path, data):
         f.write(data)
 
 
-def main():
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     tf.tracks_arg(ap)
     ap.add_argument('--track', required=True)
     ap.add_argument('--inside', type=float, default=INSIDE_M, help='metres inside the zone edge for the line (car centre)')
     ap.add_argument('--ramp', type=int, default=RAMP_POINTS, help='points either side of a zone to ease in and out over')
     ap.add_argument('--undo', action='store_true', help='put the original line and edges back')
-    args = ap.parse_args()
+    ap.add_argument('--fresh', action='store_true', help='the line and edges there now are the originals (just '
+                    'rebuilt): keep them as the originals, setting aside any older ones')
+    args = ap.parse_args(argv)
 
     folder = tf.folder(args.tracks, args.track)
     if os.path.islink(folder):
@@ -141,6 +143,8 @@ def main():
         print(f'{args.track}: original AI line and course edges back; the pace reference is made again from it')
         return
     for p in (line, edges_path):
+        if args.fresh and os.path.exists(p + BACKUP):
+            os.replace(p + BACKUP, p + BACKUP + '.old')
         if not os.path.exists(p + BACKUP):
             shutil.copy2(p, p + BACKUP)
     raw = open(line + BACKUP, 'rb').read()
