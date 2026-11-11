@@ -3,13 +3,10 @@ zone_report.py - how well policies fill each drift zone of a course, driving as 
 
 Per zone: the share of it with the rear axle in the zone while sliding (filled, the Formula Drift
 style line score is 40 x the mean), where the rear axle runs (median distance inside the zone's
-edge, with the 10th and 90th percentiles) and how far inside the edge the AI line itself is. With
---layout K the zones are one of the course's moved layouts (fast_sim.zone_variants, which training
-with --zone-variants shows): a policy that reads the zone inputs should fill them about as well as
-the zones it was trained on; one that does not, drives to where the old zones were.
+edge) and how far inside the edge the AI line itself is. The bots follow the AI line, so compare a
+course's line as it is with the line moved into the zones (zone_line.py) on a copy of its files.
 
     python zone_report.py runs/x/policy.json [more policies] --track spiritpeaksraceway --track driftplayground_2021
-    python zone_report.py runs/x/policy.json --track spiritpeaksraceway --layout 3
 """
 import argparse
 import os
@@ -70,7 +67,6 @@ def main():
     ap.add_argument('policies', nargs='+')
     tf.tracks_arg(ap)
     ap.add_argument('--track', action='append', required=True)
-    ap.add_argument('--layout', type=int, default=0, help='which zone layout (0 = the zones as given)')
     ap.add_argument('--pace', type=float, default=1.0)
     ap.add_argument('--grip', type=float, default=0.55, help='RearSlidingGrip')
     ap.add_argument('--cars', type=int, default=16)
@@ -80,23 +76,20 @@ def main():
     import fast_sim as fs
     from policy import Policy
 
-    if not 0 <= args.layout < fs.ZONE_VARIANTS:
-        sys.exit(f'--layout: 0 - {fs.ZONE_VARIANTS - 1}')
     for course in args.track:
         world = fs.load_world(args.tracks, track=course)
         if not world.has_course:
             print(f"\n{course}: no course edges, no zones")
             continue
         world.pace_ref = de.course_pace_reference(args.tracks, course, world)
-        side = world.co[:, fs.ZONE_COL + args.layout].copy()
-        world.co[:, fs.ZONE_COL] = side                      # what a server-style run shows and pays
+        side = world.co[:, 7].copy()                          # each AI-line point's zone side (fast_sim)
         zones = zones_of(side)
         edges = pd.read_csv(tf.path(args.tracks, 'course_edges', course))
         saved = bz.REAR_AXLE_BEHIND_CENTRE_M
         bz.REAR_AXLE_BEHIND_CENTRE_M = 0.0
         line_point, line_depth = bz.rear_depth(world.sp_pos[:, 0], world.sp_pos[:, 2], np.zeros(len(world.sp_pos)), edges, side)
         bz.REAR_AXLE_BEHIND_CENTRE_M = saved
-        print(f"\n{course}: {len(zones)} zones (layout {args.layout}), {args.cars} cars x {args.ticks} ticks at pace {args.pace:g}")
+        print(f"\n{course}: {len(zones)} zones {args.cars} cars x {args.ticks} ticks at pace {args.pace:g}")
         print("  AI line inside the zone edge, median m: " +
               ' '.join(f"{np.nanmedian(line_depth[np.isin(line_point, pts)]):.1f}" for _, pts in zones))
         for path in args.policies:

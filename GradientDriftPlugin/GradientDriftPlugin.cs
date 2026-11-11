@@ -297,11 +297,6 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     trackName + CourseEdges.FileSuffix, spline.Points.Length);
                 policy = null;
             }
-            else if (policy.ReadsZones && !_courseEdges.LoadZones(trackName + CourseEdges.ZonesFileSuffix))
-            {
-                Log.Warning("GradientDrift: this policy reads the drift zones but {File} is missing or unreadable - the bots see no zones",
-                    trackName + CourseEdges.ZonesFileSuffix);
-            }
         }
         if (policy != null && policy.ReadsPaceOver)
         {

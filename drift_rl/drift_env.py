@@ -78,7 +78,6 @@ OBS_NAMES = (
        'lead_slip_here/(pi/2)', 'chase_gap']
     + ['lead_plan'] + [f'lead_{n}_{h:g}s' for h in (0.5, 1.0, 2.0) for n in ('gap/20', 'line/5', 'slip/(pi/2)')]
     + ['lead_steer/(pi/4)', 'lead_pedal', 'lead_brake', 'lead_accel/5']
-    + [f'zone_{side}_{int(d)}m' for d in EDGE_AHEAD_M for side in ('pos', 'neg')]
 )
 def mirror_obs_map():
     """(perm, sign) with obs_mirrored = obs[perm] * sign: the same moment seen left-right mirrored (the
@@ -100,7 +99,6 @@ def mirror_obs_map():
     swaps = [(f'fan_ray_{i}/60', f'fan_ray_{N_RAYS - 1 - i}/60') for i in range(N_RAYS // 2)]
     swaps += [(f'pin_{i}/12', f'pin_{N_PINS - 1 - i}/12') for i in range(N_PINS // 2)]
     swaps += [(f'course_room_pos_{int(d)}m/10', f'course_room_neg_{int(d)}m/10') for d in EDGE_AHEAD_M]
-    swaps += [(f'zone_pos_{int(d)}m', f'zone_neg_{int(d)}m') for d in EDGE_AHEAD_M]
     for a, b in swaps:
         perm[idx[a]], perm[idx[b]] = idx[b], idx[a]
     return perm, sign
@@ -113,7 +111,6 @@ OBS_SIZE_V4 = 55                 # ... and from before the car inputs, the first
 OBS_SIZE_V5 = 67                 # ... and from before the chase inputs, the first 67
 OBS_SIZE_V6 = 80                 # ... and from before the lead's path ahead, the first 80
 OBS_SIZE_V7 = 90                 # ... and from before the lead's controls, the first 90
-OBS_SIZE_V8 = 94                 # ... and from before the zone inputs, the first 94
 OBS_SIZE = len(OBS_NAMES)
 # The car (car_inputs()): what tells one car from another, each scaled to sit near 0 for a typical
 # drift car, from the same numbers the vehicle model drives with - so the plugin works them out
@@ -148,16 +145,6 @@ N_PLAN_OBS = 1 + 3 * len(CHASE_PATH_AHEAD_S)
 LEAD_CTRL_OBS_SLOT = PLAN_OBS_SLOT + N_PLAN_OBS
 N_LEAD_CTRL_OBS = 4
 LEAD_ACCEL_TICKS = 5            # samples the lead's acceleration is measured over
-# The drift zones ahead (build_zones.py, or a server owner's own): at the nearest point and
-# EDGE_AHEAD_M ahead, 1 where that edge of the course has a zone. With the course rooms they say
-# where the rear is to go, so the policy drives to the zones a server paints instead of to where its
-# training tracks' zones were (every target-following drift policy we build on is shown its targets:
-# Djeumou et al. 2024 waypoints, Domberg et al. 2022, Zhou et al. 2025). Training shows each episode
-# one of the course's zone layouts (fast_sim.zone_variants, EnvConfig.zone_variants), and the zone
-# pay follows the same layout.
-ZONE_OBS_SLOT = LEAD_CTRL_OBS_SLOT + N_LEAD_CTRL_OBS
-N_ZONE_OBS = 2 * 3
-C_ZONE_VARIANT = 44             # counters: which of the course's zone layouts this episode shows
 IDM_LEAD_ACCEL_GAIN = 1.0       # the lead's acceleration added to the IDM's (CACC feedforward)
 CHASE_GAP_M = (0.5, 6.0)         # the asked gap, bumper to bumper, at chase_gap 0 and 1
 CHASE_DELAY_S = (0.04, 0.2)      # how old the lead's state is, drawn per episode (18 Hz updates, ping)
@@ -275,8 +262,7 @@ NEW_INPUT_NORM = {'pace_fraction': (0.88, 0.1), 'pace/50': (1.0, 0.12), 'prev_ac
                   **{name: (0.0, 0.5) for name in OBS_NAMES[CHASE_OBS_SLOT:CHASE_OBS_SLOT + N_CHASE_OBS - 1]},
                   'chase_gap': (0.5, 0.3),
                   **{name: (0.0, 0.5) for name in OBS_NAMES[PLAN_OBS_SLOT:PLAN_OBS_SLOT + N_PLAN_OBS]},
-                  **{name: (0.0, 0.5) for name in OBS_NAMES[LEAD_CTRL_OBS_SLOT:LEAD_CTRL_OBS_SLOT + N_LEAD_CTRL_OBS]},
-                  **{name: (0.2, 0.4) for name in OBS_NAMES[ZONE_OBS_SLOT:ZONE_OBS_SLOT + N_ZONE_OBS]}}
+                  **{name: (0.0, 0.5) for name in OBS_NAMES[LEAD_CTRL_OBS_SLOT:LEAD_CTRL_OBS_SLOT + N_LEAD_CTRL_OBS]}}
 # steer, speed (pedal), and brake WITH the throttle (fast_sim.step_post): the third is used as
 # max(0, output), so an output at or below zero is no brake at all
 ACT_SIZE = 3
@@ -647,8 +633,6 @@ class EnvConfig:
     # Salimans and Chen 2018, https://arxiv.org/abs/1812.03381). A track without ghosts falls back
     # to the made-up starts above.
     drift_start_ghost_share: float = 0.0
-    # zone layouts to draw from per episode (fast_sim.zone_variants; 1 = only the zones as given, as on a server)
-    zone_variants: int = 1
     # per-car MaxSpeed (CeilingKmh): real runs show 74.8 - 85.7 km/h
     max_speed_kmh_low: float = 72.0
     max_speed_kmh_high: float = 88.0
@@ -775,7 +759,7 @@ def _drift_quality(abs_slip_deg, rw):
 
 
 @njit(cache=True)
-def build_obs(s, mid, prev_act, p, obs, sp_dir, la_idx, la_min_radius, co, pace_over, zone_col):
+def build_obs(s, mid, prev_act, p, obs, sp_dir, la_idx, la_min_radius, co, pace_over):
     """The inputs (OBS_NAMES; older policies read the first 46 or 52). Slot 35 is the share of rear grip lost when sliding,
     (1 - RearSlidingGrip) / 0.5, and slot 36 reads 0: both carried the hand-written controller's
     steering corrections until it was retired, and the network shape stayed."""
@@ -833,12 +817,6 @@ def build_obs(s, mid, prev_act, p, obs, sp_dir, la_idx, la_min_radius, co, pace_
     obs[k + 3 + N_CAR_OBS] = p[fs.P_SKILL]
     for j in range(N_CHASE_OBS + N_PLAN_OBS):
         obs[CHASE_OBS_SLOT + j] = 0.0
-    for j in range(3):
-        side = 0.0
-        if has_course:
-            side = co[nearest if j == 0 else la_idx[nearest, j], zone_col]
-        obs[ZONE_OBS_SLOT + 2 * j] = 1.0 if side > 0.0 else 0.0
-        obs[ZONE_OBS_SLOT + 2 * j + 1] = 1.0 if side < 0.0 else 0.0
 
 
 @njit(cache=True)
@@ -921,10 +899,6 @@ def _reset_one(i, states, counters, prev_act, ep, r0, r1, r2, r3, r4, r5, r6, cf
         s[S_PINSURF0 + j] = SURF_NONE
     for j in range(counters.shape[1]):
         counters[i, j] = 0.0
-    if cfg[ENV_CFG_ZONE_VARIANTS] > 1.0:
-        # the zone layout draw reuses the start point's uniform, its low digits so it is not tied to it
-        r_z = r0 * 983.0 - math.floor(r0 * 983.0)
-        counters[i, C_ZONE_VARIANT] = math.floor(r_z * min(cfg[ENV_CFG_ZONE_VARIANTS], fs.ZONE_VARIANTS))
     for j in range(prev_act.shape[1]):
         prev_act[i, j] = 0.0
     for j in range(ep.shape[1]):
@@ -1663,11 +1637,10 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     in_zone = False
     zone_filled = False
     point = int(d[fs.D_NearestPointId])
-    zc = fs.ZONE_COL + int(counters[i, C_ZONE_VARIANT])
-    if co.shape[0] == sp_pos.shape[0] and 0 <= point < co.shape[0] and co[point, zc] != 0.0:
+    if co.shape[0] == sp_pos.shape[0] and 0 <= point < co.shape[0] and co[point, 7] != 0.0:
         in_zone = True
-        j = 2 if co[point, zc] > 0.0 else 4
-        k = 4 if co[point, zc] > 0.0 else 2
+        j = 2 if co[point, 7] > 0.0 else 4
+        k = 4 if co[point, 7] > 0.0 else 2
         in_x = co[point, k] - co[point, j]
         in_z = co[point, k + 1] - co[point, j + 1]
         width = math.sqrt(in_x * in_x + in_z * in_z)
@@ -1958,7 +1931,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     ndt = _sample_dt(rnd[i, 0], rnd[i, 1], env_cfg, dt)
     fs.step_pre(s, ndt, p, mids[i], sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd)
     build_obs(s, mids[i], prev_act[i], p, obs[i], sp_dir, la_idx, la_min_radius, co,
-              pace_over if asked_kmh > 0.0 else 0.0, fs.ZONE_COL + int(counters[i, C_ZONE_VARIANT]))
+              pace_over if asked_kmh > 0.0 else 0.0)
     _chase_obs(s, counters[i], obs[i], gh, gh_len, lap, ndt, mids[i, M_CTE], _ghost_rate(counters[i], ep[i, E_TIME_S]))
 
     if term or trunc:
@@ -1981,8 +1954,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
                              gh, gh_len, sp_pos, sp_dir, sp_cum)
         ndt = _sample_dt(rnd[i, 6], rnd[i, 7], env_cfg, 0.049)
         fs.step_pre(s, ndt, p, mids[i], sp_pos, sp_radius, sp_length, sp_next, sp_prev, sp_fwd)
-        build_obs(s, mids[i], prev_act[i], p, obs[i], sp_dir, la_idx, la_min_radius, co, 0.0,
-                  fs.ZONE_COL + int(counters[i, C_ZONE_VARIANT]))
+        build_obs(s, mids[i], prev_act[i], p, obs[i], sp_dir, la_idx, la_min_radius, co, 0.0)
 
 
 @njit(cache=True, parallel=True)
@@ -2060,7 +2032,7 @@ def _reset_and_observe(i, states, mids, prev_act, counters, ep, params, obs, rnd
     fs.step_pre(states[i], ndt, params[i], mids[i], sp_pos, sp_radius, sp_length, sp_next,
                 sp_prev, sp_fwd)
     build_obs(states[i], mids[i], prev_act[i], params[i], obs[i], sp_dir,
-              la_idx, la_min_radius, co, 0.0, fs.ZONE_COL + int(counters[i, C_ZONE_VARIANT]))
+              la_idx, la_min_radius, co, 0.0)
 
 
 @njit(cache=True)
@@ -2207,7 +2179,6 @@ RND_COLS = 13      # uniforms per car per step: [0,1] next tick length, [2..5,8,
 
 
 ENV_CFG_SLIDING_GRIP_LOW = 11      # indices into env_cfg_vector()
-ENV_CFG_ZONE_VARIANTS = 27
 ENV_CFG_PACE_LOW = 13
 ENV_CFG_DRIFT_START = 22
 
@@ -2222,7 +2193,7 @@ def env_cfg_vector(cfg):
                      cfg.chase_time_gap_blind_s, cfg.chase_response_s, cfg.chase_pace_max, cfg.chase_pace_min,
                      1.0 if cfg.chase_touch_push else 0.0, cfg.drift_start_fraction,
                      cfg.drift_start_transition_share, cfg.drift_start_slip_low_deg, cfg.drift_start_slip_high_deg,
-                     cfg.drift_start_ghost_share, float(cfg.zone_variants)])
+                     cfg.drift_start_ghost_share])
 
 
 def ghost_arrays(world):

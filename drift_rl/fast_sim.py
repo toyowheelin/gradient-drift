@@ -278,35 +278,6 @@ def make_params():
     return p
 
 
-# The zones as several layouts (World co columns ZONE_COL on, drift_env's zone inputs and zone pay):
-# the first as given, the rest each zone's ends moved up to ZONE_JITTER_M either way and each zone
-# left out at ZONE_DROP_SHARE, so a policy trained on them drives to the zones it is shown rather
-# than to where its training tracks' zones were (TRI's random waypoint layouts, Djeumou et al. 2024).
-ZONE_COL = 11
-ZONE_VARIANTS = 8
-ZONE_JITTER_M = 6.0
-ZONE_DROP_SHARE = 0.15
-
-
-def zone_variants(course_zones, n, step_m, seed=0):
-    """(n, ZONE_VARIANTS) zone side per spline point (+1 positive edge, -1 negative, 0 none) for each
-    layout; course_zones rows (side, first point, last point). Deterministic for a course."""
-    out = np.zeros((n, ZONE_VARIANTS))
-    zones = [(int(sd), int(a), int(b)) for sd, a, b in (course_zones if course_zones is not None else ())]
-    rng = np.random.default_rng([seed, n, len(zones)])
-    jitter = max(1, int(round(ZONE_JITTER_M / max(step_m, 0.1))))
-    for v in range(ZONE_VARIANTS):
-        for side, first, last in zones:
-            length = (last - first) % n
-            if v > 0:
-                if rng.random() < ZONE_DROP_SHARE:
-                    continue
-                first += int(rng.integers(-jitter, jitter + 1))
-                length = max(1, length + int(rng.integers(-jitter, jitter + 1)))
-            out[np.arange(first, first + length + 1) % n, v] = side
-    return out
-
-
 # ----------------------------------------------------------------------------------------
 # World: spline arrays + triangle grid in CSR form
 # ----------------------------------------------------------------------------------------
@@ -365,9 +336,6 @@ class World:
         # over the next TURN_WINDOW_M (+1 / -1 as the slip angle's sign in a drift through it; 0 =
         # less than TURN_MIN_DEG: straight; drift_env's weave penalty), an 11th the line's signed
         # curvature (signed_curvature: + = turning toward + cross-track; drift_env path_progress).
-        # Columns ZONE_COL on: the zones again as ZONE_VARIANTS layouts (zone_variants): the first the
-        # zones as given, the others with their ends moved and some left out, one picked per training
-        # episode (EnvConfig.zone_variants) so a policy reading the zone inputs follows what it is shown.
         self.course_rows = 0 if course_edges is None else len(course_edges)
         if course_edges is not None and len(course_edges) == n:
             on_straight = np.zeros(n)
@@ -389,11 +357,10 @@ class World:
             edges = np.asarray(course_edges, dtype=np.float64)[:, :6]
             from build_zones import held_side_per_point
             held_side = held_side_per_point(edges[:, 2:4], edges[:, 4:6])
-            variants = zone_variants(course_zones, n, float(self.sp_length.mean()))
             self.co = np.ascontiguousarray(np.c_[edges, on_straight, zone_side, held_side, self.turn_side(),
-                                                    self.signed_curvature(), variants])
+                                                    self.signed_curvature()])
         else:
-            self.co = np.zeros((1, ZONE_COL + ZONE_VARIANTS))
+            self.co = np.zeros((1, 11))
         if course_markers is not None and len(course_markers) > 0:
             self.mk = np.ascontiguousarray(course_markers, dtype=np.float64)
         else:

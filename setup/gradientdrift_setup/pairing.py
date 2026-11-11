@@ -57,10 +57,9 @@ def mismatches(doc, features):
         count = frames * len(hist.get('slots') or [])
         if not can:
             out.append("the policy reads a short history of its inputs; this plugin build cannot feed one")
-        elif obs - count not in can.get('base_obs_sizes', [can['base_obs_size']]) or count > can['max_inputs'] or frames < 1:
+        elif obs - count != can['base_obs_size'] or count > can['max_inputs'] or frames < 1:
             out.append(f"the policy's history block ({count} inputs after {obs - count}) is not one this plugin runs "
-                       f"(at most {can['max_inputs']} after "
-                       f"{' or '.join(map(str, can.get('base_obs_sizes', [can['base_obs_size']])))})")
+                       f"(at most {can['max_inputs']} after {can['base_obs_size']})")
         obs -= count
     if obs not in features.get('obs_sizes', []):
         out.append(f"the policy reads {obs} inputs; this plugin build gives {', '.join(map(str, features.get('obs_sizes', [])))}")

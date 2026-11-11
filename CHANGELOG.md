@@ -15,16 +15,8 @@ when releasing.
   Track prep (`setup_track.py`, which setup runs for a new track) now builds this drift line itself
   after the zones (`--drift-line off` keeps the AI line as it is); for track data made before, run
   `zone_line.py` once, and again after editing the zones. Run setup afterwards to put the moved line in the server.
-- Zone inputs for the policy: a policy can now read which edge of the course has a drift zone at
-  its point and 15 m and 30 m on (`<track>_course_zones.csv`), so its bots drive to the zones the
-  server shows rather than to the racing line. Before, zones only paid a reward in training: the
-  network never saw them and on Spirit Peaks the bots' rear ran 7 - 15 m inside the zones. The
-  trainer's `--zone-variants N` shows each episode one of the course's zone layouts (the zones as
-  given, then with moved ends and some left out) so the policy follows the inputs. A checkpoint from
-  before them resumes with the new inputs at no weight, driving exactly as before. The plugin reads
-  the zones file beside the course edges for such a policy and warns if it is missing; older
-  policies are unchanged. New `drift_rl/zone_report.py` measures per-zone fill. The shipped policy
-  does not read zones yet.
+- New `drift_rl/zone_report.py` measures how well policies fill each drift zone of a course
+  (share filled, where the rear axle runs against the zone's edge, where the AI line runs).
 - Course edges are one continuous curve where paving, ground or a wall sets them (not markers): a
   running minimum over 5 points, then a running mean over 7, so they no longer step in and out
   by up to a metre from point to point. Where the ground changes, the edge is now put on the

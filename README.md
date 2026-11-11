@@ -155,9 +155,7 @@ different cars, and being rewarded for progress made sideways at a good angle, i
 without hitting anything (reinforcement learning, PPO). The result is frozen into `policy.json`;
 the server only runs it.
 
-A policy trained with the zone inputs (six more) also reads which edge has a drift zone just ahead, from
-the track's zones file, and drives to the zones the server paints; the plugin feeds them when the
-policy has them. The plugin also runs older, smaller policies (46 to 94 inputs). The parts of the vehicle
+The plugin also runs older, smaller policies (46 to 94 inputs). The parts of the vehicle
 model a policy was trained with are listed in its file and the plugin turns on exactly those, so
 each policy drives in the car it learned in.
 

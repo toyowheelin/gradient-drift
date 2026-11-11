@@ -313,12 +313,8 @@ network numbers it already has: speed, slip, yaw rate, where the racing line goe
 distances to walls and course markers, the room to the course's edges, its last action, the pace
 asked of it and how far over that pace it has been, the car's own numbers and the asked skill, the
 car ahead when it is chasing, and a short history of the last few ticks (130 inputs in the shipped
-policy). A policy trained since the zone inputs were added also reads which edge of the course has a
-drift zone at its point and 15 m and 30 m on (`<track>_course_zones.csv`, the zones a server paints),
-so it drives to the zones it is shown; train it with `--zone-variants 8` so each episode shows one of
-eight layouts of the course's zones (the zones as given, then with their ends moved up to 6 m and some
-left out) and it learns to follow the inputs instead of remembering where its training tracks' zones
-were. The network sets three things:
+policy). It follows the AI line closely, which is why track prep moves the line into the drift
+zones (`zone_line.py`): that is where the bots drive. The network sets three things:
 
 | action | effect | range |
 |---|---|---|
@@ -398,7 +394,7 @@ was trained with.
 | `chase_drops.py` | Why a chaser falls out of its drift: drops against throttle lifts, the front brake, the lead and the gap. |
 | `tandem_report.py` | How the tandem-train followers in a plugin telemetry file behaved (the replaying followers retired in v0.3.0; for older telemetry). |
 | `zone_line.py` | Moves a course's AI line into its drift zones (eased in and out, originals kept, `--undo`), so the bots drive through them; run setup afterwards to put it in the server. |
-| `zone_report.py` | How well policies fill each zone of a course, driving as the server does: share filled, where the rear axle runs against the zone's edge and against the AI line; `--layout K` uses one of the moved zone layouts, to see whether a policy follows the zones it is shown. |
+| `zone_report.py` | How well policies fill each zone of a course, driving as the server does: share filled, where the rear axle runs against the zone's edge and against the AI line. |
 | `judge.py` | Drivers side by side on the same course (bots from the plugin's telemetry, a human from the in-game recorder), lap by lap and zone by zone, with a rough Formula Drift score (line 40, angle 40, style 20, measured rather than judged). |
 | `human_recording.py` | Speed, sideways acceleration, slip, RPM, gear and throttle of a human driver, from an in-game telemetry recording. |
 

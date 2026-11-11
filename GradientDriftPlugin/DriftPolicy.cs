@@ -89,13 +89,8 @@ public sealed class DriftPolicy
     // and the newest 66, how good a driver to be (the skill, 0 - 1). A tandem policy reads 67 - 93
     // as well, the car ahead (ChaseInputs), and carries a residual network added to the actions only
     // while one is there.
-    // The newest read 94 - 99 too, which edge has a drift zone at the car's point and 15 m and 30 m on
-    // (CourseEdges.ZoneSide; drift_env ZONE_OBS_SLOT).
-    public const int ObservationSize = ZoneSlot + ZoneInputCount;
-    public const int ObservationSizeV7 = ChaseInputs.Slot + ChaseInputs.Count;
+    public const int ObservationSize = ChaseInputs.Slot + ChaseInputs.Count;
     public const int ObservationSizeV6 = ChaseInputs.Slot;
-    private const int ZoneSlot = ObservationSizeV7;
-    private const int ZoneInputCount = 6;
     public const int ObservationSizeV5 = 66;
     public const int ObservationSizeV4 = 55;
     public const int ObservationSizeV1 = 46;
@@ -155,8 +150,6 @@ public sealed class DriftPolicy
     // _residualGate is above _residualGateAbove (lead_present). ChasePaceMin: the bottom of the
     // chase pace in training, a share of PaceLow ("chase.controller.chase_pace_min").
     public bool ReadsChase => BaseInputCount > ObservationSizeV6 && (_residualWeights != null || _trainedToChase);
-    // A policy that reads the drift zones ahead (needs the course's zones file, else it sees none).
-    public bool ReadsZones => BaseInputCount > ObservationSizeV7;
     // A policy that also reads a short history of some of its inputs (a "history" block in the file;
     // drift_rl/policy.py): after the BaseInputCount inputs come, for f = 1 .. HistoryFrames, the inputs
     // _historySlots as they were f x _historyEvery ticks ago. The largest block a file may ask for is
@@ -355,7 +348,7 @@ public sealed class DriftPolicy
                 int count = historyFrames * historySlots.Length;
                 int baseSize = fileObsSize - count;
                 if (historyFrames < 1 || historyEvery < 1 || historySlots.Length == 0 || count > MaxHistoryInputs
-                    || (baseSize != ObservationSize && baseSize != ObservationSizeV7) || historyResetSlot < 0 || historyResetSlot >= baseSize
+                    || baseSize != ObservationSize || historyResetSlot < 0 || historyResetSlot >= baseSize
                     || Array.Exists(historySlots, j => j < 0 || j >= baseSize))
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a history block this build cannot run ({Frames} frames of {Slots} inputs every {Every} ticks after {Base} inputs; at most {Max} history inputs after {Size})",
@@ -364,12 +357,12 @@ public sealed class DriftPolicy
                 }
             }
             int obsSize = fileObsSize - historyFrames * historySlots.Length;
-            if ((obsSize != ObservationSize && obsSize != ObservationSizeV7 && obsSize != ObservationSizeV6 && obsSize != ObservationSizeV5 && obsSize != ObservationSizeV4
+            if ((obsSize != ObservationSize && obsSize != ObservationSizeV6 && obsSize != ObservationSizeV5 && obsSize != ObservationSizeV4
                  && obsSize != ObservationSizeV3 && obsSize != ObservationSizeV2 && obsSize != ObservationSizeV1)
                 || (actionSize != ActionSize && actionSize != ActionSizeV1))
             {
-                Log.Warning("GradientDrift: policy file {Path} expects {ObsSize} observations / {ActionSize} actions, this build provides {BuildObs} (or {V7Obs}, {V6Obs}, {V5Obs}, {V4Obs}, {V3Obs}, {MidObs} or {OldObs}) / {BuildActions} (or {OldActions})",
-                    PluginData.Describe(path), obsSize, actionSize, ObservationSize, ObservationSizeV7, ObservationSizeV6, ObservationSizeV5, ObservationSizeV4, ObservationSizeV3, ObservationSizeV2, ObservationSizeV1, ActionSize, ActionSizeV1);
+                Log.Warning("GradientDrift: policy file {Path} expects {ObsSize} observations / {ActionSize} actions, this build provides {BuildObs} (or {V6Obs}, {V5Obs}, {V4Obs}, {V3Obs}, {MidObs} or {OldObs}) / {BuildActions} (or {OldActions})",
+                    PluginData.Describe(path), obsSize, actionSize, ObservationSize, ObservationSizeV6, ObservationSizeV5, ObservationSizeV4, ObservationSizeV3, ObservationSizeV2, ObservationSizeV1, ActionSize, ActionSizeV1);
                 return null;
             }
 
@@ -426,10 +419,10 @@ public sealed class DriftPolicy
             {
                 residualGate = residualElement.GetProperty("gate_input").GetInt32();
                 residualGateAbove = (float)residualElement.GetProperty("gate_above").GetDouble();
-                if (residualGate != ChaseInputs.Slot || obsSize != ObservationSizeV7 || historyFrames > 0)
+                if (residualGate != ChaseInputs.Slot || obsSize != ObservationSize || historyFrames > 0)
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a residual network gated by input {Gate} of {ObsSize}; this build runs one gated by the car ahead (input {Slot} of {BuildObs})",
-                        PluginData.Describe(path), residualGate, obsSize, ChaseInputs.Slot, ObservationSizeV7);
+                        PluginData.Describe(path), residualGate, obsSize, ChaseInputs.Slot, ObservationSize);
                     return null;
                 }
                 if (!TryReadLayers(path, residualElement.GetProperty("layers"), obsSize, "residual ", out residualWeights, out residualBiases))
@@ -465,7 +458,7 @@ public sealed class DriftPolicy
             }
             if (root.TryGetProperty("chase", out JsonElement chaseElement) && chaseElement.ValueKind == JsonValueKind.Object)
             {
-                policy._trainedToChase = obsSize >= ObservationSizeV7;
+                policy._trainedToChase = obsSize == ObservationSize;
                 if (chaseElement.TryGetProperty("controller", out JsonElement controllerElement)
                     && controllerElement.TryGetProperty("chase_pace_min", out JsonElement paceMinElement))
                 {
@@ -644,7 +637,7 @@ public sealed class DriftPolicy
         return shifted - MathF.PI;
     }
 
-    // Fills obs[0..66] (and 94 - 99 for a zone policy); slot order and scaling as drift_env.OBS_NAMES (a policy reads as many as it
+    // Fills obs[0..66]; slot order and scaling as drift_env.OBS_NAMES (a policy reads as many as it
     // was trained with). pace: the pace the car is asked to drive, in the policy's units (PaceIsFraction;
     // 0 = none); paceOver: how far over the asked speed it has been driving (0 = none). ownSpeedMs, lateralVelocityMs,
     // yawRateRadS, heading, the pins and carState are the values left by the PREVIOUS tick - what
@@ -717,22 +710,6 @@ public sealed class DriftPolicy
         obs[PaceOverSlot] = Math.Clamp(paceOver, -PaceOverClip, PaceOverClip);
         car.CarInputs(obs, CarSlot, loadSensitivity);
         obs[SkillSlot] = skill;
-
-        // Which edge has a drift zone at the car's point and 15 m and 30 m on. drift_env.build_obs, the same.
-        if (ReadsZones)
-        {
-            sbyte[]? zones = course?.ZoneSide;
-            for (int j = 0; j < 3; j++)
-            {
-                int side = 0;
-                if (zones != null && pointValid && zones.Length == _splineDirection.Length)
-                {
-                    side = zones[j == 0 ? nearestPointId : _lookaheadIndex[nearestPointId * LookaheadCount + j]];
-                }
-                obs[ZoneSlot + 2 * j] = side > 0 ? 1f : 0f;
-                obs[ZoneSlot + 2 * j + 1] = side < 0 ? 1f : 0f;
-            }
-        }
     }
 
     // The history block into obs after the BaseInputCount inputs BuildObservation (and the chase
