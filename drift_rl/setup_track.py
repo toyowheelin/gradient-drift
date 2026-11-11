@@ -17,7 +17,8 @@ own folder, tracks/<track>/ (track_files.py), all named after the track folder:
    rebuilt down the middle of the road (line_tools.py). --line keep never rebuilds it, --line rebuild
    always does.
 4. <track>_course_edges.csv and _course_markers.csv (build_course.py), <track>_course_zones.csv
-   (build_zones.py)
+   (build_zones.py), then the drift line: the AI line moved into the zones (zone_line.py; the line
+   and edges as built kept as .before_zone_line). --drift-line off keeps the line as it is.
 5. <track>_triangles.csv.gz, what the sensors see: the walls the game collides with and the
    course's markers (sensor_view.py)
 
@@ -28,7 +29,7 @@ own folder, tracks/<track>/ (track_files.py), all named after the track folder:
 
 With --server (an AssettoServer folder) it also copies the files the plugin reads into it (and the
 pace reference, once training has made one) and,
-if the line is not the game's (rebuilt, or made from the side files), the line to <server>/content/tracks/<track>/[<layout>/]ai/fast_lane.ai,
+if the line is not the game's (rebuilt, made from the side files, or moved into the zones), the line to <server>/content/tracks/<track>/[<layout>/]ai/fast_lane.ai,
 keeping the one there as fast_lane.ai.before_setup. Nothing is ever deleted.
 
 Then train with:  python train_ppo_gpu.py --track <track> ...
@@ -106,6 +107,9 @@ def main(argv=None):
     ap.add_argument('--game-surfaces', default=None, help="the game's system/data/surfaces.ini")
     ap.add_argument('--policy', default=None, help="the policy that will drive it, for the check of its walls (its sensors' height)")
     ap.add_argument('--skip-check', action='store_true', help="don't stop when the track's speed targets or walls look wrong")
+    ap.add_argument('--drift-line', choices=['on', 'off'], default='on',
+                    help="move the AI line into the drift zones (zone_line.py), so the bots drive through them")
+    ap.add_argument('--drift-line-inside', type=float, default=None, help='metres inside the zone edge (zone_line.py default)')
     ap.add_argument('--for-setup', action='store_true', help=argparse.SUPPRESS)   # setup copies the line itself and checks
     args = ap.parse_args(argv)
     track = os.path.normpath(args.track_folder)
@@ -184,6 +188,13 @@ def main(argv=None):
     print('4. course and zones')
     run('build_course', ['--tracks', data, '--track', name])
     run('build_zones', ['--tracks', data, '--track', name])
+    # the drift line: the bots follow the AI line, so it is moved into the zones just built (their
+    # point ids are the line's, so they and the edges still fit it); the line and edges as built are
+    # kept as .before_zone_line, and the pace reference is made again for the moved line
+    drift_line = args.drift_line == 'on' and os.path.exists(tf.path(data, 'course_zones', name))
+    if drift_line:
+        run('zone_line', ['--tracks', data, '--track', name, '--fresh']
+            + (['--inside', str(args.drift_line_inside)] if args.drift_line_inside is not None else []))
 
     print('5. what the sensors see')
     run('sensor_view', ['--tracks', data, '--track', name])
@@ -209,7 +220,7 @@ def main(argv=None):
         for kind in kinds:
             shutil.copyfile(tf.path(data, kind, name), os.path.join(args.server, tf.name(kind, name)))
             print(f'  {tf.name(kind, name)}')
-        if rebuilt or from_sides:
+        if rebuilt or from_sides or drift_line:
             ai = os.path.join(args.server, 'content', 'tracks', os.path.basename(track), *([args.layout] if args.layout else []), 'ai')
             os.makedirs(ai, exist_ok=True)
             target = os.path.join(ai, 'fast_lane.ai')
@@ -219,10 +230,10 @@ def main(argv=None):
             print(f'  {target}')
 
     print(f'done in {time.time() - t0:.0f} s. Train with: python train_ppo_gpu.py --track {name} ...')
-    if (rebuilt or from_sides) and not args.server and not args.for_setup:
+    if (rebuilt or from_sides or drift_line) and not args.server and not args.for_setup:
         print(f'The line is not the game\'s: the server needs it too, as content/tracks/{os.path.basename(track)}/'
               f'{args.layout + "/" if args.layout else ""}ai/fast_lane.ai (copy {line_path}).')
-    return {'name': name, 'line': line_path, 'line_rebuilt': bool(rebuilt or from_sides)}
+    return {'name': name, 'line': line_path, 'line_rebuilt': bool(rebuilt or from_sides or drift_line)}
 
 
 if __name__ == '__main__':
