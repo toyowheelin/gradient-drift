@@ -76,7 +76,7 @@ tracks.
 | `<track>_triangles.csv.gz` | what the bot's sensors see: the walls the game collides with plus the course's markers, `python sensor_view.py --track <track>` (after `build_course.py`). Things the model shows that the car cannot hit are left out. |
 | `<track>_road_mesh.csv` | the road-mesh points the plugin reads, from the AssettoServer folder |
 | `<track>_course_edges.csv`, `<track>_course_markers.csv` | `python build_course.py` (the course's edges, from its markers where it has them) |
-| `<track>_course_zones.csv` | `python build_zones.py` (outside zones and the long-corner stretches) |
+| `<track>_course_zones.csv` | `python build_zones.py` (outside zones and the long-corner stretches); keeps zones drawn in setup's zone editor unless given `--replace` |
 | `<track>_pace_reference.csv` | made by the trainer the first time it trains the track with paces (or by the setup program, the same way, for a track the policy never trained on): how fast a reference policy drives each point flat out, which a pace of 1.0 asks for. The plugin needs it in the server folder for a policy that reads its pace error. |
 
 The files keep the track's name in theirs inside the track's folder, because they are copied to
@@ -313,7 +313,8 @@ network numbers it already has: speed, slip, yaw rate, where the racing line goe
 distances to walls and course markers, the room to the course's edges, its last action, the pace
 asked of it and how far over that pace it has been, the car's own numbers and the asked skill, the
 car ahead when it is chasing, and a short history of the last few ticks (130 inputs in the shipped
-policy). The network sets three things:
+policy). It follows the AI line closely, which is why track prep moves the line into the drift
+zones (`zone_line.py`): that is where the bots drive. The network sets three things:
 
 | action | effect | range |
 |---|---|---|
@@ -392,6 +393,8 @@ was trained with.
 | `crowd_fit.py` | How public drivers drift a track and follow each other, from AI Car Monitor recordings: their pace against the track's reference, and their gaps in tandem with the gap law that fits them. `--out` writes it for `train_ppo_gpu.py --chase-gap-crowd`; `--combine` pools several tracks. |
 | `chase_drops.py` | Why a chaser falls out of its drift: drops against throttle lifts, the front brake, the lead and the gap. |
 | `tandem_report.py` | How the tandem-train followers in a plugin telemetry file behaved (the replaying followers retired in v0.3.0; for older telemetry). |
+| `zone_line.py` | Moves a course's AI line into its drift zones (eased in and out, originals kept, `--undo`), so the bots drive through them; run setup afterwards to put it in the server. |
+| `zone_report.py` | How well policies fill each zone of a course, driving as the server does: share filled, where the rear axle runs against the zone's edge and against the AI line. |
 | `judge.py` | Drivers side by side on the same course (bots from the plugin's telemetry, a human from the in-game recorder), lap by lap and zone by zone, with a rough Formula Drift score (line 40, angle 40, style 20, measured rather than judged). |
 | `human_recording.py` | Speed, sideways acceleration, slip, RPM, gear and throttle of a human driver, from an in-game telemetry recording. |
 

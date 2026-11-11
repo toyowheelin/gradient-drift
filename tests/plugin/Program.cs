@@ -3,7 +3,12 @@
 //   - a policy the plugin must run is refused, or gives other actions than the Python policy does
 //     (the trainer's and every tool's copy of the network) for the same inputs, or
 //   - a policy the plugin must refuse (broken, or needing a setting this build cannot apply) loads, or
-//   - a car-on-car push (CarContact) differs from the trainer's.
+//   - a car-on-car push (CarContact) differs from the trainer's, or
+//   - the drift zones painted for players (DriftZones) are not the shapes setup's zones.py makes, or
+//   - players' zone scores (ZoneJudge) fill zones otherwise than setup's zones.score, or the run
+//     records (ZoneRecords) do not keep and rank runs, or
+//   - arcade drift scoring (ArcadeJudge) does not bank a drifted chain, or keeps one after a spin,
+//     a wall hit or car data that does not add up.
 //
 //     dotnet run --project PluginChecks.csproj -- <cases folder>
 using System.Numerics;
@@ -191,6 +196,230 @@ if (cases.RootElement.TryGetProperty("contacts", out JsonElement contacts))
     bool ok = count > 0 && worst <= 1e-3f;
     Console.WriteLine((ok ? "ok   " : "FAIL ") + $"CarContact: {count} pushes match the trainer's to within {worst:G3}");
     if (!ok) failures++;
+}
+
+// ShowZones (DriftZones.cs): the painted frames and stripes of a generated course's zones, the same
+// as setup's zones.paint_shapes, at the AI line's heights; and a script that paints them
+if (cases.RootElement.TryGetProperty("zones", out JsonElement zoneCase))
+{
+    string track = zoneCase.GetProperty("track").GetString()!;
+    var line = zoneCase.GetProperty("line").EnumerateArray()
+        .Select(p => p.EnumerateArray().Select(v => (float)v.GetDouble()).ToArray()).ToArray();
+    var trackPoints = new SplinePoint[line.Length];
+    for (int i = 0; i < line.Length; i++)
+    {
+        trackPoints[i] = new SplinePoint
+        {
+            Id = i, Position = new Vector3(line[i][0], line[i][1], line[i][2]),
+            NextId = (i + 1) % line.Length, PreviousId = (i + line.Length - 1) % line.Length,
+            JunctionStartId = -1, JunctionEndId = -1, LeftId = -1, RightId = -1,
+        };
+    }
+    PluginData.Init(Path.Combine(folder, "zones"));
+    string before = Directory.GetCurrentDirectory();
+    Directory.SetCurrentDirectory(Path.Combine(folder, "zones"));       // the track's files sit in the server folder
+    List<DriftZones.Shape>? shapes = DriftZones.Load(track, trackPoints, (float)zoneCase.GetProperty("spacing").GetDouble(),
+        (float)zoneCase.GetProperty("line_width").GetDouble());
+    Directory.SetCurrentDirectory(before);
+    var expected = zoneCase.GetProperty("shapes").EnumerateArray().ToArray();
+    string problem = "";
+    float worst = 0f;
+    if (shapes == null || shapes.Count != expected.Length)
+    {
+        problem = $"{shapes?.Count.ToString() ?? "no"} zones loaded, {expected.Length} expected";
+    }
+    else
+    {
+        for (int z = 0; z < shapes.Count && problem == ""; z++)
+        {
+            var frame = expected[z].GetProperty("frame").EnumerateArray().Select(p => p.EnumerateArray().Select(v => (float)v.GetDouble()).ToArray()).ToArray();
+            var stripes = expected[z].GetProperty("stripes").EnumerateArray().ToArray();
+            if (shapes[z].OutsideZone != expected[z].GetProperty("outside").GetBoolean()
+                || shapes[z].Frame.Length != frame.Length || shapes[z].Stripes.Length != stripes.Length)
+            {
+                problem = $"zone {z + 1}: kind, frame points ({shapes[z].Frame.Length} vs {frame.Length}) or stripes ({shapes[z].Stripes.Length} vs {stripes.Length}) differ";
+                break;
+            }
+            for (int k = 0; k < frame.Length; k++)
+            {
+                worst = MathF.Max(worst, MathF.Max(MathF.Abs(shapes[z].Frame[k].X - frame[k][0]), MathF.Abs(shapes[z].Frame[k].Z - frame[k][1])));
+            }
+            for (int k = 0; k < stripes.Length; k++)
+            {
+                var ends = stripes[k].EnumerateArray().Select(p => p.EnumerateArray().Select(v => (float)v.GetDouble()).ToArray()).ToArray();
+                (Vector3 a, Vector3 b) = shapes[z].Stripes[k];
+                worst = MathF.Max(worst, new[] { a.X - ends[0][0], a.Z - ends[0][1], b.X - ends[1][0], b.Z - ends[1][1] }.Max(d => MathF.Abs(d)));
+            }
+            float lineY = shapes[z].Frame[0].Y;
+            if (!trackPoints.Any(p => MathF.Abs(p.Position.Y - lineY) < 1e-4f))
+            {
+                problem = $"zone {z + 1}: painted at a height that is not the AI line's";
+            }
+        }
+    }
+    string script = shapes != null ? DriftZones.Script(shapes, "#F5C400", (float)zoneCase.GetProperty("line_width").GetDouble()) : "";
+    if (problem == "" && !(worst <= 0.02f))
+        problem = $"shapes differ from setup's by up to {worst:G3} m";
+    if (problem == "" && (!script.Contains("ac.TrackPaint()") || script.Split("{o=").Length - 1 != shapes!.Count))
+        problem = "the script does not paint every zone";
+    bool ok = problem == "";
+    Console.WriteLine((ok ? "ok   " : "FAIL ") + $"DriftZones: " + (ok ? $"{shapes!.Count} zones painted as setup draws them (to within {worst:G3} m), script {script.Length} characters" : problem));
+    if (!ok) failures++;
+}
+
+// ZoneScoring (ZoneJudge.cs): made-up laps of the same course judged zone by zone, each zone's
+// line fill the one setup's zones.score gives it; a sliding lap is one scored run, a straight one
+// scores nothing. Then the run records (ZoneRecords.cs, the system's SQLite) keep runs and rank
+// each driver's best.
+if (cases.RootElement.TryGetProperty("zones", out JsonElement judgeCase) && judgeCase.TryGetProperty("runs", out JsonElement judgeRuns))
+{
+    string track = judgeCase.GetProperty("track").GetString()!;
+    var line = judgeCase.GetProperty("line").EnumerateArray()
+        .Select(p => p.EnumerateArray().Select(v => (float)v.GetDouble()).ToArray()).ToArray();
+    var trackPoints = line.Select((p, i) => new SplinePoint
+    {
+        Id = i, Position = new Vector3(p[0], p[1], p[2]), NextId = (i + 1) % line.Length,
+        PreviousId = (i + line.Length - 1) % line.Length, JunctionStartId = -1, JunctionEndId = -1, LeftId = -1, RightId = -1,
+    }).ToArray();
+    PluginData.Init(Path.Combine(folder, "zones"));
+    string before = Directory.GetCurrentDirectory();
+    Directory.SetCurrentDirectory(Path.Combine(folder, "zones"));
+    DriftZones.Course? course = DriftZones.LoadCourse(track, trackPoints);
+    Directory.SetCurrentDirectory(before);
+    foreach (JsonElement run in judgeRuns.EnumerateArray())
+    {
+        string problem = "";
+        float worst = 0f;
+        bool sliding = run.GetProperty("sliding").GetBoolean();
+        float[] F(string name) => run.GetProperty(name).EnumerateArray().Select(v => (float)v.GetDouble()).ToArray();
+        float[] x = F("x"), z = F("z"), rx = F("rear_x"), rz = F("rear_z"), slip = F("slip"), vx = F("vx"), vz = F("vz");
+        float dt = (float)run.GetProperty("dt").GetDouble();
+        var fills = run.GetProperty("fills").EnumerateArray().Select(v => v.ValueKind == JsonValueKind.Null ? float.NaN : (float)v.GetDouble()).ToArray();
+        var judged = new Dictionary<int, float>();
+        ZoneJudge.Event? result = null;
+        if (course == null)
+        {
+            problem = "the course did not load";
+        }
+        else
+        {
+            var judge = new ZoneJudge(new ZoneJudge.Course(course, null));
+            for (int i = 0; i < x.Length; i++)
+            {
+                judge.StepAt(new Vector2(x[i], z[i]), new Vector2(rx[i], rz[i]), slip[i], new Vector2(vx[i], vz[i]), dt, false, 0);
+                foreach (ZoneJudge.Event e in judge.Events)
+                {
+                    if (e.Kind is ZoneJudge.Kind.Zone or ZoneJudge.Kind.Spin) judged[e.Zone] = e.Fill;
+                    if (e.Kind == ZoneJudge.Kind.Run) result = e;
+                    if (e.Kind == ZoneJudge.Kind.Ended && sliding) problem = $"the run ended: {e.Text}";
+                }
+                judge.Events.Clear();
+            }
+            for (int k = 0; k < fills.Length && problem == ""; k++)
+            {
+                if (float.IsNaN(fills[k])) continue;
+                if (!judged.TryGetValue(k, out float fill)) { problem = $"zone {k + 1} was not judged"; break; }
+                worst = MathF.Max(worst, MathF.Abs(fill - fills[k]));
+            }
+            if (problem == "" && worst > 0.051f) problem = $"zone fills differ from setup's zones.score by up to {worst:G3}";
+            if (problem == "" && sliding && result == null) problem = "no scored run";
+            if (problem == "" && sliding && !(result!.Value.Points > 1f && result.Value.Points <= 110f)) problem = $"a run score of {result!.Value.Points}";
+            if (problem == "" && !sliding && result != null) problem = $"a straight lap scored {result.Value.Points}";
+        }
+        if (problem == "" && sliding && course != null)
+        {
+            // the same lap with a speed five times what the car moves: made-up numbers, not scored
+            var judge = new ZoneJudge(new ZoneJudge.Course(course, null));
+            bool scored = false, said = false;
+            for (int i = 0; i < x.Length; i++)
+            {
+                judge.StepAt(new Vector2(x[i], z[i]), new Vector2(rx[i], rz[i]), slip[i], 5f * new Vector2(vx[i], vz[i]), dt, false, 0);
+                scored |= judge.Events.Any(e => e.Kind == ZoneJudge.Kind.Run);
+                said |= judge.Events.Any(e => e.Kind == ZoneJudge.Kind.Ended && e.Text.Contains("add up"));
+                judge.Events.Clear();
+            }
+            if (scored || !said) problem = "a lap whose speed does not match its movement was scored";
+        }
+        bool ok = problem == "";
+        Console.WriteLine((ok ? "ok   " : "FAIL ") + $"ZoneJudge ({(sliding ? "sliding" : "straight")} lap): "
+            + (ok ? $"{judged.Count} zones judged as zones.score fills them (to within {worst:G3}), " + (result is { } res ? $"run {res.Points:0.0} pts; the same lap with a made-up speed not scored" : "not scored as a run") : problem));
+        if (!ok) failures++;
+    }
+
+    string db = Path.Combine(Path.GetTempPath(), $"zone_records_{Environment.ProcessId}.db");
+    string recordsProblem = "";
+    var r = new ZoneJudge.RunResult(0f, new[] { 50f }, 35f, 0.9f, 0.5f, 0);
+    var records = new ZoneRecords(db, "test", "zones1", 10);
+    if (!records.Open)
+    {
+        recordsProblem = "the SQLite database did not open";
+    }
+    else
+    {
+        records.Add("A", "1", "car_a", r with { Score = 50f }, null);
+        records.Add("A", "1", "car_a", r with { Score = 70f }, null);
+        records.Add("B", "2", "car_b", r with { Score = 60f }, null);
+        records.Dispose();
+        var again = new ZoneRecords(db, "test", "zones1", 10);
+        var other = new ZoneRecords(db, "test", "zones2", 10);
+        string board = string.Join(", ", again.Board.Select(e => $"#{e.Rank} {e.Driver} {e.Score:0}"));
+        if (board != "#1 A 70, #2 B 60") recordsProblem = $"the board reads {board}";
+        else if (again.Personal("2") != (60f, 2)) recordsProblem = "B's best and place are wrong";
+        else if (other.Board.Count != 0) recordsProblem = "other zones' board is not empty";
+        again.Dispose();
+        other.Dispose();
+    }
+    foreach (string f in new[] { db, db + "-wal", db + "-shm" }) File.Delete(f);
+    Console.WriteLine((recordsProblem == "" ? "ok   " : "FAIL ") + "ZoneRecords: " + (recordsProblem == "" ? "runs kept, each driver's best ranked, a board per set of zones" : recordsProblem));
+    if (recordsProblem != "") failures++;
+}
+
+// ArcadeJudge: a car sliding along at 72 km/h, 30 degrees one way for 3 s, then the other way,
+// then straight. Banked once it straightens, with one transition; sliding 2 m behind another car
+// scores twice as much; a spin, a wall hit or a position pushed along loses the chain.
+{
+    const float dt = 0.05f, v = 20f;
+    (List<ZoneJudge.Event> events, ArcadeJudge judge) Drive(Func<float, float> heading, float gap = float.PositiveInfinity,
+        float wallAt = -1f, float push = 1f)
+    {
+        var judge = new ArcadeJudge();
+        var all = new List<ZoneJudge.Event>();
+        for (float t = 0f; t < 10f; t += dt)
+        {
+            int walls = wallAt >= 0f && t >= wallAt && t < wallAt + dt ? 1 : 0;
+            judge.Step(v * t * push, 0f, heading(t) * MathF.PI / 180f, v, 0f, dt, gap, walls);
+            all.AddRange(judge.Events);
+            judge.Events.Clear();
+        }
+        return (all, judge);
+    }
+    static float Slide(float t) => t < 3f ? 30f : t < 6f ? -30f : 0f;
+    string arcadeProblem = "";
+    var (plain, _) = Drive(Slide);
+    var banked = plain.Where(e => e.Kind == ZoneJudge.Kind.Run).ToList();
+    float expected = 100f * (30f / 45f) * (72f / 80f) * (3f + 3f * 1.25f);
+    if (banked.Count != 1) arcadeProblem = $"{banked.Count} chains banked from one drift";
+    else if (MathF.Abs(banked[0].Points - expected) > 0.05f * expected) arcadeProblem = $"chain {banked[0].Points:0} pts, expected about {expected:0}";
+    else if (plain.Count(e => e.Kind == ZoneJudge.Kind.Combo) != 1) arcadeProblem = "the transition was not counted once";
+    else
+    {
+        var (close, _) = Drive(Slide, gap: 2f);
+        float tandem = close.Where(e => e.Kind == ZoneJudge.Kind.Run).Select(e => e.Points).DefaultIfEmpty(0f).First();
+        var (spun, _) = Drive(t => t < 3f ? 30f : 150f);
+        var (wall, _) = Drive(Slide, wallAt: 4f);
+        var (pushed, _) = Drive(Slide, push: 5f);
+        var (straight, _) = Drive(_ => 0f);
+        if (MathF.Abs(tandem - 2f * banked[0].Points) > 0.05f * tandem) arcadeProblem = $"2 m behind a car scored {tandem:0}, not twice {banked[0].Points:0}";
+        else if (!spun.Any(e => e.Kind == ZoneJudge.Kind.Spin) || spun.Any(e => e.Kind == ZoneJudge.Kind.Run)) arcadeProblem = "a spin did not lose the chain";
+        else if (!wall.Any(e => e.Kind == ZoneJudge.Kind.Wall) || wall.Where(e => e.Kind == ZoneJudge.Kind.Run).Any(e => e.Points > 0.6f * banked[0].Points))
+            arcadeProblem = "a wall hit did not lose the chain";
+        else if (pushed.Any(e => e.Kind == ZoneJudge.Kind.Run)) arcadeProblem = "a chain with a made-up position was banked";
+        else if (straight.Count != 0) arcadeProblem = "driving straight was scored";
+    }
+    Console.WriteLine((arcadeProblem == "" ? "ok   " : "FAIL ") + "ArcadeJudge: " + (arcadeProblem == ""
+        ? $"a 6 s drift with one transition banks {banked[0].Points:0} pts, twice that in tandem; spin, wall and made-up data lose the chain"
+        : arcadeProblem));
+    if (arcadeProblem != "") failures++;
 }
 
 Console.WriteLine(failures == 0 ? "plugin checks passed" : $"{failures} plugin check(s) failed");

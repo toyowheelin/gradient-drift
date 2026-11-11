@@ -10,7 +10,7 @@ completely the zones are filled, and anything past a zone's outer boundary is "N
 
 Where the zones go is worked out from the course's own shape (the course edges build_course.py
 wrote), nothing track-specific:
-  1. The course centreline (midway between the two edges) is cut into corners: stretches that
+  1. The course centreline (midway between the two edges, their spikes smoothed out: SPIKE_M) is cut into corners: stretches that
      turn one way with a radius under CORNER_RADIUS_M.
   2. Each corner gets one zone on its outside edge, by how far the corner turns:
        150 deg or more   outside zone over 30% - 90% of the corner (a long sweeper: on it early)
@@ -21,10 +21,15 @@ wrote), nothing track-specific:
 
 Output (in drift_rl/tracks/<track>/): <track>_course_zones.csv, one row per
 zone, in spline point ids. fast_sim.load_world() reads it; without it there are no zones.
+Zones can also be drawn by hand (setup's zone editor): such a file says Source=edited, and this
+script keeps it rather than placing zones again (--replace places them again). Each row also
+carries where its ends are (FirstX/Z, LastX/Z on its edge), so hand-drawn zones follow a course
+that was built again with other point ids.
 
     python build_zones.py                 # writes the file, prints the zones
     python build_zones.py --plot          # also writes course_zones.png
     python build_zones.py --track <name>    # another track (see build_course.py)
+    python build_zones.py --replace       # place zones again over hand-drawn ones
     python build_zones.py --score A.csv   # how well recorded laps fill the zones (plugin telemetry or
                                           # the in-game recorder's CSV; repeatable)
 """
@@ -47,6 +52,64 @@ ZONE_RULES = [(150.0, 'outside zone', 0.30, 0.90),
               (MIN_TURN_DEG, 'touch and go', 0.70, 1.00)]
 ZONE_DEPTH_M = 3.0              # also drift_env.RewardConfig.zone_depth_m
 REAR_AXLE_BEHIND_CENTRE_M = 1.3
+# Where nothing marks the course (no cones or stacks) its edge is the paving up to the first wall,
+# so on a corner with open run-off the edge jumps out 10-25 m for a few points, and the mesh makes
+# it zigzag by a metre or two from point to point. Zones are placed, drawn, painted and scored on
+# an edge whose width each side is first held within SPIKE_M of its median over SPIKE_WINDOW points
+# around it, then averaged over SMOOTH_POINTS points (GradientDriftPlugin/DriftZones.cs does the
+# same). Only widths that come in by more than SMOOTH_KEEP_M change: the edge never moves out. The trainer's own
+# course inputs are unchanged.
+SPIKE_WINDOW = 15
+SPIKE_M = 1.0
+SMOOTH_POINTS = 5
+SMOOTH_KEEP_M = 0.01
+
+
+def smooth_widths(half):
+    """One side's widths (m from the line, per point round the lap): held within SPIKE_M of their
+    running median over SPIKE_WINDOW points, then a running mean over SMOOTH_POINTS, kept only where
+    it pulls the edge in (a zone's paint must not reach past the road where the edge dips in)."""
+    half = np.asarray(half, dtype=float)
+    n = len(half)
+    k = min(SPIKE_WINDOW // 2, (n - 1) // 2)
+    if k < 1:
+        return half.copy()
+    idx = (np.arange(n)[:, None] + np.arange(-k, k + 1)[None, :]) % n
+    med = np.median(half[idx], axis=1)
+    held = np.clip(half, med - SPIKE_M, med + SPIKE_M)
+    a = min(SMOOTH_POINTS // 2, (n - 1) // 2)
+    idx = (np.arange(n)[:, None] + np.arange(-a, a + 1)[None, :]) % n
+    mean = held[idx].mean(axis=1)
+    return np.where(half - mean > SMOOTH_KEEP_M, mean, half)        # only ever pulled in, never out
+
+
+def smooth_edges(edges):
+    """The course-edges table with its spikes taken out (see SPIKE_M): a point whose width is
+    clipped has that edge moved along the same cross-track line. Other rows are left exactly as they
+    are. A table without the width columns, or one already smoothed, comes back unchanged."""
+    if edges.attrs.get('smoothed') or not {'PositiveSideM', 'NegativeSideM'} <= set(edges.columns):
+        return edges
+    out = edges.copy()
+    out.attrs['smoothed'] = True
+    p_m, n_m = edges.PositiveSideM.to_numpy(float), edges.NegativeSideM.to_numpy(float)
+    new_p, new_n = smooth_widths(p_m), smooth_widths(n_m)
+    changed = (new_p != p_m) | (new_n != n_m)
+    if not changed.any():
+        return out
+    pos = edges[['PositiveEdgeX', 'PositiveEdgeZ']].to_numpy(float)
+    neg = edges[['NegativeEdgeX', 'NegativeEdgeZ']].to_numpy(float)
+    across = pos - neg
+    width = np.linalg.norm(across, axis=1)
+    ok = changed & (width > 1e-6) & (p_m + n_m > 1e-6)
+    unit = across / np.maximum(width, 1e-6)[:, None]
+    line = pos - across * (p_m / np.maximum(p_m + n_m, 1e-6))[:, None]
+    pos_new = line + unit * new_p[:, None]
+    neg_new = line - unit * new_n[:, None]
+    out.loc[ok, 'PositiveSideM'] = new_p[ok]
+    out.loc[ok, 'NegativeSideM'] = new_n[ok]
+    out.loc[ok, ['PositiveEdgeX', 'PositiveEdgeZ']] = pos_new[ok]
+    out.loc[ok, ['NegativeEdgeX', 'NegativeEdgeZ']] = neg_new[ok]
+    return out
 
 
 def find_corners(mid):
@@ -84,7 +147,8 @@ def find_corners(mid):
 
 
 def place_zones(edges):
-    """edges: the course-edges table. Returns a list of zone dicts."""
+    """edges: the course-edges table (its spikes taken out first). Returns a list of zone dicts."""
+    edges = smooth_edges(edges)
     pos = edges[['PositiveEdgeX', 'PositiveEdgeZ']].to_numpy()
     neg = edges[['NegativeEdgeX', 'NegativeEdgeZ']].to_numpy()
     n = len(pos)
@@ -150,6 +214,78 @@ def join_corners(corners, seg):
     return out
 
 
+ZONE_COLUMNS = ['Zone', 'Kind', 'Side', 'FirstPointId', 'LastPointId', 'LengthM', 'Corner', 'CornerTurnsDeg',
+                'CornerRadiusM', 'Source', 'FirstX', 'FirstZ', 'LastX', 'LastZ']
+ZONE_KINDS = ('outside zone', 'touch and go')
+
+
+def edge_arrays(edges):
+    """The course's positive (left) and negative (right) edges, (n, 2) each, as zones are drawn on
+    them (spikes taken out)."""
+    edges = smooth_edges(edges)
+    return (edges[['PositiveEdgeX', 'PositiveEdgeZ']].to_numpy(dtype=float),
+            edges[['NegativeEdgeX', 'NegativeEdgeZ']].to_numpy(dtype=float))
+
+
+def zone_points(first, last, n):
+    """The point ids from first to last going round the lap (first > last wraps past the start)."""
+    return np.arange(int(first), int(first) + (int(last) - int(first)) % n + 1) % n
+
+
+def finish_zone(zone, pos, neg):
+    """Fills a zone's points and length (m along its edge) from first, last and side."""
+    zone['points'] = zone_points(zone['first'], zone['last'], len(pos))
+    edge = pos if zone['side'] > 0 else neg
+    zone['length'] = float(np.linalg.norm(np.diff(edge[zone['points']], axis=0), axis=1).sum())
+    return zone
+
+
+def write_zones(path, zones, edges, source='auto'):
+    """Writes zones (dicts as place_zones makes them; corner facts may be None) as a course_zones
+    file. source 'edited' marks zones drawn by hand, which a later run of this script keeps."""
+    pos, neg = edge_arrays(edges)
+
+    def num(v, fmt):
+        return '' if v is None or (isinstance(v, float) and np.isnan(v)) else format(v, fmt)
+    with open(path, 'w', newline='') as f:
+        f.write(','.join(ZONE_COLUMNS) + '\n')
+        for i, z in enumerate(zones, 1):
+            finish_zone(z, pos, neg)
+            edge = pos if z['side'] > 0 else neg
+            a, b = edge[z['first']], edge[z['last']]
+            f.write(f"{i},{z['kind']},{int(z['side'])},{int(z['first'])},{int(z['last'])},{z['length']:.1f},"
+                    f"{num(z.get('corner'), 'd')},{num(z.get('turned'), '.0f')},{num(z.get('radius'), '.0f')},{source},"
+                    f"{a[0]:.2f},{a[1]:.2f},{b[0]:.2f},{b[1]:.2f}\n")
+    return path
+
+
+def read_zones(path, edges):
+    """A course_zones file as (zones, edited): zones as place_zones makes them. A hand-edited file
+    whose ends no longer sit on the course's points (the course was built again) has its ends moved
+    to the nearest points of the same edge."""
+    pos, neg = edge_arrays(edges)
+    n = len(pos)
+    table = pd.read_csv(path)
+    edited = 'Source' in table and (table.Source.astype(str) == 'edited').any()
+    zones = []
+    for _, r in table.iterrows():
+        side = 1 if r.Side > 0 else -1
+        first, last = int(r.FirstPointId), int(r.LastPointId)
+        if edited and 'FirstX' in table and not pd.isna(r.FirstX):
+            edge = pos if side > 0 else neg
+            first = int(np.argmin(np.hypot(edge[:, 0] - r.FirstX, edge[:, 1] - r.FirstZ)))
+            last = int(np.argmin(np.hypot(edge[:, 0] - r.LastX, edge[:, 1] - r.LastZ)))
+        first, last = first % n, last % n
+
+        def opt(name, kind):
+            return kind(r[name]) if name in table and not pd.isna(r[name]) else None
+        kind = str(r.Kind) if 'Kind' in table and str(r.Kind) in ZONE_KINDS else ZONE_KINDS[0]
+        zones.append(finish_zone({'kind': kind, 'side': side, 'first': first, 'last': last,
+                                  'corner': opt('Corner', int), 'turned': opt('CornerTurnsDeg', float),
+                                  'radius': opt('CornerRadiusM', float)}, pos, neg))
+    return zones, bool(edited)
+
+
 def zone_side_per_point(zones, n):
     side = np.zeros(n)
     for z in zones:
@@ -161,6 +297,7 @@ def rear_depth(x, z, heading, edges, side):
     """For car positions and headings: nearest spline point, and how far inside that point's zone
     edge the rear axle is (m; negative = past the edge). NaN where the point has no zone."""
     from scipy.spatial import cKDTree
+    edges = smooth_edges(edges)
     pos = edges[['PositiveEdgeX', 'PositiveEdgeZ']].to_numpy()
     neg = edges[['NegativeEdgeX', 'NegativeEdgeZ']].to_numpy()
     line = np.stack([pos[:, 0] - (pos[:, 0] - neg[:, 0]) * edges.PositiveSideM / (edges.PositiveSideM + edges.NegativeSideM),
@@ -219,22 +356,26 @@ def main(argv=None):
     ap.add_argument('--plot', action='store_true')
     ap.add_argument('--score', action='append', default=[], metavar='CSV')
     ap.add_argument('--track', default=None, help='the track folder name (default: track_files.TRACK)')
+    ap.add_argument('--replace', action='store_true', help='place zones again even over hand-drawn ones')
     args = ap.parse_args(argv)
     data = args.tracks
     track = args.track or tf.TRACK
-    edges = pd.read_csv(tf.path(data, 'course_edges', track))
-    zones = place_zones(edges)
+    edges = smooth_edges(pd.read_csv(tf.path(data, 'course_edges', track)))
     out = tf.writable_path(data, 'course_zones', track)
-    with open(out, 'w') as f:
-        f.write('Zone,Kind,Side,FirstPointId,LastPointId,LengthM,Corner,CornerTurnsDeg,CornerRadiusM\n')
-        for i, z in enumerate(zones, 1):
-            f.write(f"{i},{z['kind']},{z['side']},{z['first']},{z['last']},{z['length']:.1f},{z['corner']},"
-                    f"{z['turned']:.0f},{z['radius']:.0f}\n")
+    zones, edited = read_zones(out, edges) if os.path.exists(out) else ([], False)
+    if edited and not args.replace:
+        write_zones(out, zones, edges, source='edited')      # ends follow a course built again
+        print(f"kept the hand-drawn zones in {os.path.basename(out)} (--replace places them again)")
+    else:
+        zones = place_zones(edges)
+        write_zones(out, zones, edges)
     lap = float(np.linalg.norm(np.diff(edges[['PositiveEdgeX', 'PositiveEdgeZ']].to_numpy(), axis=0), axis=1).sum())
     print(f"{len(zones)} zones, {sum(z['length'] for z in zones):.0f} m of a {lap:.0f} m outside edge; {ZONE_DEPTH_M:g} m deep")
     print("zone  kind           corner            edge                 points     length")
     for i, z in enumerate(zones, 1):
-        print(f"{i:3d}   {z['kind']:13s}  {'left' if z['side'] < 0 else 'right'} {z['turned']:3.0f} deg, R {z['radius']:2.0f} m   "
+        corner = (f"{'left' if z['side'] < 0 else 'right'} {z['turned']:3.0f} deg, R {z['radius']:2.0f} m" if z.get('turned') is not None
+                  else 'drawn by hand    ')
+        print(f"{i:3d}   {z['kind']:13s}  {corner}   "
               f"{'right (negative)' if z['side'] < 0 else 'left (positive) '}   {z['first']:3d} - {z['last']:3d}   {z['length']:4.0f} m")
     print(f"written: {out}")
     scores = {os.path.splitext(os.path.basename(p))[0].replace('_', ' '): score(p, edges, zones) for p in args.score}

@@ -288,7 +288,7 @@ def write_track(data, name, c, rng):
     from scipy.spatial import cKDTree
     import track_files as tf
     from build_course import Line, write as write_course
-    from build_zones import place_zones
+    from build_zones import place_zones, write_zones
     line, half, y, camber, style = c['line'], c['half'], c['y'], c['camber'], c['style']
     n = len(line)
     sp = np.c_[line[:, 0], y, line[:, 1]]
@@ -378,11 +378,7 @@ def write_track(data, name, c, rng):
     write_course(dict(half=half, edge_pos=edge_pos, edge_neg=edge_neg,
                       from_marker=np.full((2, n), style == 'stacks'), markers=markers), data, name)
     edges = pd.read_csv(tf.path(data, 'course_edges', name))
-    with open(tf.writable_path(data, 'course_zones', name), 'w') as f:
-        f.write('Zone,Kind,Side,FirstPointId,LastPointId,LengthM,Corner,CornerTurnsDeg,CornerRadiusM\n')
-        for i, z in enumerate(place_zones(edges), 1):
-            f.write(f"{i},{z['kind']},{z['side']},{z['first']},{z['last']},{z['length']:.1f},{z['corner']},"
-                    f"{z['turned']:.0f},{z['radius']:.0f}\n")
+    write_zones(tf.writable_path(data, 'course_zones', name), place_zones(edges), edges)
     # the ground: a height field following the line's height and camber; Road where the course's
     # kind is paved (all of it inside walls; the course plus a pad for tire stacks; the course
     # itself for a grass-edged road), Grass beyond

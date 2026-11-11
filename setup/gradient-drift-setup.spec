@@ -23,8 +23,8 @@ COMPILED = ['fast_sim', 'drift_env', 'sim_target']
 a = Analysis(
     [os.path.join(SPECPATH, 'launcher.py')],
     pathex=[SPECPATH, os.path.join(ROOT, 'drift_rl'), os.path.join(ROOT, 'tools')],
-    hiddenimports=TRACK_TOOLS + ['gradientdrift_setup.trackdata', 'gradientdrift_setup.carfile', 'gradientdrift_setup.export', 'gradientdrift_setup.walk'] + (['gradientdrift_setup.gui'] if GUI else []),
-    excludes=([] if GUI else ['PySide6', 'shiboken6', 'gradientdrift_setup.gui'])
+    hiddenimports=TRACK_TOOLS + ['gradientdrift_setup.trackdata', 'gradientdrift_setup.carfile', 'gradientdrift_setup.export', 'gradientdrift_setup.walk', 'gradientdrift_setup.zones'] + (['gradientdrift_setup.gui', 'gradientdrift_setup.zones_gui'] if GUI else []),
+    excludes=([] if GUI else ['PySide6', 'shiboken6', 'gradientdrift_setup.gui', 'gradientdrift_setup.zones_gui'])
     # left out: what the track tools never use but the libraries pull in when it is installed
     + ['tkinter', 'torch', 'matplotlib', 'IPython', 'PIL', 'cryptography', 'lxml', 'sqlalchemy',
        'pyarrow', 'openpyxl', 'jinja2', 'pytest',

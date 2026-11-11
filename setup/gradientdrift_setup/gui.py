@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (QApplication, QComboBox, QDialog, QFileDialog, QF
 
 from .apply import apply_plan, last_run, undo
 from .find import (default_plugin_source, default_track_data, find_games, find_servers, in_game_content, is_game,
-                   is_server, track_data_root)
+                   is_server, track_data_home, track_data_root)
 from .game import car_facts, track_facts
 from .identify import identify
 from .plan import bot_name_now, bot_slots, plan_bot
@@ -486,8 +486,13 @@ class ChangesPage(QWizardPage):
         self.export_button.setToolTip('Make the changes into a separate folder instead, with the files to upload '
                                       'to your host and HOW_TO_INSTALL.txt. The server folder is not changed.')
         self.export_button.clicked.connect(self.export)
+        self.zones_button = QPushButton('Zones...')
+        self.zones_button.setToolTip("See and change the track's drift zones: where the trainer pays the bots to put "
+                                     "the rear of the car.")
+        self.zones_button.clicked.connect(self.edit_zones)
         buttons = QHBoxLayout()
         buttons.addWidget(self.export_button)
+        buttons.addWidget(self.zones_button)
         buttons.addStretch(1)
         buttons.addWidget(self.undo_button)
         buttons.addWidget(self.apply_button)
@@ -553,6 +558,17 @@ class ChangesPage(QWizardPage):
             os.startfile(out)       # Windows: show the folder
         except (AttributeError, OSError):
             pass
+
+    def edit_zones(self):
+        from .zones_gui import open_editor
+        track = self.state['server'].track
+        tracks = self.track_data.value() or track_data_home()
+        if not open_editor(tracks, track, self):
+            QMessageBox.information(self, 'No zones yet', f"There is no course data for {track} in {tracks} yet. "
+                                    "Make the changes first: setup makes the track's data, zones included. Or pick "
+                                    "Track files that have it.")
+            return
+        self.initializePage()       # changed zones are a change to copy to the server
 
     def undo(self):
         server = self.state['server'].folder

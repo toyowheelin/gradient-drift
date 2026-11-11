@@ -29,11 +29,16 @@ SHIPPED_POLICIES = {
 RENAMED_SETTINGS = {}
 # the files the plugin reads from the server's folder for its track (drift_rl/setup_track.py makes them)
 TRACK_FILES = ['{track}_triangles.csv.gz', '{track}_collision.csv.gz', '{track}_road_mesh.csv',
-               '{track}_course_edges.csv', '{track}_pace_reference.csv', '{track}_collision_grip.csv.gz']
+               '{track}_course_edges.csv', '{track}_pace_reference.csv', '{track}_collision_grip.csv.gz',
+               '{track}_course_zones.csv']
 # the road mesh is optional; the course edges are needed by a policy that reads the room to them,
 # the pace reference by one that reads its pace error, the surface grip by one with SurfaceGrip
 # (track data made before it had none: it is made again only for such a policy)
-OPTIONAL_TRACK_FILES = ('_road_mesh.csv', '_course_edges.csv', '_pace_reference.csv', '_collision_grip.csv.gz')
+OPTIONAL_TRACK_FILES = ('_road_mesh.csv', '_course_edges.csv', '_pace_reference.csv', '_collision_grip.csv.gz',
+                        '_course_zones.csv')
+# the drift zones are only painted for players (ShowZones): copied when the track files have them (and
+# again when the zone editor changes them), never a reason to make the track's data or check it
+PAINT_ONLY_TRACK_FILES = ('_course_zones.csv',)
 
 # AiParams the bots need (the six-bot test): AssettoServer spawns AI only for a player
 # within MaxPlayerDistanceToAiSplineMeters of the AI line who has not been idle for
@@ -349,7 +354,8 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
     home = track_data or track_data_home()
     surface_grip = os.path.exists(policy) and policy_setting(policy, 'SurfaceGrip') == 1.0
     to_make = [m for m in missing if not m.endswith('_pace_reference.csv')     # training makes that one
-               and (surface_grip or not m.endswith('_collision_grip.csv.gz'))]
+               and (surface_grip or not m.endswith('_collision_grip.csv.gz'))
+               and not m.endswith(PAINT_ONLY_TRACK_FILES)]
     needs_line = (t is not None and t.exists and t.ai_points < 2 and bool(t.recorded or t.sides)
                   and not os.path.exists(os.path.join(server.folder, rel_ai)))
     if t is not None and t.exists and (t.ai_points >= 2 or t.recorded or t.sides) and (to_make or needs_line):
@@ -357,6 +363,7 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
                                 f"{os.path.join(home, server.track)}: its geometry, road mesh, AI line (checked, and "
                                 "rebuilt down the middle of the road if it needs it), course and zones; a few minutes",
                                 op=('track_data', t.folder, server.layout or '', home, server.track, rel_ai)))
+        to_make += [m for m in missing if m.endswith(PAINT_ONLY_TRACK_FILES)]     # made along with the rest
         for name in to_make:
             p.changes.append(Change(name, "copy the track's data for the plugin (made above)",
                                     op=('copy', os.path.join(home, server.track, name), name)))
@@ -383,6 +390,15 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
             ai_copy = None
     if ai_copy:
         p.changes.append(ai_copy)
+        # a new AI line (moved into the zones, or rebuilt) needs its own pace reference: the server's
+        # follows the old line's points and corners. The track files' one is set aside when the line
+        # changes (zone_line.py), so it is made again here from the new line's shape
+        pace_name = f'{server.track}_pace_reference.csv'
+        if (inputs > 54 and track_data and not any(c.file == pace_name for c in p.changes)
+                and not os.path.exists(os.path.join(track_data, server.track, pace_name))):
+            p.changes.append(Change(pace_name, "work out the track's reference speed round the lap for the new AI "
+                                    f"line, from its shape, into {os.path.join(track_data, server.track)}, and copy "
+                                    "it for the plugin", op=('pace_reference', policy, track_data, server.track)))
     needed_missing = [m for m in missing if not m.endswith(OPTIONAL_TRACK_FILES)
                       or (m.endswith('_course_edges.csv') and inputs > 46)
                       or (m.endswith('_pace_reference.csv') and inputs > 54)]
@@ -412,7 +428,8 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
         return there if os.path.exists(there) else None
 
     # what the track's data asks of the bots, checked before anything is written (drift_rl/check_track.py)
-    track_names = {pattern.format(track=server.track) for pattern in TRACK_FILES}
+    track_names = {pattern.format(track=server.track) for pattern in TRACK_FILES
+                   if not pattern.endswith(PAINT_ONLY_TRACK_FILES)}
     if any(c.op[:1] in (('track_data',), ('pace_reference',)) or (c.op[:1] == ('copy',) and c.file in track_names)
            for c in p.changes):
         p.changes.append(Change('(track check)', f"check {server.track}'s speed targets and walls before anything is "
