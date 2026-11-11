@@ -36,8 +36,9 @@ when releasing.
   (`zones <track> help`), and `picture` draws the map as an SVG.
 - Zones follow a smoothed course edge: where an open corner's run-off made the edge jump out for a
   few points or zigzag, `build_zones.py`, setup and the plugin's paint hold each side within 1 m of
-  its neighbours' median and average it over 5 points first (only ever pulling the edge in), so automatic zones no longer land on
-  spike tips and the painted boxes run smooth. The painted outer line sits half its width inside the edge. Courses without spikes get the same zones as before.
+  its neighbours' median and average it over 5 points first (only ever pulling the edge in), so
+  automatic zones no longer land on spike tips and the painted boxes run smooth. The painted outer
+  line sits half its width inside the edge. Courses without spikes get the same zones as before.
 - The plugin paints the track's drift zones on the road for players with Custom Shaders Patch:
   yellow boxes along the outside of the corners, closed at both ends, striped inside (sparser for a
   touch-and-go area), sent as a CSP online script that uses CSP's track paint. On by default
