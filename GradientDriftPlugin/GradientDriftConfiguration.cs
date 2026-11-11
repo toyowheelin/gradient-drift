@@ -429,6 +429,11 @@ public class GradientDriftConfiguration
     // same way, so a slippery stretch of road is slippery for the bots too. Set by the policy file.
     public bool SurfaceGrip { get; set; } = false;
 
+    // Each axle's sideways force plus a correction fitted to Assetto Corsa (FittedTireCorrection.cs):
+    // without it this model's car keeps rotating at the end of a transition where the game's stops.
+    // Made for the physics the shipped policy trains with. Set by the policy file.
+    public bool FittedTireCorrection { get; set; } = false;
+
     // Floor on the speed in the slip-angle formula, which is singular at zero speed.
     public float MinSlipAngleSpeedMs { get; set; } = 3.0f;
 
@@ -472,6 +477,14 @@ public class GradientDriftConfiguration
     public bool CarOutlineContact { get; set; } = false;
     public float CarOutlineOverhangMeters { get; set; } = 0.8f;
     public float CarOutlineSideMarginMeters { get; set; } = 0.1f;
+
+    // Walls touch the car's body: a rectangle turned with its heading, the size of the car's own
+    // body when its car file says (BODY_FRONT_M / BODY_REAR_M / BODY_HALF_WIDTH_M, which setup reads
+    // from the car's collider.kn5), else the outline above; checked at points round its edge no more
+    // than 0.5 m apart (CarBody). Off, walls touch the contact distance's six pins around the travel
+    // direction, which have no pin straight ahead or behind, so a nose or tail went into a guard rail
+    // by up to a metre. Not a policy input: a server setting, on whatever the policy was trained with.
+    public bool BodyWallContact { get; set; } = true;
 
     // ---- Ride height ----------------------------------------------------------------------------
 

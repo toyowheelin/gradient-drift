@@ -98,6 +98,14 @@ AGPL-3.0 program carry the work, given the notices.
   Controller Framework for Autonomous Drifting: Design, Stability, and Experimental Validation",
   ASME Journal of Dynamic Systems, Measurement, and Control, 2014). Its full-sliding angle is
   the car's own tyres.ini `FRICTION_LIMIT_ANGLE` plus `FLEX` x the tire's load.
+* The fitted tyre correction (`FittedTireCorrection`) - Djeumou, Goh, Topcu, Balachandran,
+  "Autonomous Drifting with 3 Minutes of Data via Learned Tire Models", ICRA 2023
+  ([arXiv 2306.06330](https://arxiv.org/abs/2306.06330)): the brush curve overshoots at the ends
+  of transitions, and a tyre model fitted to a few minutes of driving data fixes it. Kaufmann et
+  al., "Champion-level drone racing using deep reinforcement learning", Nature 620, 2023
+  ([doi:10.1038/s41586-023-06419-4](https://doi.org/10.1038/s41586-023-06419-4)): a residual model
+  fitted to real flight data and added to the simulator. Ours is a ridge regression (Hoerl and
+  Kennard, Technometrics 12, 1970) of the axle forces worked out from recorded laps in Assetto Corsa.
 * Zhou, Lu, Yang, Li and Mo, "Learning to Drift with Individual Wheel Drive: Maneuvering
   Autonomous Vehicle at the Handling Limits", Tsinghua University, 2025,
   <https://arxiv.org/abs/2507.23339> - randomised start states, sideways and at speed (the
@@ -180,6 +188,3 @@ AGPL-3.0 program carry the work, given the notices.
   Vehicle at the Handling Limits", Tsinghua University 2025
   ([arXiv 2507.23339](https://arxiv.org/abs/2507.23339)). Its start-state randomisation was tried
   as mid-drift starts for solo driving and not kept.
-* Djeumou, Goh, Topcu, Balachandran, "Autonomous Drifting with 3 Minutes of Data via Learned Tire
-  Models", ICRA 2023 ([arXiv 2306.06330](https://arxiv.org/abs/2306.06330)). Where a simulator's
-  errors show up (the ends of transitions), used when checking ours against Assetto Corsa.

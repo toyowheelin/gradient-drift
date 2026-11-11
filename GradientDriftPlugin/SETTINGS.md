@@ -182,7 +182,7 @@ Many are replaced at start, without anything in the YAML:
 - **By the policy file** (`plugin_settings` in `policy.json`): the steering lock and steering speed,
   the brakes (`FrontBrakeOnly`, `DisableBrakes`), the rear thrust, brake and friction-circle models
   and `RearSpinGripShare`, tyre load sensitivity and its numbers, the tyre curve (`RoundTireCurve`),
-  `SurfaceGrip`, the height of the wall sensors, and the wrong-way recovery thresholds. The plugin
+  `SurfaceGrip`, `FittedTireCorrection`, the height of the wall sensors, and the wrong-way recovery thresholds. The plugin
   switches on only the features a policy was trained with, so an older policy keeps driving the car
   it knew.
 
@@ -223,6 +223,7 @@ Many are replaced at start, without anything in the YAML:
 | `DisableBrakes` | `false` | Policy file. With `EnableRearFrictionCircle`: no pedal braking and no brake action, so the car slows only by lifting and with its angle (gen18 on) |
 | `FrontBrakeOnly` | `false` | Policy file. With `EnableRearFrictionCircle`: no pedal braking, but the brake action (the front axle, with the throttle) still works, so the car can scrub speed and keep its angle |
 | `SurfaceGrip` | `false` | Policy file. Each axle's peak friction times the grip of the ground under it: its surface's `FRICTION` in the track's `surfaces.ini` over the main road's, from `<track>_collision_grip.csv.gz` (setup writes it beside the other track files; without it every surface grips 1, with a warning) |
+| `FittedTireCorrection` | `false` | Policy file. Each axle's sideways force plus a correction fitted to Assetto Corsa's E36 (`FittedTireCorrection.cs`, the same numbers as `fast_sim._fitted_axle_correction`), as a share of the axle's static load, from the slip angles, yaw rate, body slip, speed and throttle. Without it the model keeps rotating at the end of a transition where the game stops. Made for the physics the shipped policy trains with (`RoundTireCurve`, `RearSpinGripShare` 0.95, tyre load sensitivity) |
 | `RearSpinGripShare` | `1` (off) | Policy file. With `EnableRearFrictionCircle`: the rear friction circle while the throttle spins the tires, as a share of their peak; it shrinks toward this with the share of full-throttle thrust used |
 | `MaxLongitudinalDecelMs2` | `5.6` | Hardest braking, m/s² |
 | `MinSlipAngleSpeedMs` | `3.0` | Speed floor in the slip-angle formula |
@@ -261,6 +262,7 @@ The policy reads these sensors' outputs directly, so their geometry has to match
 | `CarOutlineContact` | `false` | Policy file. Walls touch the car's own outline (a rectangle turned with its heading: each axle's distance from the centre plus `CarOutlineOverhangMeters`, half the wider track plus `CarOutlineSideMarginMeters`) instead of the contact distance's circle, so a sliding car's tail can't pass through a wall |
 | `CarOutlineOverhangMeters` | `0.8` | |
 | `CarOutlineSideMarginMeters` | `0.1` | |
+| `BodyWallContact` | `true` | Walls touch the car's body: a rectangle turned with its heading, checked at points no more than 0.5 m apart round its edge. Its size is the car file's body (`BODY_FRONT_M`, `BODY_REAR_M`, `BODY_HALF_WIDTH_M`, which setup reads from the car's `collider.kn5`); a car file without one uses `CarOutlineOverhangMeters` and `CarOutlineSideMarginMeters`. Off, walls touch the contact distance's six pins, which have none straight ahead or behind, so a nose or tail could go into a guard rail. A server setting, not a policy input: it applies whatever the policy was trained with |
 | `RoundTireCurve` | `false` | Policy file. Each axle's sideways force follows the brush (Fiala) curve: three times as steep as the straight line at small slip angles, rounding over into full sliding at the tyres' `FRICTION_LIMIT_ANGLE` plus `FLEX` x the static load on one tire (car file `FRONT_TIRE_FLEX` / `REAR_TIRE_FLEX`, else `FrontTireFlex` / `RearTireFlex`). Matches Assetto Corsa's front tyre, which gives 75 - 90% of its peak by 4 - 8 deg |
 | `FrontTireFlex`, `RearTireFlex` | `0.000852` | tyres.ini `FLEX`, degrees of slip angle per N, for cars without a car file |
 | `GroundRayHeightOffsetM` | `0.40` | Ride height above the ground found below the car. The bot drives and senses at this height; clients are sent each car at its own CG height (`CG_HEIGHT_M` in its car file) instead |

@@ -2662,6 +2662,7 @@ PLUGIN_SETTING_PARAMS = {
     'RoundTireCurve': ('EXT_ROUND_TIRE_CURVE', float),              # 1 = brush-curve tyres (fast_sim._tire_curve)
     'RearSpinGripShare': ('REAR_SPIN_GRIP_SHARE', float),          # rear circle while spinning, share of peak; 1 = off
     'SurfaceGrip': ('EXT_SURFACE_GRIP', float),                     # 1 = tyre grip x the surface's (surfaces.ini FRICTION)
+    'FittedTireCorrection': ('EXT_FITTED_TIRE_CORRECTION', float),  # 1 = each axle's force + the correction fitted to the game
 }
 DEFAULT_MAX_STEER_DEG = 28.125      # the plugin's MaxSteerAngleRadians default
 

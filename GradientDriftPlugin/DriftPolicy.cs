@@ -307,6 +307,7 @@ public sealed class DriftPolicy
             "RoundTireCurve" => value == 0f || value == 1f,
             "RearSpinGripShare" => value > 0f && value <= 1f,
             "SurfaceGrip" => value == 0f || value == 1f,
+            "FittedTireCorrection" => value == 0f || value == 1f,
             _ => false,
         };
     }
