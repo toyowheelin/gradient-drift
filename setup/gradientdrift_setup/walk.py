@@ -396,4 +396,8 @@ def run(state=None):
     if 'server' in st and 'bots' in st:
         t.say('Next time, the same in one line:')
         t.say(f'  {command_line(st)}', fold=False)
+        words = program_words() + ['zones', st['server'].folder]
+        t.hint("The track's drift zones (where the trainer pays the bots to put the rear of the car), to see or "
+               "change: " + (subprocess.list2cmdline(words) if sys.platform == 'win32'
+                             else ' '.join(shlex.quote(w) for w in words)) + ' help')
     return 0

@@ -10,5 +10,7 @@ public class GradientDriftModule : AssettoServerModule<GradientDriftConfiguratio
     protected override void Load(ContainerBuilder builder)
     {
         builder.RegisterType<GradientDriftPlugin>().AsSelf().As<IAssettoServerAutostart>().SingleInstance();
+        // the players' zone scores and the server's board (ZoneScoring.cs)
+        builder.RegisterType<ZoneScoring>().AsSelf().As<IAssettoServerAutostart>().SingleInstance();
     }
 }

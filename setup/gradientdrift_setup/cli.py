@@ -10,6 +10,8 @@
     gradient-drift-setup undo <server folder> [--yes]
     gradient-drift-setup bundle <server folder> [--yes]
     gradient-drift-setup export <server folder> --out <empty folder> [the same options]
+    gradient-drift-setup zones <server folder or track> [list | add | move | delete | kind | side | auto |
+        picture | score ...] [--track-data FOLDER]
 
 check reads each server and prints what it needs for drift bots, changing nothing (it exits 1 when
 a server has something setup cannot fix). apply shows the same list, asks, and makes the changes
@@ -17,7 +19,9 @@ a server has something setup cannot fix). apply shows the same list, asks, and m
 changed. bundle only packs the plugin's loose data files (policy, car files, track data) into
 plugins/GradientDriftPlugin/GradientDriftPlugin.bundle.zip, which apply also does. export is for a server setup cannot reach (a hosting plan): give it the server's cfg/
 folder downloaded from the host, and it puts the files to upload in <out>/upload/ and what to do
-with them in <out>/HOW_TO_INSTALL.txt, changing nothing it was given. Without --game setup uses the
+with them in <out>/HOW_TO_INSTALL.txt, changing nothing it was given. zones shows a track's drift zones
+(where the trainer pays the bots to put the rear of the car) in the zone editor, or changes them with
+the words after it (`zones <server> help` lists them). Without --game setup uses the
 Assetto Corsa install it finds. The walk-through prints its run as one of these lines at the end.
 
 Example:
@@ -92,6 +96,161 @@ def bundle_only(folders, yes):
     return status
 
 
+ZONES_HELP = """zones <server folder or track> [what] [--track-data FOLDER]
+
+  (nothing)                  the zone editor, in a window where one can open; else the list
+  list                       the zones, in order round the lap
+  add left|right FROM TO [touch]
+                             a new zone on the left or right edge (looking along the direction of
+                             travel) from FROM to TO: course point ids, or metres from the start
+                             with an m (120m); touch makes it a touch-and-go area
+  move N FROM TO             zone N's ends
+  delete N                   take zone N out
+  kind N outside|touch       outside zone, or touch and go
+  side N left|right          move zone N to the other edge, over the same stretch
+  auto                       the zones setup places from the course's shape (replaces them all)
+  picture FILE.svg [RECORDING [DRIVER]]
+                             a map of the zones (opens in a web browser), with a recording's
+                             rear-axle path if given
+  score RECORDING [DRIVER]   how well a recording fills each zone (AI Car Monitor's, the plugin's
+                             telemetry or the game's telemetry recorder; DRIVER picks one of several)
+
+Each change is saved straight away (the file it replaces is kept in the track's zone_backups
+folder) and marked as edited, so setup keeps it when it makes the track's data again (auto
+takes the mark off). Run setup's apply again to copy them to the server, where the plugin
+paints them on the road for players (ShowZones). For the bots, zones change what the trainer pays
+for: they drive them only after training on that track."""
+
+
+def zones_command(target, words, track_data):
+    """The zones command: target is a server folder or a track's name."""
+    import sys
+    from . import zones as Z
+    from .find import default_track_data, is_server, track_data_home
+    if os.path.isdir(target) and is_server(target):
+        server = read_server(target)
+        if server.problems:
+            print('\n'.join(f"  ! {p}" for p in server.problems))
+            return 1
+        track = server.track
+    else:
+        track = os.path.basename(os.path.normpath(target))
+    tracks = track_data or default_track_data() or track_data_home()
+    words = list(words)
+    if words[:1] == ['help']:
+        print(ZONES_HELP)
+        return 0
+    if not Z.has_course(tracks, track):
+        print(f"no course data for {track} in {tracks}: setup makes it when it makes the track's data "
+              "(apply), or give --track-data")
+        return 1
+    if not words:
+        from .find import gui_possible
+        if gui_possible():
+            from .zones_gui import run
+            return run(tracks, track)
+        words = ['list']
+    course, zones, edited = Z.load(tracks, track)
+    zones = Z.ordered(course, zones)
+
+    def point(text):
+        text = text.strip().lower()
+        return course.point_at(float(text[:-1])) if text.endswith('m') else int(text) % course.n
+
+    def zone_no(text):
+        k = int(text)
+        if not 1 <= k <= len(zones):
+            raise ValueError(f"there is no zone {k} (1 - {len(zones)})")
+        return k - 1
+
+    def side_of(text):
+        if text.lower() not in ('left', 'right'):
+            raise ValueError('the side is left or right')
+        return 1 if text.lower() == 'left' else -1
+
+    def show():
+        print(f"{track}: {len(zones)} zone(s) on a {course.lap_m:.0f} m lap, {Z.DEPTH_M:g} m deep; "
+              + ('edited by hand' if edited else 'placed automatically by setup' if zones else 'none') + f"\n  {tracks}")
+        for i, z in enumerate(zones, 1):
+            print(f"  {i:2d}. {Z.describe(course, z)}")
+        for p in Z.problems(course, zones):
+            print(f"  ! {p}")
+
+    def run_from(rest):
+        if not rest:
+            return None
+        runs = Z.load_runs(rest[0])
+        if not runs:
+            raise ValueError(f"{rest[0]} has no driving above {Z.MOVING_KMH:g} km/h")
+        if len(rest) > 1:
+            named = [r for r in runs if r.name.lower() == rest[1].lower()]
+            if not named:
+                raise ValueError(f"no driver {rest[1]} in it; there are: {', '.join(r.name for r in runs)}")
+            return named[0]
+        if len(runs) > 1:
+            print(f"  {len(runs)} drivers in it; showing {runs[0].name} (the most driving). Name one after the "
+                  f"file for another: {', '.join(r.name for r in runs[1:])}")
+        return runs[0]
+
+    what, rest = words[0].lower(), words[1:]
+    try:
+        if what == 'list':
+            show()
+            return 0
+        if what == 'picture':
+            if not rest:
+                raise ValueError('picture needs a file name (FILE.svg)')
+            name = rest[0] if rest[0].lower().endswith('.svg') else os.path.splitext(rest[0])[0] + '.svg'
+            out = Z.picture(course, zones, name, run=run_from(rest[1:]))
+            print(f"written: {out}")
+            return 0
+        if what == 'score':
+            run = run_from(rest)
+            if run is None:
+                raise ValueError('score needs a recording')
+            rows = Z.score(course, zones, run)
+            print(f"{run.name}: share of the time on each zone's stretch with the rear axle in the zone while "
+                  f"sliding {Z.SLIDING_DEG:g} deg or more")
+            for i, (fill, depth, past) in enumerate(rows, 1):
+                print(f"  zone {i:2d}  " + ('not reached' if fill != fill else
+                                           f"filled {fill:4.0%}   rear {depth:5.1f} m inside the edge   past it {past:4.0%}"))
+            score = Z.line_score(rows)
+            print("  line score, Formula Drift style (mean fill x 40): " + (f"{score:.1f} / 40" if score == score else 'none reached'))
+            return 0
+        if what == 'add':
+            if len(rest) < 3:
+                raise ValueError('add needs left|right FROM TO')
+            kind = Z.KINDS[1] if rest[3:4] and rest[3].lower().startswith('touch') else Z.KINDS[0]
+            zones.append(Z.new_zone(course, side_of(rest[0]), point(rest[1]), point(rest[2]), kind))
+        elif what == 'move':
+            k = zone_no(rest[0])
+            zones[k] = Z.move(course, zones[k], first=point(rest[1]), last=point(rest[2]))
+        elif what == 'delete':
+            zones.pop(zone_no(rest[0]))
+        elif what == 'kind':
+            k = zone_no(rest[0])
+            word = rest[1].lower() if len(rest) > 1 else ''
+            if not word.startswith(('outside', 'touch')):
+                raise ValueError('the kind is outside or touch')
+            zones[k] = Z.move(course, zones[k], kind=Z.KINDS[0] if word.startswith('outside') else Z.KINDS[1])
+        elif what == 'side':
+            k = zone_no(rest[0])
+            zones[k] = Z.move(course, zones[k], side=side_of(rest[1]))
+        elif what == 'auto':
+            zones = Z.auto(course)
+        else:
+            print(f"not a zones word: {what}\n\n{ZONES_HELP}", file=sys.stderr)
+            return 2
+    except (ValueError, IndexError) as e:
+        print(f"  not done: {e if str(e) else 'more words needed'}  (zones <track> help lists them)")
+        return 1
+    path, backup, edited = Z.save(tracks, track, course, zones)
+    zones = Z.ordered(course, zones)
+    show()
+    print(f"saved: {path}" + (f"\n  the file it replaced: {backup}" if backup else ''))
+    return 0
+
+
 def find_game(given):
     """--game, else the install setup finds (said, so a wrong pick is seen), else None."""
     if given:
@@ -120,6 +279,14 @@ def main(argv=None):
     if argv[:1] == ['walk']:
         from .walk import run
         return run()
+    if argv[:1] == ['zones']:           # its own words after the track (zones <track> help)
+        zp = argparse.ArgumentParser(prog='gradient-drift-setup zones', description=ZONES_HELP,
+                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+        zp.add_argument('target', metavar='server_or_track')
+        zp.add_argument('words', nargs='*')
+        zp.add_argument('--track-data', default=None, help='the track files folder (a folder per track)')
+        za = zp.parse_args(argv[1:])
+        return zones_command(za.target, za.words, za.track_data)
     if not argv:
         from . import console
         from .find import gui_possible
@@ -148,7 +315,7 @@ def main(argv=None):
         argv = ['--help']
     ap = argparse.ArgumentParser(prog='gradient-drift-setup', description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = ap.add_subparsers(dest='command', required=True, metavar='{walk,check,apply,undo,export}')
+    sub = ap.add_subparsers(dest='command', required=True, metavar='{walk,check,apply,undo,bundle,export,zones}')
     sub.add_parser('walk', help='the walk-through, as questions in the terminal')
     for name, text in (('check', 'what each server needs for drift bots (changes nothing)'),
                        ('apply', 'make those changes, after asking (originals kept)'),
@@ -184,6 +351,7 @@ def main(argv=None):
     b = sub.add_parser('bundle', help="pack the plugin's loose data files into its one bundle file (originals kept)")
     b.add_argument('servers', nargs='+')
     b.add_argument('--yes', action='store_true', help="don't ask")
+    sub.add_parser('zones', help="a track's drift zones: the zone editor, or changes in words (zones <track> help)")
     args = ap.parse_args(argv)
     if args.command == 'bundle':
         return bundle_only(args.servers, args.yes)

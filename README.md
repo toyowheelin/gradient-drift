@@ -172,13 +172,27 @@ each policy drives in the car it learned in.
 
 ## What the plugin does on a server
 
-- **Nothing reachable from outside.** It opens no ports and adds no web pages or chat commands;
-  players cannot send it anything. It reads the other cars' positions and speeds only to place the
-  bots, chase or wait for a car, and (with `AdaptToPlayers`) match the players' pace and gap.
-- **One line to players.** Besides the bots' cars and their entry-list names, all it sends players
-  is a line in the welcome message they get on joining, "Drift bots by Gradient Drift" with a link
-  here (`JoinMessage`; `JoinMessage: ""` turns it off).
-- **Reads numbers, writes nothing** unless you turn it on (below). At start it reads its policy,
+- **No ports of its own; with drift scoring on, a few read-only addresses and chat commands.** It
+  reads the other cars' positions and speeds to place the bots, chase or wait for a car, (with
+  `AdaptToPlayers`) match the players' pace and gap, and (with `ZoneScoring`, on by default) judge
+  players' drifting. Scoring adds three GET addresses on AssettoServer's own HTTP port, which the
+  HUD reads: `/gradientdrift/zones/<car>` (that car's live points), `/gradientdrift/board` and the
+  board as a web page at `/gradientdrift/leaderboard` (names encoded; the page runs and loads
+  nothing). It also adds the chat commands `/zones` and `/top`. None of them takes any input beyond
+  a car number or changes anything. `ZoneScoring: false` turns them all off.
+- **What it sends players.** Besides the bots' cars and their entry-list names, players get a line
+  in the welcome message on joining, "Drift bots by Gradient Drift" with a link here (`JoinMessage`;
+  `JoinMessage: ""` turns it off), and a chat line for each scored run (`ZoneScoreChat`). Players
+  with Custom Shaders Patch also get short scripts: one paints the track's drift zones on the road
+  (`ShowZones`), and one draws the drift HUD (`ZoneHud`). The scripts are plain text built at start
+  (the zones' corner points, and lines that draw with CSP's track paint and UI). AssettoServer
+  serves them from its own scripts address, as it does for its other client scripts. The paint
+  script reads nothing and sends nothing back. The HUD only reads the addresses above.
+- **Drift records, on by default with scoring**: each scored run goes into a SQLite file in the
+  server folder (`ZoneRecordsFile`, `gradientdrift_zone_records.db`): time, track, the player's name
+  and Steam ID, car, score and its parts. It feeds the board, stays on your server, and is never
+  sent anywhere. Delete the file with the server stopped to clear the board; `ZoneScoring: false` stops it.
+- **Otherwise reads numbers, writes nothing** unless you turn it on (below). At start it reads its policy,
   the bot cars' files and the track's data, all from one file setup writes
   (`plugins/GradientDriftPlugin/GradientDriftPlugin.bundle.zip`), or loose
   (`plugins/GradientDriftPlugin/GradientDriftPlugin.policy.json`, `plugins/GradientDriftPlugin/cars/`,

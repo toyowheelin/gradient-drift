@@ -102,6 +102,25 @@ BOUNDARY_BISECTIONS = 7
 # moves the edge inward up to ~2 m at a notch and out by at most ~0.15 m.
 SMOOTH_MIN_POINTS = 5
 SMOOTH_MEAN_POINTS = 7
+# A track that paints white lines along its sides (Spirit Peaks) shows the players where its course
+# ends, usually 1 - 2 m inside the paving and the tyre stacks behind it. With the track's
+# <track>_paint_lines.csv.gz the edge goes to the course side of the painted line, where a line
+# crosses the point's normal no more than PAINT_SEARCH_PAST_M past the edge found above (a marker or
+# wall nearer the line still wins: the edge only moves in). A painted mesh is kept only when it lies
+# on the ground (median PAINT_MAX_HEIGHT_M above it) and runs along the racing line for at least
+# PAINT_MIN_RUN_M (its pieces heading within PAINT_MAX_ANGLE_DEG of the line): clipping-point
+# chevrons, grid boxes and power lines are not the course's side. Where a side has no line for up
+# to PAINT_GAP_M the line's distance is carried across; over a longer stretch (a start/finish
+# straight left unpainted) the edge found above is kept, blended in over PAINT_BLEND_M. A painted
+# mesh lying a median under PAINT_MIN_OFFSET_M from the racing line is a line the cars drive along
+# (Klutch Kickers paints one round its hairpin ~2.3 m off the line), not the course's side.
+PAINT_SEARCH_PAST_M = 3.0
+PAINT_MAX_HEIGHT_M = 0.05
+PAINT_MIN_RUN_M = 30.0
+PAINT_MAX_ANGLE_DEG = 20.0
+PAINT_GAP_M = 10.0
+PAINT_BLEND_M = 10.0
+PAINT_MIN_OFFSET_M = 4.0
 OFF_TRACK_GRASS_SHARE = 0.5
 OFF_TRACK_NAME_WORDS = ('sand', 'grass', 'dirt', 'gravel', 'mud', 'soil', 'cement')
 LINE_MATERIAL_SHARE = 0.05
@@ -316,9 +335,122 @@ def material_lookup(world, fs, materials):
     return ground_material, off
 
 
-def build(world, fs, de, materials=None):
+def paint_strips(line, tris, names, ground_y):
+    """The painted meshes that are the course's side lines: (M, 3, 2) X/Z triangles. `tris` (M, 9)
+    and `names` (M) are <track>_paint_lines.csv.gz's rows; ground_y(x, y, z) -> the ground's height
+    under a point (None off the ground). See PAINT_MIN_RUN_M."""
+    tris = np.asarray(tris, dtype=float).reshape(-1, 9)
+    names = np.asarray(names)
+    keep = np.zeros(len(tris), bool)
+    cos_max = math.cos(math.radians(PAINT_MAX_ANGLE_DEG))
+    for name in np.unique(names):
+        idx = np.flatnonzero(names == name)
+        t = tris[idx].reshape(-1, 3, 3)
+        c = t.mean(axis=1)
+        heights = [c[k, 1] - g for k in range(len(c)) if (g := ground_y(c[k, 0], c[k, 1], c[k, 2])) is not None]
+        if not heights or np.median(np.abs(heights)) > PAINT_MAX_HEIGHT_M:
+            continue
+        # each triangle's longest side gives its heading (a strip is made of long thin triangles)
+        sides = np.stack([t[:, 1] - t[:, 0], t[:, 2] - t[:, 1], t[:, 0] - t[:, 2]], axis=1)[:, :, [0, 2]]
+        longest = sides[np.arange(len(t)), np.argmax(np.linalg.norm(sides, axis=2), axis=1)]
+        arc = np.empty(len(t))
+        lat = np.empty(len(t))
+        aligned = np.zeros(len(t), bool)
+        for k in range(len(t)):
+            arc[k], lat[k], i = line.project(c[k, 0], c[k, 2])
+            d = longest[k] / max(np.linalg.norm(longest[k]), 1e-9)
+            aligned[k] = abs(d[0] * line.tan[i, 0] + d[1] * line.tan[i, 2]) >= cos_max
+        if np.median(np.abs(lat)) < PAINT_MIN_OFFSET_M:
+            continue
+        # the longest unbroken stretch of the lap (1 m bins) covered by aligned pieces
+        bins = np.zeros(int(math.ceil(line.lap)) + 1, bool)
+        bins[(arc[aligned] % line.lap).astype(int)] = True
+        if bins.all():
+            run = len(bins)
+        else:
+            doubled = np.r_[bins, bins]
+            run, cur = 0, 0
+            for b in doubled:
+                cur = cur + 1 if b else 0
+                run = max(run, cur)
+        if run >= PAINT_MIN_RUN_M:
+            keep[idx] = True
+    return tris[keep].reshape(-1, 3, 3)[:, :, [0, 2]]
+
+
+def paint_distance(line, strips, sign):
+    """For each line point, how far out along its normal (on the `sign` side) it first meets a
+    painted strip (inf where it meets none within PAVED_EDGE_SEARCH_M)."""
+    N = len(line.sp)
+    out = np.full(N, np.inf)
+    if len(strips) == 0:
+        return out
+    a = strips.reshape(-1, 2)
+    b = np.roll(strips, -1, axis=1).reshape(-1, 2)
+    e = b - a
+    normal = np.c_[-line.tan[:, 2], line.tan[:, 0]] * sign
+    for i in range(N):
+        p, n = line.sp[i, [0, 2]], normal[i]
+        near = np.abs(a - p).max(axis=1) < PAVED_EDGE_SEARCH_M + 1.0
+        if not near.any():
+            continue
+        aa, ee = a[near], e[near]
+        den = n[0] * ee[:, 1] - n[1] * ee[:, 0]
+        ok = np.abs(den) > 1e-12
+        rel = aa - p
+        safe = np.where(ok, den, 1.0)
+        t = (rel[:, 0] * ee[:, 1] - rel[:, 1] * ee[:, 0]) / safe
+        u = (rel[:, 0] * n[1] - rel[:, 1] * n[0]) / safe
+        hit = ok & (u >= 0.0) & (u <= 1.0) & (t > 0.0) & (t < PAVED_EDGE_SEARCH_M)
+        if hit.any():
+            out[i] = t[hit].min()
+    return out
+
+
+def follow_paint(built, paint, line):
+    """One side's widths put on the painted line (see PAINT_SEARCH_PAST_M): `built` the widths found
+    from paving, walls and markers, `paint` paint_distance(). Never wider than `built`."""
+    built = np.asarray(built, dtype=float)
+    N = len(built)
+    found = np.isfinite(paint) & (paint <= built + PAINT_SEARCH_PAST_M)
+    if not found.any():
+        return built.copy()
+    target = np.where(found, np.minimum(paint, built), np.nan)
+    arc, lap = line.arc, line.lap
+    out = target.copy()
+    # each stretch without a line: carried across when short, the built edge blended in when long
+    start = int(np.flatnonzero(found)[0])
+    order = (start + np.arange(N)) % N
+    k = 0
+    while k < N:
+        if found[order[k]]:
+            k += 1
+            continue
+        j = k
+        while j < N and not found[order[j]]:
+            j += 1
+        before, after = order[k - 1], order[j % N]
+        gap = order[k:j]
+        s0, s1 = arc[before], arc[after]
+        length = (s1 - s0) % lap
+        s = (arc[gap] - s0) % lap
+        if length <= PAINT_GAP_M:
+            f = s / max(length, 1e-9)
+            out[gap] = target[before] + (target[after] - target[before]) * f
+        else:
+            # how far into the stretch from the nearer painted end: 0 there, 1 at PAINT_BLEND_M or more
+            into = np.minimum(s, length - s)
+            f = np.clip(into / PAINT_BLEND_M, 0.0, 1.0)
+            near_end = np.where(s <= length - s, target[before], target[after])
+            out[gap] = near_end + (built[gap] - near_end) * f
+        k = j
+    return np.minimum(out, built)
+
+
+def build(world, fs, de, materials=None, paint=None):
     """`materials`: each collision row's material name (<track>_collision_material.csv.gz), or None
-    (the edge then ends only where the surface KEY stops counting as track, or at a wall)."""
+    (the edge then ends only where the surface KEY stops counting as track, or at a wall).
+    `paint`: (triangles (M, 9), mesh names (M)) from <track>_paint_lines.csv.gz, or None."""
     line = Line(world.sp_pos)
     sp, N = world.sp_pos, len(world.sp_pos)
     markers = find_markers(world, fs)
@@ -402,11 +534,26 @@ def build(world, fs, de, materials=None):
         from_marker[side] = joined <= paved
         limited = slope_limit(np.minimum(joined, paved), line)
         half[side] = np.maximum(np.where(from_marker[side], limited, smooth_edge(limited)), MIN_HALF_WIDTH_M)
+    strips = np.zeros((0, 3, 2))
+    on_paint = np.zeros((2, N), bool)
+    if paint is not None and len(paint[0]):
+        R = world.ray_arrays()
+
+        def ground_y(x, y, z):
+            down, _ = fs.ground_below(x, y + 1.0, z, 3.0, *R)
+            return y + 1.0 - down if down >= 0 else None
+        strips = paint_strips(line, paint[0], paint[1], ground_y)
+        for side, sign in ((0, +1), (1, -1)):
+            d = paint_distance(line, strips, sign)
+            painted = np.maximum(follow_paint(half[side], d, line), MIN_HALF_WIDTH_M)
+            on_paint[side] = painted < half[side] - 0.01
+            half[side] = painted
+            from_marker[side] &= ~on_paint[side]
     normal = np.c_[-line.tan[:, 2], line.tan[:, 0]]
     edge_pos = sp[:, [0, 2]] + normal * half[0][:, None]
     edge_neg = sp[:, [0, 2]] - normal * half[1][:, None]
     return dict(line=line, markers=markers, half=half, from_marker=from_marker, edge_pos=edge_pos, edge_neg=edge_neg,
-                off_track=off_track)
+                off_track=off_track, paint_strips=strips, on_paint=on_paint)
 
 
 def read_sides(folder, sp):
@@ -510,7 +657,14 @@ def main(argv=None):
                   f"{len(world.tri_surf) - world.n_sensor}: made from different track files, so the edge ignores "
                   "how the ground is drawn (run setup_track.py again).", file=sys.stderr)
             materials = None
-    course = build_from_sides(world, args.sides) if args.sides else build(world, fs, de, materials)
+    paint = None
+    paint_path = tf.path(args.tracks, 'paint_lines', track)
+    if not args.sides and os.path.exists(paint_path):
+        import pandas as pd
+        rows = pd.read_csv(paint_path, keep_default_na=False)
+        paint = (rows[['X1', 'Y1', 'Z1', 'X2', 'Y2', 'Z2', 'X3', 'Y3', 'Z3']].to_numpy(float),
+                 rows['Mesh'].astype(str).to_numpy())
+    course = build_from_sides(world, args.sides) if args.sides else build(world, fs, de, materials, paint)
     edges, marks = write(course, args.tracks, track)
     if args.sides:
         width = course['half'][0] + course['half'][1]
@@ -531,6 +685,9 @@ def main(argv=None):
           f"{sum(1 for m in used if m['lateral'] < 0)} on the negative)")
     print(f"course width: {width.min():.1f} - {width.max():.1f} m, median {np.median(width):.1f} m; "
           f"edge set by markers on {course['from_marker'].mean():.0%} of it, by the paved edge or a wall on the rest")
+    if course.get('on_paint') is not None and len(course.get('paint_strips', [])):
+        print(f"edge on the painted side lines at {course['on_paint'][0].mean():.0%} of the positive side, "
+              f"{course['on_paint'][1].mean():.0%} of the negative ({len(course['paint_strips'])} painted triangles kept)")
     if course.get('off_track'):
         print(f"ground drawn as off the track ends the edge: {', '.join(sorted(course['off_track']))}")
     print(f"written: {edges}\n         {marks}")

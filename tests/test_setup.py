@@ -181,7 +181,8 @@ def test_setup_makes_a_server_ready_and_undo_puts_it_back(world):
     for name in ('GradientDriftPlugin.dll', 'GradientDriftPlugin.deps.json', 'GradientDriftPlugin.policy.json'):
         with open(os.path.join(plugin_dir, name), 'rb') as a, open(os.path.join(plugin, name), 'rb') as b:
             assert a.read() == b.read(), f'{name} is not the build setup carries'
-    for kind in ('triangles.csv.gz', 'collision.csv.gz', 'road_mesh.csv', 'course_edges.csv', 'pace_reference.csv'):
+    for kind in ('triangles.csv.gz', 'collision.csv.gz', 'road_mesh.csv', 'course_edges.csv', 'pace_reference.csv',
+                 'course_zones.csv'):
         assert os.path.exists(os.path.join(server, f'{track}_{kind}')), f'{track}_{kind} was not put in the server'
     assert os.path.exists(os.path.join(server, 'content', 'tracks', track, 'ai', 'fast_lane.ai')), 'no AI line in the server'
 

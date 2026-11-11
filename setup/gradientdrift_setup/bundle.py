@@ -19,7 +19,7 @@ BUNDLE_REL = f'plugins/{PLUGIN}/{BUNDLE}'
 POLICY = f'{PLUGIN}.policy.json'
 # plan.TRACK_FILES' endings: the track's data in the server's folder
 TRACK_SUFFIXES = ('_triangles.csv.gz', '_collision.csv.gz', '_road_mesh.csv', '_course_edges.csv', '_pace_reference.csv',
-                  '_collision_grip.csv.gz')
+                  '_collision_grip.csv.gz', '_course_zones.csv')
 # the text the plugin's DLL carries (UTF-16, as .NET keeps its strings) once it reads a bundle
 _MARK = BUNDLE.encode('utf-16-le')
 
