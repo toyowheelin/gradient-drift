@@ -35,7 +35,7 @@ sys.path.insert(0, _HERE)
 import track_files as tf  # noqa: E402
 
 BACKUP = '.before_zone_line'
-INSIDE_M = 2.5
+INSIDE_M = 3.0
 RAMP_POINTS = 5
 SMOOTH_POINTS = 5         # each side: an 11-point moving average
 
