@@ -168,7 +168,10 @@ def test_paint_shapes(track):
     long_tg = Z.new_zone(course, 1, 100, 160, kind=Z.KINDS[1])
     tiny = Z.new_zone(course, -1, 300, 301)
     (oz, f1, s1), (tg, f2, s2), (_, f3, s3) = Z.paint_shapes(course, [long_oz, long_tg, tiny], 1.6)
-    assert oz and not tg and len(f1) == 2 * 61 and len(s3) == 0
+    assert oz and not tg and len(s3) == 0
+    outer0, _ = course.zone_outline(long_oz)
+    assert len(f1) == 2 * len(outer0) >= 2 * 61                  # the 61 edge points, drawn finer
+    assert np.hypot(*np.diff(outer0, axis=0).T).max() <= Z.OUTLINE_STEP_M + 1e-6
     assert len(s1) > 10 and abs(len(s1) / max(len(s2), 1) - 2) < 0.3
     outer, inner = course.zone_outline(long_oz, inset=0.15)      # the outer line half its 0.3 m width in
 
@@ -208,3 +211,27 @@ def test_spikes_taken_out(tracks_dir):
     assert np.allclose(np.delete(p_new, near, 0), np.delete(pos, near, 0))
     assert [(z['side'], z['first'], z['last']) for z in bz.place_zones(spiked)] == \
            [(z['side'], z['first'], z['last']) for z in bz.place_zones(edges)]
+
+
+def test_outline_smooths_a_kinked_edge_and_stays_on_the_course():
+    """A corner's edge with point-to-point kinks comes out as one smooth curve, never more than the
+    inset outside the edge, its inner side the depth in from it."""
+    from gradientdrift_setup import zones as Z
+    n, r = 46, 14.0                                              # points ~1.9 m apart, as on a track
+    a = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    rng = np.random.default_rng(1)
+    kink = rng.normal(0.0, 0.2, n)                              # the edge steps in and out
+    edge = np.c_[(r + kink) * np.cos(a), (r + kink) * np.sin(a)]  # the outside of a 14 m corner
+    other = np.c_[(r - 12) * np.cos(a), (r - 12) * np.sin(a)]
+    outer, inner = Z.outline(edge, other, 8, 30, depth=3.0, inset=0.15)
+
+    def turn_per_m(p):
+        d = np.diff(p, axis=0)
+        h = np.unwrap(np.arctan2(d[:, 1], d[:, 0]))
+        return np.diff(h) / np.hypot(*d.T)[1:]
+    raw = edge[8:31]
+    assert np.std(np.diff(turn_per_m(outer))) < 0.5 * np.std(np.diff(turn_per_m(raw)))
+    radius = np.hypot(*outer.T)
+    assert radius.max() <= r + kink.max() + 1e-6 and radius.min() > r - 1.0
+    assert np.allclose(np.hypot(*outer.T) - np.hypot(*inner.T), 2.85, atol=0.15)
+
