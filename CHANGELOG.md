@@ -7,6 +7,11 @@ when releasing.
 
 ## Unreleased
 
+- Drift line: the AI line moves sideways at most 0.2 m per metre (a short zone far from the racing
+  line gets part of the move instead of a kink: Spirit Peaks' zone 8 had made a 9 m corner the track
+  check refused), each point's corner radius is worked out again for the moved line, and generated
+  courses' lines (version -1) can be moved too. Setup works out a new pace reference when it puts a
+  new AI line in the server; before, the server kept the old line's.
 - The drift HUD shows speed in mph or km/h. It starts in the game's units where the player's CSP
   says which, and a right click on the panel switches it (remembered on their PC).
 - Arcade drift scoring: `ZoneScoreMode: Arcade` scores players freestyle, with no zones (and no
