@@ -173,6 +173,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private readonly float[] _observation = new float[DriftPolicy.ObservationSize + DriftPolicy.MaxHistoryInputs];
 
     private DriftTelemetry? _telemetry;
+    // RecordPlayers (PlayerRecorder.cs); null = off
+    private PlayerRecorder? _players;
     // EnableScorecard; when it was last written (server ms), and the cars touching this tick.
     private BotScorecard? _scorecard;
     private readonly string _trackName;
@@ -755,6 +757,20 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             }
         }
 
+        if (_configuration.RecordPlayers)
+        {
+            try
+            {
+                _players = new PlayerRecorder(_configuration.RecordPlayersHz,
+                    (long)(Math.Max(0f, _configuration.RecordPlayersMaxMegabytes) * 1024 * 1024));
+                Log.Information("GradientDrift: recording players to {Path}", Path.GetFullPath(_players.FilePath));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                Log.Warning("GradientDrift: no player recording ({Message})", e.Message);
+            }
+        }
+
         _acServer.Value.Update += OnUpdate;
         return Task.CompletedTask;
     }
@@ -773,6 +789,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         DriftTelemetry? telemetry = _telemetry;
         _telemetry = null;
         telemetry?.Dispose();
+        PlayerRecorder? players = _players;
+        _players = null;
+        players?.Dispose();
         base.Dispose();
     }
 
@@ -1024,6 +1043,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _lastUpdateTimeMs = nowMs;
 
         HumanCarSample human = SampleHumanCar();
+        _players?.Sample(_entryCarManager, nowMs);
 
         _driven.Clear();
         _trainSlots.Clear();
