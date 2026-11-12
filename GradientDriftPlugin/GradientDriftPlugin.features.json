@@ -11,7 +11,8 @@
   55,
   66,
   67,
-  94
+  94,
+  98
  ],
  "action_sizes": [
   2,
@@ -46,11 +47,19 @@
  "bundle": true,
  "history": {
   "base_obs_size": 94,
+  "base_obs_sizes": [
+   94,
+   98
+  ],
   "max_inputs": 256
  },
  "residual": {
   "gate_input": 67,
   "obs_size": 94,
+  "obs_sizes": [
+   94,
+   98
+  ],
   "with_history": false
  }
 }
