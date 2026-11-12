@@ -260,6 +260,19 @@ public class GradientDriftConfiguration
     // Steam ID). How the two visuals' encodings were measured, and judge.py's human driver.
     public bool LogHumanCarForCalibration { get; set; } = false;
 
+    // RecordPlayers: every connected player's car, as their client reports it (position, heading,
+    // velocity, steering, throttle, gear, RPM), into gradientdrift_players_<date>_<time>.csv.gz in
+    // the server's working directory, a new file for every server start. For learning how people
+    // drift here (drift_rl's style catalogue; tools/players_to_monitor.py). Players show only as a
+    // salted hash of their Steam ID, the same on this server across sessions (the salt is made once
+    // into gradientdrift_players_salt.txt); no names, IPs or Steam IDs. About 2 MB per player-hour
+    // compressed. Independent of telemetry logging. Off by default.
+    public bool RecordPlayers { get; set; } = false;
+    // Rows per player per second at most (0 = every server tick).
+    public float RecordPlayersHz { get; set; } = 20f;
+    // The file stops growing at this size, uncompressed (0 = no limit).
+    public float RecordPlayersMaxMegabytes { get; set; } = 2000f;
+
     // ---- Steering visual (cosmetic) -------------------------------------------------------
 
     // Sends the steering angle the vehicle model used to clients, so the front wheels and the

@@ -7,6 +7,12 @@ when releasing.
 
 ## Unreleased
 
+- `RecordPlayers`: the plugin can record every connected player's car (as their game reports it)
+  into a compressed file per server start, for learning how people drift on your own server.
+  Players appear only as a salted hash of their Steam ID. `tools/players_to_monitor.py` turns a file
+  into the AI Car Monitor's format drift_rl reads. Off by default; `LogHumanCarForCalibration`
+  is unchanged.
+
 - Style dials (trainer and plugin; no policy trained with them yet): four new policy inputs, each
   -1 to 1, for how a bot drifts: `angle` (deeper or shallower), `swing` (deeper at the apex and
   shallower between corners, or one angle throughout), `commit` (speed carried into corners) and
