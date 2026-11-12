@@ -3,6 +3,7 @@ using System.IO.Compression;
 using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
+using AssettoServer.Network.Tcp;
 using AssettoServer.Server;
 using Serilog;
 
