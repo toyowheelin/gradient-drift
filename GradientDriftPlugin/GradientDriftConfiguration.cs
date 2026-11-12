@@ -115,6 +115,22 @@ public class GradientDriftConfiguration
     public float BotSkillSpread { get; set; } = 0f;
     public int BotStyleSeed { get; set; } = 0;
 
+    // THE STYLE DIALS, for a policy trained to follow them ("style_range" in the policy file; others
+    // ignore these): how the bots drift, each -1 .. 1, 0 = the policy's own style. Picked from what
+    // tells players apart on public servers.
+    //   BotStyleAngle   + a deeper drift angle, - a shallower one
+    //   BotStyleSwing   + the angle runs deeper at the apex and shallower between corners, - one
+    //                   angle throughout
+    //   BotStyleCommit  + carries more speed into corners, - settles the car early
+    //   BotStyleSmooth  + calmer, smoother steering, - busier hands
+    // BotStyleDialSpread, 0 - 1: each bot's dials are drawn up to this much either side of these
+    // (0 = every bot on the settings). Per bot: Angle, Swing, Commit, Smooth in BotStyles.
+    public float BotStyleAngle { get; set; } = 0f;
+    public float BotStyleSwing { get; set; } = 0f;
+    public float BotStyleCommit { get; set; } = 0f;
+    public float BotStyleSmooth { get; set; } = 0f;
+    public float BotStyleDialSpread { get; set; } = 0f;
+
     // AdaptToPlayers: while players drift with the bots, each bot's pace and chase gap move toward
     // theirs (PlayerAdaptation.cs): the players' speed along the line against the track's pace
     // reference, and the gap they keep when following a car. Drifting players on the line count,
@@ -134,7 +150,8 @@ public class GradientDriftConfiguration
 
     // Styles set by hand, over the draws. Each entry names a bot by its entry-list DRIVERNAME, or
     // without a Name applies to the AI entries in order. Any of Aggression (0 - 1, 0.5 = the
-    // settings), ChaseGapMeters and Skill; a value left out is drawn or the server's. E.g.
+    // settings), ChaseGapMeters, Skill and the style dials (Angle, Swing, Commit, Smooth); a value
+    // left out is drawn or the server's. E.g.
     //   BotStyles:
     //     - Name: Kenji
     //       Aggression: 0.9

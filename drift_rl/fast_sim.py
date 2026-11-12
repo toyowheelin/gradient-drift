@@ -55,7 +55,9 @@ S_PACE = 47             # the pace this car is asked to drive, a fraction of the
                         # plugin's bot-spacing dial, drawn per episode in training (drift_env)
 S_GRIP_F = 49           # SurfaceGrip: the grip of the ground under the front / rear axle (FRICTION over
 S_GRIP_R = 50           # the main road's), from the last tick's pose; 0 = not known (1)
-STATE_SIZE = 51
+S_STYLE0 = 51           # the style dials (drift_env STYLE_*), -1 .. 1 each, 0 = as trained before: 51..54
+N_STYLE = 4
+STATE_SIZE = 55
 
 # Bumped whenever the simulator changes in a way that makes policies trained before it unfit for
 # the server. Trainers write it into policy.json ("simulator_revision"); check_plugin_policy.py

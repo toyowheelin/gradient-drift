@@ -243,6 +243,10 @@ def main():
     ap.add_argument('--skill', type=float, nargs=2, default=None, metavar=('LOW', 'HIGH'),
                     help='train the skill input (drift_env SKILL_*): each episode a skill drawn from LOW - HIGH '
                          '(0 = a driver allowed out with others, 1 = the best it can do)')
+    ap.add_argument('--style-share', type=float, default=None,
+                    help='train the style dials (drift_env STYLE_*): this share of episodes draws each dial evenly '
+                         'from -RANGE .. RANGE (--style-range), the rest drive at 0 (the policy\'s own style)')
+    ap.add_argument('--style-range', type=float, default=1.0)
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--eval-minutes', type=float, default=1.0, help='wall-clock time between evaluations')
     ap.add_argument('--eval-episodes', type=int, default=128)
@@ -381,6 +385,8 @@ def main():
                     args.car_exclude = list(ppo.get('car_exclude') or [])
             if args.skill is None and ppo.get('skill'):
                 args.skill = list(ppo['skill'])
+            if args.style_share is None and ppo.get('style_share'):
+                args.style_share, args.style_range = ppo['style_share'], ppo.get('style_range', 1.0)
             if args.envs is None and ppo.get('envs'):
                 args.envs = ppo['envs']
     if args.resume and (args.hidden is None or args.layers is None or args.vf_hidden is None
@@ -658,6 +664,10 @@ def main():
     if args.skill:
         env_cfg.skill_low, env_cfg.skill_high = args.skill
         print(f"skill: {args.skill[0]:g} - {args.skill[1]:g} per episode, shown to the policy (input {de.SKILL_OBS_SLOT})")
+    if args.style_share:
+        env_cfg.style_share, env_cfg.style_range = args.style_share, args.style_range
+        print(f"style dials: {args.style_share:.0%} of episodes draw each of {', '.join(de.OBS_NAMES[de.STYLE_OBS_SLOT:])} "
+              f"from -{args.style_range:g} .. {args.style_range:g} (inputs {de.STYLE_OBS_SLOT} - {de.STYLE_OBS_SLOT + de.N_STYLE_OBS - 1})")
     car_names = []
     if args.car_pool:
         if pace_range == (0.0, 0.0):
@@ -775,6 +785,16 @@ def main():
         # a teacher with a history block (more inputs than the env gives) reads the same history-extended
         # inputs the student gets, so the trainer must build the same block (--history-frames / --history-every)
         hist_n = (de.OBS_SIZE + len(hist_slots) * args.history_frames) if history else de.OBS_SIZE
+        t_idx = None
+        t_hist0 = tp.meta.get('history') or {}
+        if t_hist0 and history:
+            # a teacher from before the newest inputs: its history block came straight after fewer
+            # inputs, so it reads the env's first ones and then this run's history block
+            t_h = len(t_hist0.get('slots', [])) * int(t_hist0.get('frames', 0))
+            t_base = t_n - t_h
+            if t_base < de.OBS_SIZE and t_h == len(hist_slots) * args.history_frames:
+                t_idx = torch.as_tensor(list(range(t_base)) + list(range(de.OBS_SIZE, de.OBS_SIZE + t_h)), device=dev)
+                hist_n = t_n
         if t_n > de.OBS_SIZE and t_n != hist_n:
             sys.exit(f"--kickstart {args.kickstart}: reads {t_n} inputs; with these history flags the trainer "
                      f"gives {hist_n} (use the teacher's --history-frames / --history-every)")
@@ -783,7 +803,7 @@ def main():
                                              or t_hist.get('every') != args.history_every):
             sys.exit(f"--kickstart {args.kickstart}: its history block (slots {t_hist.get('slots')}, every "
                      f"{t_hist.get('every')}) is not the one this run builds")
-        t_names = list(tp.meta.get('obs_names') or [])[:min(t_n, de.OBS_SIZE)]
+        t_names = list(tp.meta.get('obs_names') or [])[:min(t_n if t_idx is None else t_base, de.OBS_SIZE)]
         if t_names:
             bad = [j for j, nm in enumerate(t_names) if nm != de.OBS_NAMES[j] and j != de.SLIDING_GRIP_OBS_SLOT]
             if bad:
@@ -794,7 +814,8 @@ def main():
         t_std = torch.tensor(tp.obs_std, dtype=torch.float32, device=dev)
 
         def teacher(raw):
-            h = torch.clamp((raw[:, :t_n].float() - t_mean) / t_std, -10.0, 10.0)
+            x = raw[:, t_idx] if t_idx is not None else raw[:, :t_n]
+            h = torch.clamp((x.float() - t_mean) / t_std, -10.0, 10.0)
             for j in range(len(t_w)):
                 h = h @ t_w[j].T + t_b[j]
                 if j < len(t_w) - 1:
@@ -923,10 +944,25 @@ def main():
         out_old = p0.mlp.W[-1].shape[0]
         weights = widen(p0.mlp.W, p0.mlp.b, IN, args.hidden, np.random.default_rng(args.seed),
                         n_outputs=de.ACT_SIZE, new_output_bias=BRAKE_INIT_BIAS)
+        # a policy with a history block from before the newest inputs: its history columns came
+        # straight after its own inputs; move them behind this trainer's (the new inputs between
+        # start with no weight)
+        p0_hist = p0.meta.get('history') or {}
+        n_hist0 = len(p0_hist.get('slots', [])) * int(p0_hist.get('frames', 0)) if p0_hist else 0
+        base_old = n_old - n_hist0
+        if n_hist0 and base_old < de.OBS_SIZE:
+            if not hist_slots or list(p0_hist.get('slots', [])) != hist_slots or n_hist0 != len(hist_slots) * args.history_frames:
+                sys.exit(f"{args.init_policy}: its history block is not the one this run builds (pass its --history-* flags)")
+            w0 = weights[0][0]
+            moved = np.zeros_like(w0)
+            moved[:, :base_old] = w0[:, :base_old]
+            moved[:, de.OBS_SIZE:de.OBS_SIZE + n_hist0] = w0[:, base_old:n_old]
+            weights[0] = (moved, weights[0][1])
+            print(f"{args.init_policy}: its history block moved from input {base_old} to {de.OBS_SIZE}")
         # an input whose meaning changed since that policy was trained (its name differs): no
         # weight, as if new (gen4's km/h pace -> the fraction of the course's flat-out speed)
         old_names = list(p0.meta.get('obs_names') or [])
-        changed = [j for j in range(min(n_old, len(old_names), len(de.OBS_NAMES))) if old_names[j] != de.OBS_NAMES[j]
+        changed = [j for j in range(min(base_old, len(old_names), len(de.OBS_NAMES))) if old_names[j] != de.OBS_NAMES[j]
                    and de.OBS_NAMES[j] in de.NEW_INPUT_NORM]
         for j in changed:
             weights[0][0][:, j] = 0.0
@@ -937,20 +973,20 @@ def main():
         if old_hidden < args.hidden:
             print(f"{args.init_policy} has {old_hidden}-unit layers: widened to {args.hidden}, the new units "
                   "starting with no say in the output (it drives exactly as before)")
-        new_norm = [de.NEW_INPUT_NORM.get(name, (0.6, 0.5)) for name in de.OBS_NAMES[n_old:]]
+        new_norm = [de.NEW_INPUT_NORM.get(name, (0.6, 0.5)) for name in de.OBS_NAMES[base_old:]]
         old_mean, old_std = np.array(p0.obs_mean, dtype=float), np.array(p0.obs_std, dtype=float)
         for j in changed:
             old_mean[j], old_std[j] = de.NEW_INPUT_NORM[de.OBS_NAMES[j]]
             print(f"{args.init_policy}: input {j} was '{old_names[j]}', now '{de.OBS_NAMES[j]}': it starts with no weight")
-        obs_mean = torch.as_tensor(np.r_[old_mean, [m for m, _ in new_norm]], dtype=f64, device=dev)
-        obs_var = torch.as_tensor(np.r_[old_std, [sd for _, sd in new_norm]], dtype=f64, device=dev) ** 2
+        obs_mean = torch.as_tensor(np.r_[old_mean[:base_old], [m for m, _ in new_norm], old_mean[base_old:]], dtype=f64, device=dev)
+        obs_var = torch.as_tensor(np.r_[old_std[:base_old], [sd for _, sd in new_norm], old_std[base_old:]], dtype=f64, device=dev) ** 2
         if hist_slots and obs_mean.shape[0] == de.OBS_SIZE:
             # the history inputs start with no weight, scaled like the inputs they repeat
             obs_mean = torch.cat([obs_mean, obs_mean[hist_slots].repeat(args.history_frames)])
             obs_var = torch.cat([obs_var, obs_var[hist_slots].repeat(args.history_frames)])
-        if n_old < de.OBS_SIZE:
-            print(f"{args.init_policy} reads {n_old} inputs: inputs {n_old} - {de.OBS_SIZE - 1} "
-                  f"({', '.join(de.OBS_NAMES[n_old:])}) start with no weight")
+        if base_old < de.OBS_SIZE:
+            print(f"{args.init_policy} reads {base_old} inputs: inputs {base_old} - {de.OBS_SIZE - 1} "
+                  f"({', '.join(de.OBS_NAMES[base_old:])}) start with no weight")
         if out_old < de.ACT_SIZE:
             print(f"{args.init_policy} has {out_old} outputs: the brake output starts at never braking "
                   f"(bias {BRAKE_INIT_BIAS:g}, exploration noise {BRAKE_INIT_STD:g})")
@@ -1034,6 +1070,9 @@ def main():
     if args.skill:
         # the plugin reads this: the skills it may ask the policy for
         meta['skill_range'] = [float(args.skill[0]), float(args.skill[1])]
+    if args.style_share:
+        # the plugin reads this: the policy was trained to follow the style dials over this range
+        meta['style_range'] = [-float(args.style_range), float(args.style_range)]
     if car_names:
         # the plugin reads this: the policy reads the car inputs (drift_env.car_inputs) and drives any car
         meta['cars'] = {'trained': car_names, 'held_out': list(args.car_exclude),
