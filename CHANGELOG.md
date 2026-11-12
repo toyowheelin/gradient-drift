@@ -7,6 +7,16 @@ when releasing.
 
 ## Unreleased
 
+- Style dials (trainer and plugin; no policy trained with them yet): four new policy inputs, each
+  -1 to 1, for how a bot drifts: `angle` (deeper or shallower), `swing` (deeper at the apex and
+  shallower between corners, or one angle throughout), `commit` (speed carried into corners) and
+  `smooth` (calm or busy steering). They come from what tells players apart in recordings of public
+  servers. `train_ppo_gpu.py --style-share` draws them per episode and moves what the reward asks for;
+  `style_report.py` checks a policy follows them. Plugin settings `BotStyleAngle`, `BotStyleSwing`,
+  `BotStyleCommit`, `BotStyleSmooth`, `BotStyleDialSpread` and per-bot `BotStyles` entries; a policy
+  without the dials ignores them. Older policies, history blocks included, still load, and
+  `--init-policy` / `--kickstart` widen or read them.
+
 - Drift line: the AI line moves sideways at most 0.2 m per metre (a short zone far from the racing
   line gets part of the move instead of a kink: Spirit Peaks' zone 8 had made a 9 m corner the track
   check refused), each point's corner radius is worked out again for the moved line, and generated

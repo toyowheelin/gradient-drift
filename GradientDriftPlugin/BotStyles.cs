@@ -15,8 +15,18 @@ namespace GradientDriftPlugin;
 //   TimeGapShare    its share of ChaseTimeGapSeconds (the speed-dependent part of the gap it holds)
 //   Aggression      what the pace, the opt-in, the chase top and the time gap came from (0 - 1;
 //                   0.5 = the settings)
+//   Dials           the style dials, for a policy trained to follow them (StyleDials)
 internal readonly record struct BotStyle(float Aggression, float PaceMiddle, float ChaseGapMeters, float Skill,
-    float OptInMeters, float ChaseTopShare, float TimeGapShare = 1f);
+    float OptInMeters, float ChaseTopShare, float TimeGapShare = 1f, StyleDials Dials = default);
+
+// The style dials (drift_env STYLE_*), each -1 .. 1, 0 = the policy's own style: inputs a policy
+// trained with "style_range" reads, picked from the habits that tell players apart.
+//   Angle   + a deeper drift angle overall, - a shallower one
+//   Swing   + the angle runs deeper at the apex and shallower between corners (as most players
+//           drive), - one angle throughout
+//   Commit  + carries more speed into corners, - settles the car early
+//   Smooth  + calmer, smoother steering, - busier hands
+public readonly record struct StyleDials(float Angle, float Swing, float Commit, float Smooth);
 
 // One entry of the BotStyles setting. A missing value is drawn (BotStyleSpread) or the server's.
 public class BotStyleEntry
@@ -34,6 +44,11 @@ public class BotStyleEntry
     public float? ChaseGapMeters { get; set; }
     // BotSkill for this bot, 0 - 1.
     public float? Skill { get; set; }
+    // The style dials for this bot, -1 .. 1 each (StyleDials; BotStyleAngle ... for the defaults).
+    public float? Angle { get; set; }
+    public float? Swing { get; set; }
+    public float? Commit { get; set; }
+    public float? Smooth { get; set; }
 }
 
 internal static class BotStyles
@@ -53,7 +68,8 @@ internal static class BotStyles
     // units (0 for all three: a policy without a pace). gapLow / gapHigh, skillLow / skillHigh:
     // the ranges the policy was trained over.
     public static BotStyle For(GradientDriftConfiguration cfg, int aiEntry, byte sessionId, string? name,
-        float paceLow, float paceBase, float paceHigh, float gapLow, float gapHigh, float skillLow, float skillHigh)
+        float paceLow, float paceBase, float paceHigh, float gapLow, float gapHigh, float skillLow, float skillHigh,
+        float styleLimit = 0f)
     {
         BotStyleEntry? entry = Find(cfg.BotStyles, aiEntry, name);
 
@@ -63,6 +79,11 @@ internal static class BotStyles
         float drawAggression = (float)random.NextDouble() - 0.5f;
         float drawGap = 2f * (float)random.NextDouble() - 1f;
         float drawSkill = (float)random.NextDouble();
+        // drawn after the others, so the older draws stay the same
+        float drawAngle = 2f * (float)random.NextDouble() - 1f;
+        float drawSwing = 2f * (float)random.NextDouble() - 1f;
+        float drawCommit = 2f * (float)random.NextDouble() - 1f;
+        float drawSmooth = 2f * (float)random.NextDouble() - 1f;
 
         float spread = Math.Clamp(cfg.BotStyleSpread, 0f, 1f);
         float aggression = Math.Clamp(entry?.Aggression ?? 0.5f + spread * drawAggression, 0f, 1f);
@@ -78,7 +99,11 @@ internal static class BotStyles
         float optIn = cfg.ChaseOptInMeters * (OptInLow + aggression * (OptInHigh - OptInLow));
         float top = cfg.ChasePaceMaxPercent / 100f * (1f + k * ChaseTopSwing);
         float timeGap = k >= 0f ? 1f - k : 1f - k * (CalmTimeGapShare - 1f);
-        return new BotStyle(aggression, pace, gap, skill, optIn, top, timeGap);
+        float dialSpread = Math.Clamp(cfg.BotStyleDialSpread, 0f, 1f);
+        float Dial(float? set, float server, float draw) => Math.Clamp(set ?? server + dialSpread * draw, -styleLimit, styleLimit);
+        var dials = new StyleDials(Dial(entry?.Angle, cfg.BotStyleAngle, drawAngle), Dial(entry?.Swing, cfg.BotStyleSwing, drawSwing),
+            Dial(entry?.Commit, cfg.BotStyleCommit, drawCommit), Dial(entry?.Smooth, cfg.BotStyleSmooth, drawSmooth));
+        return new BotStyle(aggression, pace, gap, skill, optIn, top, timeGap, dials);
     }
 
     private static BotStyleEntry? Find(List<BotStyleEntry>? entries, int aiEntry, string? name)

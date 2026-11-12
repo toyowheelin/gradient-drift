@@ -1271,7 +1271,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 state.LateralVelocity, state.YawRate, crossTrackError, radius, nearestPointId, lineAngle,
                 aiState.MaxSpeed, state.Policy, heading, state.PreviousPins, dt, state.WrongWayRecovering,
                 _car.MaxSteerAngleRadians, state.RearSlidingGrip, _courseEdges, state.Pace, state.Policy.PaceOver,
-                _car, _configuration.EnableTireLoadSensitivity, state.Style.Skill);
+                _car, _configuration.EnableTireLoadSensitivity, state.Style.Skill, state.Style.Dials);
             if (policy.InputCount > DriftPolicy.ObservationSizeV6)
             {
                 // the car ahead: all 0 unless this bot is chasing a player (ChasePlayers)
@@ -1916,11 +1916,13 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         style = BotStyles.For(_configuration, _aiEntryOf.TryGetValue(sessionId, out int aiEntry) ? aiEntry : -1, sessionId, name,
             pace ? _paceFloor : 0f, pace ? _basePace : 0f, pace ? policy!.PaceHigh : 0f,
             chase ? ChaseInputs.GapLowM : 0f, chase ? ChaseInputs.GapHighM : float.MaxValue,
-            skill ? policy!.SkillLow : 1f, skill ? policy!.SkillHigh : 1f);
+            skill ? policy!.SkillLow : 1f, skill ? policy!.SkillHigh : 1f,
+            policy != null && policy.ReadsStyle ? policy.StyleLimit : 0f);
         _styles[sessionId] = style;
-        VerboseLog.Information("GradientDrift: bot {SessionId} ({Name}) drives with aggression {Aggression:F2}: pace {Pace:F2}, chases from {OptIn:F0} m at up to {Top:F0}%, gap {Gap:F1} m + {TimeGap:F2} s, skill {Skill:F2}",
+        VerboseLog.Information("GradientDrift: bot {SessionId} ({Name}) drives with aggression {Aggression:F2}: pace {Pace:F2}, chases from {OptIn:F0} m at up to {Top:F0}%, gap {Gap:F1} m + {TimeGap:F2} s, skill {Skill:F2}, style angle {Angle:F2} swing {Swing:F2} commit {Commit:F2} smooth {Smooth:F2}",
             sessionId, name ?? "", style.Aggression, style.PaceMiddle, style.OptInMeters, style.ChaseTopShare * 100f,
-            style.ChaseGapMeters, _configuration.ChaseTimeGapSeconds * style.TimeGapShare, style.Skill);
+            style.ChaseGapMeters, _configuration.ChaseTimeGapSeconds * style.TimeGapShare, style.Skill,
+            style.Dials.Angle, style.Dials.Swing, style.Dials.Commit, style.Dials.Smooth);
         return style;
     }
 
