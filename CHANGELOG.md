@@ -28,6 +28,13 @@ when releasing.
   check refused), each point's corner radius is worked out again for the moved line, and generated
   courses' lines (version -1) can be moved too. Setup works out a new pace reference when it puts a
   new AI line in the server; before, the server kept the old line's.
+
+- Painted zone boxes are smooth curves. The course edge comes point by point, about 2 m apart, and
+  its curvature jumped from point to point, so on Klutch Kickers the boxes looked pieced together
+  from several bends. The plugin's paint and setup's zone editor now draw each box from its edge
+  smoothed along itself, as a curve with points every 0.5 m or less, and measure the depth square
+  to that curve. The edge moves in by up to about 0.3 m round a tight corner and never past the
+  painted line's inset. On Klutch the outline's curvature varies 5 to 10 times less.
 - The drift HUD shows speed in mph or km/h. It starts in the game's units where the player's CSP
   says which, and a right click on the panel switches it (remembered on their PC).
 - Arcade drift scoring: `ZoneScoreMode: Arcade` scores players freestyle, with no zones (and no
