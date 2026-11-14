@@ -16,7 +16,7 @@ def straight(n=120, half=6.0):
 def test_line_moves_into_the_zone_and_back():
     xz, edges = straight()
     zones = pd.DataFrame({'Side': [1, -1], 'FirstPointId': [30, 80], 'LastPointId': [55, 100]})
-    moved = zl.move_line(xz, edges, zones, inside_m=2.0, ramp=4, smooth=2, max_slope=0)
+    moved = zl.move_line(xz, edges, zones, inside_m=2.0, ramp=4, smooth=2, max_slope=0, new_bend_m=0, min_side_m=0)
     assert np.allclose(moved[:, 0], xz[:, 0])                   # only sideways
     assert np.allclose(moved[38:48, 1], 6.0 - 2.0)               # 2 m inside the + edge mid-zone
     assert np.allclose(moved[86:95, 1], -6.0 + 2.0)              # and the - edge
@@ -29,7 +29,7 @@ def test_line_moves_into_the_zone_and_back():
 def test_zone_wrapping_past_the_start():
     xz, edges = straight(60)
     zones = pd.DataFrame({'Side': [1], 'FirstPointId': [55], 'LastPointId': [5]})
-    moved = zl.move_line(xz, edges, zones, inside_m=3.0, ramp=0, smooth=0, max_slope=0)
+    moved = zl.move_line(xz, edges, zones, inside_m=3.0, ramp=0, smooth=0, max_slope=0, new_bend_m=0, min_side_m=0)
     assert np.allclose(moved[[55, 59, 0, 5], 1], 3.0) and np.allclose(moved[6:55, 1], 0)
 
 
@@ -100,3 +100,26 @@ def test_short_zone_far_out_gets_a_gentle_line():
     lateral = np.abs(np.diff(moved[:, 1]))
     assert lateral.max() <= zl.MAX_SLOPE + 1e-6          # 1 m a point here
     assert 2.0 < moved[100:106, 1].max() < 10.0           # moved out, but not all the way to 10 m
+
+
+def test_no_new_bends_where_the_racing_line_runs_straight():
+    # zones on alternate sides close together: moving straight across between them would put sharp
+    # bends on a straight (Spirit Peaks, where the zones are far from the racing line); they are eased
+    xz, edges = straight(200, half=10.0)
+    zones = pd.DataFrame({'Side': [1, -1, 1], 'FirstPointId': [40, 80, 125], 'LastPointId': [65, 110, 150]})
+    raw = zl.move_line(xz, edges, zones, new_bend_m=0, min_side_m=0)
+    assert zl.new_bends(xz, raw).any()
+    moved = zl.move_line(xz, edges, zones)
+    assert not zl.new_bends(xz, moved).any()
+    assert moved[52, 1] > 2.0 and moved[95, 1] < -2.0 and moved[137, 1] > 2.0     # still out toward each zone
+
+
+def test_keeps_off_an_edge_that_bulges_in():
+    xz, edges = straight(160, half=8.0)
+    bump = 2.0 * np.exp(-((np.arange(160) - 80) / 3.0) ** 2)      # the + edge comes in 2 m over a few metres
+    edges['PositiveEdgeZ'] = 8.0 - bump
+    zones = pd.DataFrame({'Side': [1], 'FirstPointId': [50], 'LastPointId': [110]})
+    raw = zl.move_line(xz, edges, zones, new_bend_m=0, min_side_m=0)
+    assert (edges.PositiveEdgeZ - raw[:, 1]).min() < 2.5             # the smoothing cuts the corner of the bump
+    moved = zl.move_line(xz, edges, zones, new_bend_m=0)
+    assert (edges.PositiveEdgeZ - moved[:, 1]).min() > 2.95
