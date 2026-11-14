@@ -7,6 +7,12 @@ when releasing.
 
 ## Unreleased
 
+- Drift line: the moved AI line no longer adds bends the racing line does not have (tighter than
+  80 m turning the other way, or on a straight). Where the zones sit far from the racing line, the
+  line used to swing across the road between zones and wobble through long corners, and on a server
+  the bots fell out of their drifts there and hit more walls. It also keeps 3 m from either edge where
+  it can. Tracks whose zones are near the racing line come out the same.
+
 - `RecordPlayers`: the plugin can record every connected player's car (as their game reports it)
   into a compressed file per server start, for learning how people drift on your own server.
   Players appear only as a salted hash of their Steam ID. `tools/players_to_monitor.py` turns a file
