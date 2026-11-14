@@ -170,7 +170,11 @@ def main():
     ap.add_argument('--kickstart-weight', type=float, default=1.0,
                     help='weight of the pull (squared action difference) at the start')
     ap.add_argument('--kickstart-ticks', type=int, default=150_000_000,
-                    help='ticks over which the pull fades linearly to zero')
+                    help='ticks over which the pull fades linearly to zero (or to --kickstart-floor)')
+    ap.add_argument('--kickstart-floor', type=float, default=0.0,
+                    help='the pull never fades below this weight. With --style-share it only pulls episodes at '
+                         'style 0, so the dial episodes learn their styles while neutral driving stays held to '
+                         'the teacher (styles2 lost its drift once the pull reached 0, as plain resumes do)')
     ap.add_argument('--residual', type=int, default=0, metavar='UNITS',
                     help='with --init-policy and --chase: keep the starting network frozen and train a second one '
                          '(two layers of UNITS) added to its action only while a lead is present (residual '
@@ -823,7 +827,7 @@ def main():
                     h = torch.tanh(h)
             return torch.clamp(h, -1.0, 1.0)
         print(f"kickstart: pulled toward {args.kickstart}'s actions ({t_n} inputs), weight "
-              f"{args.kickstart_weight:g} fading to 0 over {args.kickstart_ticks:,} ticks", flush=True)
+              f"{args.kickstart_weight:g} fading to {args.kickstart_floor:g} over {args.kickstart_ticks:,} ticks", flush=True)
 
     def value(x, pv):
         return vf(torch.cat([x, pv], dim=1) if n_priv else x)[:, 0]
@@ -1458,7 +1462,7 @@ def main():
                 cat_log.append(float((cat_buf > 0).float().mean()))
             b_teach = teach_buf.reshape(-1, de.ACT_SIZE) if teacher else None
             b_teach_m = teach_mask.reshape(-1) if teacher else None
-            kick_w = args.kickstart_weight * max(0.0, 1.0 - steps_done / args.kickstart_ticks) if teacher else 0.0
+            kick_w = max(args.kickstart_floor, args.kickstart_weight * max(0.0, 1.0 - steps_done / args.kickstart_ticks)) if teacher else 0.0
             kick_errs = []
             b_logp, b_adv, b_ret = logp_buf.reshape(-1), adv.reshape(-1), ret.reshape(-1)
             n = b_obs.shape[0]
