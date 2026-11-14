@@ -88,8 +88,12 @@ public sealed class DriftPolicy
     // The any-car policies read 55 - 65 as well, what tells this car from another (CarSpec.CarInputs),
     // and the newest 66, how good a driver to be (the skill, 0 - 1). A tandem policy reads 67 - 93
     // as well, the car ahead (ChaseInputs), and carries a residual network added to the actions only
-    // while one is there.
-    public const int ObservationSize = ChaseInputs.Slot + ChaseInputs.Count;
+    // while one is there. The newest read 94 - 97 as well, the style dials (StyleDials: angle, swing,
+    // commit, smooth; drift_env STYLE_*).
+    public const int ObservationSizeV8 = ChaseInputs.Slot + ChaseInputs.Count;
+    public const int StyleSlot = ObservationSizeV8;
+    public const int StyleCount = 4;
+    public const int ObservationSize = ObservationSizeV8 + StyleCount;
     public const int ObservationSizeV6 = ChaseInputs.Slot;
     public const int ObservationSizeV5 = 66;
     public const int ObservationSizeV4 = 55;
@@ -143,6 +147,10 @@ public sealed class DriftPolicy
     public float DriftSteerLockDeg { get; private set; }
     // A policy that reads the skill input, and the skills it was trained over ("skill_range").
     public bool ReadsSkill => InputCount > ObservationSizeV5;
+    // A policy trained to follow the style dials ("style_range": [-limit, limit]); the plugin holds
+    // each dial within -StyleLimit .. StyleLimit (0 for a policy that reads them untrained).
+    public bool ReadsStyle => BaseInputCount > ObservationSizeV8;
+    public float StyleLimit { get; private set; }
     public float SkillLow { get; private set; } = 1f;
     public float SkillHigh { get; private set; } = 1f;
     // A tandem policy: reads the car ahead, either as one network trained with chase episodes (a
@@ -307,6 +315,7 @@ public sealed class DriftPolicy
             "RoundTireCurve" => value == 0f || value == 1f,
             "RearSpinGripShare" => value > 0f && value <= 1f,
             "SurfaceGrip" => value == 0f || value == 1f,
+            "FittedTireCorrection" => value == 0f || value == 1f,
             _ => false,
         };
     }
@@ -348,7 +357,7 @@ public sealed class DriftPolicy
                 int count = historyFrames * historySlots.Length;
                 int baseSize = fileObsSize - count;
                 if (historyFrames < 1 || historyEvery < 1 || historySlots.Length == 0 || count > MaxHistoryInputs
-                    || baseSize != ObservationSize || historyResetSlot < 0 || historyResetSlot >= baseSize
+                    || (baseSize != ObservationSize && baseSize != ObservationSizeV8) || historyResetSlot < 0 || historyResetSlot >= baseSize
                     || Array.Exists(historySlots, j => j < 0 || j >= baseSize))
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a history block this build cannot run ({Frames} frames of {Slots} inputs every {Every} ticks after {Base} inputs; at most {Max} history inputs after {Size})",
@@ -357,12 +366,12 @@ public sealed class DriftPolicy
                 }
             }
             int obsSize = fileObsSize - historyFrames * historySlots.Length;
-            if ((obsSize != ObservationSize && obsSize != ObservationSizeV6 && obsSize != ObservationSizeV5 && obsSize != ObservationSizeV4
+            if ((obsSize != ObservationSize && obsSize != ObservationSizeV8 && obsSize != ObservationSizeV6 && obsSize != ObservationSizeV5 && obsSize != ObservationSizeV4
                  && obsSize != ObservationSizeV3 && obsSize != ObservationSizeV2 && obsSize != ObservationSizeV1)
                 || (actionSize != ActionSize && actionSize != ActionSizeV1))
             {
-                Log.Warning("GradientDrift: policy file {Path} expects {ObsSize} observations / {ActionSize} actions, this build provides {BuildObs} (or {V6Obs}, {V5Obs}, {V4Obs}, {V3Obs}, {MidObs} or {OldObs}) / {BuildActions} (or {OldActions})",
-                    PluginData.Describe(path), obsSize, actionSize, ObservationSize, ObservationSizeV6, ObservationSizeV5, ObservationSizeV4, ObservationSizeV3, ObservationSizeV2, ObservationSizeV1, ActionSize, ActionSizeV1);
+                Log.Warning("GradientDrift: policy file {Path} expects {ObsSize} observations / {ActionSize} actions, this build provides {BuildObs} (or {V8Obs}, {V6Obs}, {V5Obs}, {V4Obs}, {V3Obs}, {MidObs} or {OldObs}) / {BuildActions} (or {OldActions})",
+                    PluginData.Describe(path), obsSize, actionSize, ObservationSize, ObservationSizeV8, ObservationSizeV6, ObservationSizeV5, ObservationSizeV4, ObservationSizeV3, ObservationSizeV2, ObservationSizeV1, ActionSize, ActionSizeV1);
                 return null;
             }
 
@@ -419,7 +428,7 @@ public sealed class DriftPolicy
             {
                 residualGate = residualElement.GetProperty("gate_input").GetInt32();
                 residualGateAbove = (float)residualElement.GetProperty("gate_above").GetDouble();
-                if (residualGate != ChaseInputs.Slot || obsSize != ObservationSize || historyFrames > 0)
+                if (residualGate != ChaseInputs.Slot || (obsSize != ObservationSize && obsSize != ObservationSizeV8) || historyFrames > 0)
                 {
                     Log.Warning("GradientDrift: policy file {Path} has a residual network gated by input {Gate} of {ObsSize}; this build runs one gated by the car ahead (input {Slot} of {BuildObs})",
                         PluginData.Describe(path), residualGate, obsSize, ChaseInputs.Slot, ObservationSize);
@@ -458,7 +467,7 @@ public sealed class DriftPolicy
             }
             if (root.TryGetProperty("chase", out JsonElement chaseElement) && chaseElement.ValueKind == JsonValueKind.Object)
             {
-                policy._trainedToChase = obsSize == ObservationSize;
+                policy._trainedToChase = obsSize >= ObservationSizeV8;
                 if (chaseElement.TryGetProperty("controller", out JsonElement controllerElement)
                     && controllerElement.TryGetProperty("chase_pace_min", out JsonElement paceMinElement))
                 {
@@ -526,6 +535,16 @@ public sealed class DriftPolicy
                 }
                 policy.SkillLow = skillRange[0];
                 policy.SkillHigh = skillRange[1];
+            }
+            if (obsSize > ObservationSizeV8 && root.TryGetProperty("style_range", out JsonElement styleElement))
+            {
+                float[] styleRange = ReadFloatArray(styleElement);
+                if (styleRange.Length != 2 || !(styleRange[1] > 0f) || !(styleRange[1] <= 2f) || styleRange[0] != -styleRange[1])
+                {
+                    Log.Warning("GradientDrift: policy file {Path} has a style_range that is not [-limit, limit] with a limit up to 2", PluginData.Describe(path));
+                    return null;
+                }
+                policy.StyleLimit = styleRange[1];
             }
             if (root.TryGetProperty("rear_sliding_grip_range", out JsonElement gripRangeElement))
             {
@@ -648,7 +667,7 @@ public sealed class DriftPolicy
         float yawRateRadS, float crossTrackErrorM, float radius, int nearestPointId, float lineAngle,
         float maxSpeedMs, DriftPolicyCarState carState, float heading, FanRay[]? previousPins, float dtSeconds,
         bool wrongWayRecovering, float maxSteerAngleRadians, float rearSlidingGrip, CourseEdges? course, float pace,
-        float paceOver, CarSpec car, bool loadSensitivity, float skill)
+        float paceOver, CarSpec car, bool loadSensitivity, float skill, StyleDials style = default)
     {
         obs[0] = ownSpeedMs / SpeedScale;
         obs[1] = lateralVelocityMs / LateralVelocityScale;
@@ -710,6 +729,15 @@ public sealed class DriftPolicy
         obs[PaceOverSlot] = Math.Clamp(paceOver, -PaceOverClip, PaceOverClip);
         car.CarInputs(obs, CarSlot, loadSensitivity);
         obs[SkillSlot] = skill;
+        if (ReadsStyle)
+        {
+            // the history block (AppendHistory) starts right after a policy's own inputs, so a
+            // policy from before the dials never has them written
+            obs[StyleSlot] = Math.Clamp(style.Angle, -StyleLimit, StyleLimit);
+            obs[StyleSlot + 1] = Math.Clamp(style.Swing, -StyleLimit, StyleLimit);
+            obs[StyleSlot + 2] = Math.Clamp(style.Commit, -StyleLimit, StyleLimit);
+            obs[StyleSlot + 3] = Math.Clamp(style.Smooth, -StyleLimit, StyleLimit);
+        }
     }
 
     // The history block into obs after the BaseInputCount inputs BuildObservation (and the chase

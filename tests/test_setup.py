@@ -128,6 +128,8 @@ def world(tmp_path, tracks_dir, course_names):
     (car / 'skins' / SKIN).mkdir(parents=True)
     for name, text in CAR_FILES.items():
         (car / 'data' / name).write_text(text)
+    from test_collider_box import make_kn5
+    (car / 'collider.kn5').write_bytes(make_kn5(0.85, -2.12, 1.81))
 
     server = tmp_path / 'server'
     (server / 'cfg').mkdir(parents=True)
@@ -190,6 +192,7 @@ def test_setup_makes_a_server_ready_and_undo_puts_it_back(world):
     with open(car_file) as f:
         numbers = json.load(f)
     assert numbers['_car'] == CAR and 0.3 < numbers['PACE_SCALE'] < 3.0, numbers.get('PACE_SCALE')
+    assert numbers['BODY_FRONT_M'] == 1.81 and numbers['BODY_REAR_M'] == 2.12, 'no body size from collider.kn5'
 
     entries = open(os.path.join(server, 'cfg', 'entry_list.ini')).read()
     assert entries.count('AI=fixed') == 2 and '[CAR_2]' in entries
@@ -316,3 +319,25 @@ def test_protected_model_files_are_found():
     moved = SimpleNamespace(positions=[(0, 0, 0), (0, 3, 4), (4, -2, 0)], normals=[up] * 3, indices=[0, 1, 2])
     assert tt.normal_agreement(flat)[0] > 0.999
     assert tt.normal_agreement(moved)[0] < tt.SCRAMBLED_AGREEMENT
+
+
+def test_a_drift_line_gets_its_own_pace_reference(world):
+    """zone_line.py moves the track files' AI line and sets their pace reference aside: setup puts the
+    moved line in the server and works out a pace reference for it (the server's old one follows the
+    old line's corners, and the track check would judge the new line by it)."""
+    from gradientdrift_setup.apply import apply_plan
+    import zone_line
+    server, game, plugin, data, track = world
+    apply_plan(plan(world), log=lambda *_: None)
+    if not os.path.exists(os.path.join(data, track, f'{track}_course_zones.csv')):
+        pytest.skip('the test course has no zones')
+    zone_line.main(['--tracks', data, '--track', track])
+    p = plan(world)
+    assert not p.blockers, p.blockers
+    pace = f'{track}_pace_reference.csv'
+    assert any(c.file == pace and c.op[0] == 'pace_reference' for c in p.changes), [c.what for c in p.changes]
+    assert any(c.op[0] == 'copy' and c.op[2].endswith('fast_lane.ai') for c in p.changes)
+    apply_plan(p, log=lambda *_: None)
+    assert os.path.exists(os.path.join(data, track, pace))
+    with open(os.path.join(data, track, pace), 'rb') as a, open(os.path.join(server, pace), 'rb') as b:
+        assert a.read() == b.read()

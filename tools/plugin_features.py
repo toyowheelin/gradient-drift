@@ -91,14 +91,16 @@ def features():
         # GradientDriftPlugin.bundle.zip beside the plugin (PluginData.cs)
         'bundle': os.path.exists(os.path.join(PLUGIN, 'PluginData.cs')),
     }
-    m = re.search(r'baseSize != (\w+)', load)
-    if m and 'DriftPolicy.MaxHistoryInputs' in const:
-        out['history'] = {'base_obs_size': const[f'DriftPolicy.{m.group(1)}'],
+    bases = sorted({const[f'DriftPolicy.{n}'] for n in re.findall(r'baseSize != (ObservationSize\w*)', load)})
+    if bases and 'DriftPolicy.MaxHistoryInputs' in const:
+        # base_obs_size (the first) for setups from before a plugin ran several
+        out['history'] = {'base_obs_size': bases[0], 'base_obs_sizes': bases,
                           'max_inputs': const['DriftPolicy.MaxHistoryInputs']}
-    m = re.search(r'residualGate != (\w+)\.(\w+) \|\| obsSize != (\w+)', load)
+    m = re.search(r'residualGate != (\w+)\.(\w+) \|\| (\(obsSize[^|]*?\)|obsSize != \w+)', load)
     if m:
+        sizes = sorted({const[f'DriftPolicy.{n}'] for n in re.findall(r'obsSize != (ObservationSize\w*)', m.group(3))})
         out['residual'] = {'gate_input': const[f'{m.group(1)}.{m.group(2)}'],
-                           'obs_size': const[f'DriftPolicy.{m.group(3)}'],
+                           'obs_size': sizes[0], 'obs_sizes': sizes,
                            'with_history': 'historyFrames > 0' not in load[load.index('residualGate !='):][:200]}
     return out
 

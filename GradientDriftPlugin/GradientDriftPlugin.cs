@@ -173,6 +173,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     private readonly float[] _observation = new float[DriftPolicy.ObservationSize + DriftPolicy.MaxHistoryInputs];
 
     private DriftTelemetry? _telemetry;
+    // RecordPlayers (PlayerRecorder.cs); null = off
+    private PlayerRecorder? _players;
     // EnableScorecard; when it was last written (server ms), and the cars touching this tick.
     private BotScorecard? _scorecard;
     private readonly string _trackName;
@@ -420,6 +422,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _configuration.RoundTireCurve = false;
         _configuration.RearSpinGripShare = 1f;
         _configuration.SurfaceGrip = false;
+        _configuration.FittedTireCorrection = false;
 
         foreach ((string name, float value) in policy.PluginSettings)
         {
@@ -493,6 +496,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     break;
                 case "SurfaceGrip":
                     _configuration.SurfaceGrip = value == 1f;
+                    break;
+                case "FittedTireCorrection":
+                    _configuration.FittedTireCorrection = value == 1f;
                     break;
             }
             VerboseLog.Information("GradientDrift: {Name} = {Value}, from the policy file", name, value);
@@ -751,6 +757,20 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             }
         }
 
+        if (_configuration.RecordPlayers)
+        {
+            try
+            {
+                _players = new PlayerRecorder(_configuration.RecordPlayersHz,
+                    (long)(Math.Max(0f, _configuration.RecordPlayersMaxMegabytes) * 1024 * 1024));
+                Log.Information("GradientDrift: recording players to {Path}", Path.GetFullPath(_players.FilePath));
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                Log.Warning("GradientDrift: no player recording ({Message})", e.Message);
+            }
+        }
+
         _acServer.Value.Update += OnUpdate;
         return Task.CompletedTask;
     }
@@ -769,6 +789,9 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         DriftTelemetry? telemetry = _telemetry;
         _telemetry = null;
         telemetry?.Dispose();
+        PlayerRecorder? players = _players;
+        _players = null;
+        players?.Dispose();
         base.Dispose();
     }
 
@@ -1020,6 +1043,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _lastUpdateTimeMs = nowMs;
 
         HumanCarSample human = SampleHumanCar();
+        _players?.Sample(_entryCarManager, nowMs);
 
         _driven.Clear();
         _trainSlots.Clear();
@@ -1267,7 +1291,7 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 state.LateralVelocity, state.YawRate, crossTrackError, radius, nearestPointId, lineAngle,
                 aiState.MaxSpeed, state.Policy, heading, state.PreviousPins, dt, state.WrongWayRecovering,
                 _car.MaxSteerAngleRadians, state.RearSlidingGrip, _courseEdges, state.Pace, state.Policy.PaceOver,
-                _car, _configuration.EnableTireLoadSensitivity, state.Style.Skill);
+                _car, _configuration.EnableTireLoadSensitivity, state.Style.Skill, state.Style.Dials);
             if (policy.InputCount > DriftPolicy.ObservationSizeV6)
             {
                 // the car ahead: all 0 unless this bot is chasing a player (ChasePlayers)
@@ -1399,6 +1423,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             float frontSlipAngle = 0f, rearSlipAngle = 0f, fyFront = 0f, fyRear = 0f;
             bool roundCurve = _configuration.RoundTireCurve;
             (float frontCurveAngle, float rearCurveAngle) = _car.TireCurveAngles(roundCurve);
+            bool fittedCorrection = _configuration.FittedTireCorrection;
+            float throttleShare = pedal ? Math.Clamp(speedAction, 0f, 1f) : 0f;
 
             for (int subStep = 0; subStep < subStepCount; subStep++)
             {
@@ -1413,6 +1439,13 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                     ? LateralForceWithin(rearSlipAngle, rearPeakForceN, rearCurveAngle, rearCapacityN, roundCurve)
                     : LateralTireForce(rearSlipAngle, effectiveRearPeakFriction,
                         _car.RearStaticLoadN, rearCurveAngle, state.RearSlidingGrip, roundCurve);
+                if (fittedCorrection)
+                {
+                    (float correctionFront, float correctionRear) = FittedTireCorrection.Correction(frontSlipAngle, rearSlipAngle,
+                        yawRate, MathF.Atan2(lateralVelocity, slipAngleSpeed), slipAngleSpeed, throttleShare);
+                    fyFront += correctionFront * _car.FrontStaticLoadN;
+                    fyRear += correctionRear * _car.RearStaticLoadN;
+                }
 
                 float yawMomentNm = _car.DistanceCgToFrontAxleM * fyFront * cosSteer - _car.DistanceCgToRearAxleM * fyRear;
                 float yawAngularAccel = yawMomentNm / _car.YawInertiaKgM2;
@@ -1570,9 +1603,12 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         Vector3 previousPosition = position;
         position += velocity * dt;
         long pushStart = PluginTiming.Now();
-        row.WallPushOutM = _configuration.CarOutlineContact
-            ? PushOutlineOutOfWalls(collision, state.Heading ?? aiState.Status.Rotation.X + MathF.PI / 2f, ref position, ref velocity)
-            : PushOutOfWalls(contactPins, aiState, ref position, ref velocity);
+        float wallHeading = state.Heading ?? aiState.Status.Rotation.X + MathF.PI / 2f;
+        row.WallPushOutM = _configuration.BodyWallContact
+            ? PushBodyOutOfWalls(collision, wallHeading, ref position, ref velocity)
+            : _configuration.CarOutlineContact
+                ? PushOutlineOutOfWalls(collision, wallHeading, ref position, ref velocity)
+                : PushOutOfWalls(contactPins, aiState, ref position, ref velocity);
         _timing.Add(PluginTiming.Part.Sensors, pushStart);
 
         // ---- 7. Ride height, attitude, and what clients are sent -----------------------------
@@ -1900,11 +1936,13 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         style = BotStyles.For(_configuration, _aiEntryOf.TryGetValue(sessionId, out int aiEntry) ? aiEntry : -1, sessionId, name,
             pace ? _paceFloor : 0f, pace ? _basePace : 0f, pace ? policy!.PaceHigh : 0f,
             chase ? ChaseInputs.GapLowM : 0f, chase ? ChaseInputs.GapHighM : float.MaxValue,
-            skill ? policy!.SkillLow : 1f, skill ? policy!.SkillHigh : 1f);
+            skill ? policy!.SkillLow : 1f, skill ? policy!.SkillHigh : 1f,
+            policy != null && policy.ReadsStyle ? policy.StyleLimit : 0f);
         _styles[sessionId] = style;
-        VerboseLog.Information("GradientDrift: bot {SessionId} ({Name}) drives with aggression {Aggression:F2}: pace {Pace:F2}, chases from {OptIn:F0} m at up to {Top:F0}%, gap {Gap:F1} m + {TimeGap:F2} s, skill {Skill:F2}",
+        VerboseLog.Information("GradientDrift: bot {SessionId} ({Name}) drives with aggression {Aggression:F2}: pace {Pace:F2}, chases from {OptIn:F0} m at up to {Top:F0}%, gap {Gap:F1} m + {TimeGap:F2} s, skill {Skill:F2}, style angle {Angle:F2} swing {Swing:F2} commit {Commit:F2} smooth {Smooth:F2}",
             sessionId, name ?? "", style.Aggression, style.PaceMiddle, style.OptInMeters, style.ChaseTopShare * 100f,
-            style.ChaseGapMeters, _configuration.ChaseTimeGapSeconds * style.TimeGapShare, style.Skill);
+            style.ChaseGapMeters, _configuration.ChaseTimeGapSeconds * style.TimeGapShare, style.Skill,
+            style.Dials.Angle, style.Dials.Swing, style.Dials.Commit, style.Dials.Smooth);
         return style;
     }
 
@@ -2156,6 +2194,46 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         for (int i = 0; i < CarOutline.PointCount; i++)
         {
             (float forward, float left) = outline.Point(i);
+            float reach = MathF.Sqrt(forward * forward + left * left);
+            float angle = heading + MathF.Atan2(left, forward);
+            var direction = new Vector3(MathF.Cos(angle), 0f, MathF.Sin(angle));
+            if (!collision.Raycast(origin, direction, reach, out RaycastHit hit, wallsOnly: true)
+                || hit.Surface != SurfaceType.Wall || hit.Distance >= reach)
+            {
+                continue;
+            }
+            pushOut -= direction * (reach + _configuration.CollisionPushOutMarginMeters - hit.Distance);
+        }
+
+        if (pushOut.LengthSquared() <= 0.0001f)
+        {
+            return 0f;
+        }
+
+        position += pushOut;
+        Vector3 contactNormal = Vector3.Normalize(pushOut);
+        float velocityAlongNormal = Vector3.Dot(velocity, contactNormal);
+        if (velocityAlongNormal < 0f)
+        {
+            velocity -= contactNormal * velocityAlongNormal;
+        }
+        return pushOut.Length();
+    }
+
+    // Wall contact with BodyWallContact: a ray from the car's centre to each point round its body
+    // (CarBody, turned with its heading); a Wall triangle nearer than the point is inside the car
+    // and pushes it back along that ray by how far it is in plus the margin, then the velocity into
+    // the wall is removed (fast_sim's collision response, EXT_BODY_WALL_CONTACT). Returns the
+    // distance pushed.
+    private float PushBodyOutOfWalls(TriangleGrid collision, float heading, ref Vector3 position, ref Vector3 velocity)
+    {
+        var body = new CarBody(_car, _configuration.CarOutlineOverhangMeters, _configuration.CarOutlineSideMarginMeters);
+        var origin = new Vector3(position.X, position.Y + _configuration.ProximityPinHeightOffsetMeters, position.Z);
+        Vector3 pushOut = Vector3.Zero;
+        int count = body.PointCount;
+        for (int i = 0; i < count; i++)
+        {
+            (float forward, float left) = body.Point(i);
             float reach = MathF.Sqrt(forward * forward + left * left);
             float angle = heading + MathF.Atan2(left, forward);
             var direction = new Vector3(MathF.Cos(angle), 0f, MathF.Sin(angle));

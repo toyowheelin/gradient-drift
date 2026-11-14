@@ -55,7 +55,9 @@ S_PACE = 47             # the pace this car is asked to drive, a fraction of the
                         # plugin's bot-spacing dial, drawn per episode in training (drift_env)
 S_GRIP_F = 49           # SurfaceGrip: the grip of the ground under the front / rear axle (FRICTION over
 S_GRIP_R = 50           # the main road's), from the last tick's pose; 0 = not known (1)
-STATE_SIZE = 51
+S_STYLE0 = 51           # the style dials (drift_env STYLE_*), -1 .. 1 each, 0 = as trained before: 51..54
+N_STYLE = 4
+STATE_SIZE = 55
 
 # Bumped whenever the simulator changes in a way that makes policies trained before it unfit for
 # the server. Trainers write it into policy.json ("simulator_revision"); check_plugin_policy.py
@@ -170,6 +172,16 @@ _PNAMES = [
     # --dr-surface-grip) stretches each surface's difference from the road: grip 1 + (g - 1) x it;
     # 0 = 1 = as the file says.
     'EXT_SURFACE_GRIP', 'SURFACE_GRIP_DEV_SCALE',
+    # FittedTireCorrection (a plugin setting a policy file may carry): each axle's sideways force
+    # plus a correction fitted to the game (_fitted_axle_correction). Made for the physics combo_all2
+    # ships with (RoundTireCurve, RearSpinGripShare 0.95, tyre load sensitivity, rear friction circle).
+    'EXT_FITTED_TIRE_CORRECTION',
+    # BodyWallContact (a server setting, on by default): walls touch the car's body, a rectangle
+    # turned with its heading, at points round its edge no more than BODY_OUTLINE_SPACING_M apart,
+    # instead of the contact distance's six pins (which let the nose and tail into a wall). The
+    # body is the car file's BODY_FRONT_M / BODY_REAR_M / BODY_HALF_WIDTH_M (setup reads them from
+    # the car's collider.kn5); 0 = not known, the outline's axles + overhang and track + margin.
+    'EXT_BODY_WALL_CONTACT', 'BODY_FRONT_M', 'BODY_REAR_M', 'BODY_HALF_WIDTH_M',
 ]
 P = {name: i for i, name in enumerate(_PNAMES)}
 
@@ -250,6 +262,7 @@ def make_params():
         'EXT_NEAREST_POINT_CORRECTOR': 1.0, 'EXT_COLLISION_RESPONSE': 1.0,
         'COLLISION_CONTACT_DISTANCE_M': 1.6, 'COLLISION_PUSHOUT_MARGIN_M': 0.3,
         'CAR_OUTLINE_OVERHANG_M': 0.8, 'CAR_OUTLINE_SIDE_MARGIN_M': 0.1,
+        'EXT_BODY_WALL_CONTACT': 1.0, 'BODY_FRONT_M': 0.0, 'BODY_REAR_M': 0.0, 'BODY_HALF_WIDTH_M': 0.0,
         'EXT_HEIGHT_MODEL': 1.0, 'HEIGHT_SMOOTHING_FACTOR': 0.15, 'HEIGHT_SNAP_THRESHOLD_M': 0.15,
         'ROAD_MESH_HEIGHT_OFFSET_M': 0.44, 'CROSS_TRACK_BLEND_START_M': 5.0, 'CROSS_TRACK_BLEND_END_M': 12.0,
         'MAX_TRUSTED_MESH_DISTANCE_M': 8.0,
@@ -779,6 +792,36 @@ def ground_grip(x, oy, z, max_distance, tri_v, tri_surf, tri_grip, gmin, cell_si
 
 
 N_OUTLINE = 8
+# BodyWallContact: the most room between two of the body's contact points along its edge, m.
+BODY_OUTLINE_SPACING_M = 0.5
+
+
+@njit(cache=True)
+def _body_edge_counts(front, rear, half):
+    """(points across the front and the rear, points along each side) of the body outline: each
+    edge cut into pieces no longer than BODY_OUTLINE_SPACING_M. The plugin's CarBody is the same."""
+    n_w = max(1, int(math.ceil(2.0 * half / BODY_OUTLINE_SPACING_M - 1e-6)))
+    n_l = max(1, int(math.ceil((front + rear) / BODY_OUTLINE_SPACING_M - 1e-6)))
+    return n_w, n_l
+
+
+@njit(cache=True)
+def _body_point(i, n_w, n_l, front, rear, half):
+    """Point i of the body outline (BodyWallContact), metres (forward, left) of the centre, going
+    round from the front left corner: across the front, back down the right side, across the rear
+    and up the left side; 2 x (n_w + n_l) points, each corner once."""
+    width = 2.0 * half
+    length = front + rear
+    if i < n_w:
+        return front, half - i * width / n_w
+    i -= n_w
+    if i < n_l:
+        return front - i * length / n_l, -half
+    i -= n_l
+    if i < n_w:
+        return -rear, -half + i * width / n_w
+    i -= n_w
+    return -rear + i * length / n_l, half
 
 
 @njit(cache=True)
@@ -969,6 +1012,54 @@ def tire_curve_angles(p):
         front += math.radians(p[P_FRONT_TIRE_FLEX] * 0.5 * p[P_FRONT_STATIC_LOAD_N])
         rear += math.radians(p[P_REAR_TIRE_FLEX] * 0.5 * p[P_REAR_STATIC_LOAD_N])
     return front, rear
+
+
+# FittedTireCorrection: what Assetto Corsa's E36 does that this model does not, per axle, as a
+# share of the axle's static load. Fitted (ridge regression) to the axle forces worked out from the
+# car's recorded motion on two tracks, minus this model's forces in the same state, flat road only;
+# then checked on six other recorded sessions it never saw (about 85 laps): replayed 1 s ahead, yaw
+# rate and body slip errors in held drifts about halve, and transitions stop over-rotating
+# (the brush curve's known overshoot at the end of a transition; Toyota Research Institute,
+# arXiv 2306.06330, fixed it the same way, with a correction fitted to driving data). Every term is
+# odd (mirrored slips, yaw and body slip give the mirrored force). Inputs: front and rear slip
+# angles, yaw rate (rad/s), body slip angle (rad), speed (m/s) and throttle 0 - 1. Order per input
+# x in (front slip, rear slip, yaw rate, body slip): x, tanh(x / 0.15), x speed / 20, x throttle,
+# x |front slip|, x |rear slip|, x |yaw rate|, x |body slip|. The plugin holds the same numbers.
+FITTED_TIRE_CORRECTION_FRONT = (
+    -0.012135, -0.073053, 0.006406, -0.03875, 0.003466, -0.137821, 0.0026, -0.161797,
+    0.007838, -0.158396, -0.035409, 0.009226, -0.128156, 0.270833, 0.056691, 0.231038,
+    0.014653, 0.048599, 0.076753, 0.028526, -0.011456, 0.026863, -0.022523, 0.18313,
+    -0.029164, -0.154194, -0.049205, -0.009549, -0.141798, 0.231127, 0.031054, 0.200912,
+)
+FITTED_TIRE_CORRECTION_REAR = (
+    -0.025664, 0.040017, -0.028092, -0.01111, -0.026923, 0.037245, -0.05085, 0.036328,
+    0.034147, 0.381336, -0.194426, -0.193532, 0.044537, 0.041424, -0.005817, 0.050465,
+    0.083099, 0.02241, 0.013467, -0.017624, 0.057105, 0.062262, -0.009957, 0.099836,
+    0.050813, 0.078396, -0.187616, -0.195762, 0.051196, 0.045883, -0.003435, 0.060221,
+)
+FITTED_TIRE_CORRECTION_LIMIT = 0.6
+
+
+@njit(cache=True)
+def _fitted_axle_correction(front_slip, rear_slip, yaw_rate, body_slip, speed_ms, throttle):
+    """(front, rear) sideways force to add, as shares of each axle's static load (FittedTireCorrection)."""
+    xs = (front_slip, rear_slip, yaw_rate, body_slip)
+    mags = (abs(front_slip), abs(rear_slip), abs(yaw_rate), abs(body_slip))
+    vs = speed_ms / 20.0
+    cf = 0.0
+    cr = 0.0
+    for i in range(4):
+        x = xs[i]
+        k = 8 * i
+        cf += (FITTED_TIRE_CORRECTION_FRONT[k] * x + FITTED_TIRE_CORRECTION_FRONT[k + 1] * math.tanh(x / 0.15)
+               + FITTED_TIRE_CORRECTION_FRONT[k + 2] * x * vs + FITTED_TIRE_CORRECTION_FRONT[k + 3] * x * throttle)
+        cr += (FITTED_TIRE_CORRECTION_REAR[k] * x + FITTED_TIRE_CORRECTION_REAR[k + 1] * math.tanh(x / 0.15)
+               + FITTED_TIRE_CORRECTION_REAR[k + 2] * x * vs + FITTED_TIRE_CORRECTION_REAR[k + 3] * x * throttle)
+        for j in range(4):
+            cf += FITTED_TIRE_CORRECTION_FRONT[k + 4 + j] * x * mags[j]
+            cr += FITTED_TIRE_CORRECTION_REAR[k + 4 + j] * x * mags[j]
+    lim = FITTED_TIRE_CORRECTION_LIMIT
+    return max(-lim, min(lim, cf)), max(-lim, min(lim, cr))
 
 
 @njit(cache=True)
@@ -1504,6 +1595,8 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
     fy_r = 0.0
     rear_peak_used = 0.0
     slide_grip = rear_sliding_grip(s)
+    fitted_correction = p[P_EXT_FITTED_TIRE_CORRECTION] > 0.5
+    throttle_share = max(0.0, min(1.0, act_speed)) if pedal_mode else 0.0
     for k in range(sub_n):
         slip_speed = max(body_speed, p[P_MIN_SLIP_SPEED_MS])
         # below the minimum slip speed the steering's part of the front slip scales with the car's
@@ -1520,6 +1613,11 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
         if rear_capacity >= 0.0:
             fy_r = _lateral_force_within(rear_slip, rear_peak_force, curve_r, rear_capacity, round_curve)
             rear_peak_used = rear_capacity
+        if fitted_correction:
+            corr_f, corr_r = _fitted_axle_correction(front_slip, rear_slip, run_yaw,
+                                                     math.atan2(run_latv, slip_speed), slip_speed, throttle_share)
+            fy_f += corr_f * p[P_FRONT_STATIC_LOAD_N]
+            fy_r += corr_r * p[P_REAR_STATIC_LOAD_N]
 
         yaw_moment = p[P_DIST_CG_FRONT_M] * fy_f * cos_steer - p[P_DIST_CG_REAR_M] * fy_r
         new_yaw = run_yaw + (yaw_moment / p[P_YAW_INERTIA_KGM2]) * sub_dt
@@ -1587,13 +1685,37 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
     ol_front = p[P_DIST_CG_FRONT_M] + p[P_CAR_OUTLINE_OVERHANG_M]
     ol_rear = p[P_DIST_CG_REAR_M] + p[P_CAR_OUTLINE_OVERHANG_M]
     ol_half = 0.5 * max(p[P_FRONT_TRACK_M], p[P_REAR_TRACK_M]) + p[P_CAR_OUTLINE_SIDE_MARGIN_M]
+    body_contact = p[P_EXT_BODY_WALL_CONTACT] > 0.5
+    if p[P_BODY_FRONT_M] > 0.0 and p[P_BODY_REAR_M] > 0.0 and p[P_BODY_HALF_WIDTH_M] > 0.0:
+        bd_front = p[P_BODY_FRONT_M]
+        bd_rear = p[P_BODY_REAR_M]
+        bd_half = p[P_BODY_HALF_WIDTH_M]
+    else:
+        bd_front = ol_front
+        bd_rear = ol_rear
+        bd_half = ol_half
     if p[P_EXT_COLLISION_RESPONSE] > 0.5:
         base = math.atan2(vz, vx) if (vx * vx + vz * vz) > 0.01 else new_heading
         pox = 0.0
         poz = 0.0
         oy = py + p[P_PROXIMITY_PIN_HEIGHT_OFFSET_M]
         contact = p[P_COLLISION_CONTACT_DISTANCE_M]
-        if outline:
+        if body_contact:
+            # BodyWallContact: a ray from the centre to each point round the body's edge (the car's
+            # heading); a wall nearer than the point is inside the car, pushed out along that ray
+            n_w, n_l = _body_edge_counts(bd_front, bd_rear, bd_half)
+            for i in range(2 * (n_w + n_l)):
+                fwd, left = _body_point(i, n_w, n_l, bd_front, bd_rear, bd_half)
+                reach = math.sqrt(fwd * fwd + left * left)
+                ang = new_heading + math.atan2(left, fwd)
+                dist, surf = raycast(new_x, oy, new_z, math.cos(ang), 0.0, math.sin(ang), reach,
+                                     tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items, 2)
+                if dist < 0.0 or surf != SURF_WALL or dist >= reach:
+                    continue
+                pen = (reach + p[P_COLLISION_PUSHOUT_MARGIN_M]) - dist
+                pox += -math.cos(ang) * pen
+                poz += -math.sin(ang) * pen
+        elif outline:
             # CarOutlineContact: a ray from the centre to each outline point (the car's heading);
             # a wall nearer than the point is inside the car, pushed out along that ray
             for i in range(N_OUTLINE):
@@ -1607,7 +1729,7 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
                 pen = (reach + p[P_COLLISION_PUSHOUT_MARGIN_M]) - dist
                 pox += -math.cos(ang) * pen
                 poz += -math.sin(ang) * pen
-        for i in range(N_PINS if not outline else 0):
+        for i in range(N_PINS if not (outline or body_contact) else 0):
             ang = base + _pin_offset(i)
             dist, surf = raycast(new_x, oy, new_z, math.cos(ang), 0.0, math.sin(ang), contact,
                                  tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items, 2)

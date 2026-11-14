@@ -57,9 +57,11 @@ def mismatches(doc, features):
         count = frames * len(hist.get('slots') or [])
         if not can:
             out.append("the policy reads a short history of its inputs; this plugin build cannot feed one")
-        elif obs - count != can['base_obs_size'] or count > can['max_inputs'] or frames < 1:
+        elif (obs - count not in can.get('base_obs_sizes', [can['base_obs_size']]) or count > can['max_inputs']
+              or frames < 1):
+            bases = ' or '.join(map(str, can.get('base_obs_sizes', [can['base_obs_size']])))
             out.append(f"the policy's history block ({count} inputs after {obs - count}) is not one this plugin runs "
-                       f"(at most {can['max_inputs']} after {can['base_obs_size']})")
+                       f"(at most {can['max_inputs']} after {bases})")
         obs -= count
     if obs not in features.get('obs_sizes', []):
         out.append(f"the policy reads {obs} inputs; this plugin build gives {', '.join(map(str, features.get('obs_sizes', [])))}")
@@ -74,7 +76,7 @@ def mismatches(doc, features):
         can = features.get('residual')
         if not can:
             out.append("the policy has a chase add-on network; this plugin build cannot run one")
-        elif (res.get('gate_input') != can['gate_input'] or obs != can['obs_size']
+        elif (res.get('gate_input') != can['gate_input'] or obs not in can.get('obs_sizes', [can['obs_size']])
               or (frames > 0 and not can.get('with_history'))):
             out.append("the policy's chase add-on network is not one this plugin build runs")
     unknown = [k for k in (doc.get('plugin_settings') or {}) if k not in features.get('plugin_settings', [])]

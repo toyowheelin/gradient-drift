@@ -7,6 +7,28 @@ when releasing.
 
 ## Unreleased
 
+- `RecordPlayers`: the plugin can record every connected player's car (as their game reports it)
+  into a compressed file per server start, for learning how people drift on your own server.
+  Players appear only as a salted hash of their Steam ID. `tools/players_to_monitor.py` turns a file
+  into the AI Car Monitor's format drift_rl reads. Off by default; `LogHumanCarForCalibration`
+  is unchanged.
+
+- Style dials (trainer and plugin; no policy trained with them yet): four new policy inputs, each
+  -1 to 1, for how a bot drifts: `angle` (deeper or shallower), `swing` (deeper at the apex and
+  shallower between corners, or one angle throughout), `commit` (speed carried into corners) and
+  `smooth` (calm or busy steering). They come from what tells players apart in recordings of public
+  servers. `train_ppo_gpu.py --style-share` draws them per episode and moves what the reward asks for;
+  `style_report.py` checks a policy follows them. Plugin settings `BotStyleAngle`, `BotStyleSwing`,
+  `BotStyleCommit`, `BotStyleSmooth`, `BotStyleDialSpread` and per-bot `BotStyles` entries; a policy
+  without the dials ignores them. Older policies, history blocks included, still load, and
+  `--init-policy` / `--kickstart` widen or read them.
+
+- Drift line: the AI line moves sideways at most 0.2 m per metre (a short zone far from the racing
+  line gets part of the move instead of a kink: Spirit Peaks' zone 8 had made a 9 m corner the track
+  check refused), each point's corner radius is worked out again for the moved line, and generated
+  courses' lines (version -1) can be moved too. Setup works out a new pace reference when it puts a
+  new AI line in the server; before, the server kept the old line's.
+
 - Painted zone boxes are smooth curves. The course edge comes point by point, about 2 m apart, and
   its curvature jumped from point to point, so on Klutch Kickers the boxes looked pieced together
   from several bends. The plugin's paint and setup's zone editor now draw each box from its edge
@@ -110,6 +132,11 @@ when releasing.
 - Setup refuses a track whose model files are protected (every vertex moved, which the game's
   Content Manager / Custom Shaders Patch undo on load): its ground came out as a crumpled sheet with
   layers metres apart, and the bots climbed it into the air.
+- `FittedTireCorrection`, a policy-file setting (off by default): each axle's sideways force plus a correction fitted to Assetto Corsa recordings, so the bots' cars stop over-rotating at the end of a transition. A policy has to be trained with it before it changes anything.
+- Bots no longer put their nose or tail through guard rails. Walls now touch the car's body, sized
+  from its `collider.kn5` and checked every 0.5 m round its edge (`BodyWallContact`, on by default).
+  Before, six short pins around the direction of travel, with none straight ahead or behind, let a
+  bumper into a rail by up to a metre. Run setup again to write each car's body size into its car file.
 
 ## v0.3.1
 

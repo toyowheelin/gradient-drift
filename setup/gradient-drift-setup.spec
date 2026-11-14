@@ -17,7 +17,7 @@ GUI = os.environ.get('GRADIENTDRIFT_GUI', '1') != '0'
 # needs the source to stamp against (launcher.py points the cache at a folder the user can write).
 TRACK_TOOLS = ['ai_spline', 'track_files', 'setup_track', 'track_triangles', 'kn5_reader', 'centre_line', 'build_road_mesh',
                'build_course', 'build_zones', 'line_tools', 'generate_track', 'fast_sim', 'drift_env',
-               'sim_target', 'policy', 'sensor_view', 'pace_model', 'check_track', 'cars.acd_to_ini', 'cars.car_numbers']
+               'sim_target', 'policy', 'sensor_view', 'pace_model', 'check_track', 'cars.acd_to_ini', 'cars.car_numbers', 'cars.collider_box']
 COMPILED = ['fast_sim', 'drift_env', 'sim_target']
 
 a = Analysis(

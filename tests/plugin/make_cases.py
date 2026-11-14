@@ -37,6 +37,7 @@ OBS_PER_POLICY = 64
 OBS_V1 = 46
 OBS_CHASE_SLOT = 67
 OBS_FULL = OBS_CHASE_SLOT + 13 + 10 + 4
+OBS_STYLE = OBS_FULL + 4          # ... and the style dials (DriftPolicy.StyleSlot / StyleCount)
 
 
 def made_up(obs_size, hidden, actions, seed, **extra):
@@ -251,6 +252,11 @@ def main():
     hist = made_up(OBS_FULL + 3 * 4, (128, 128), 3, 6, chase={},
                    history={'slots': [9, 10, 11, 12], 'frames': 3, 'every': 2, 'reset_slot': 0})
     add('history', hist, seed=6, why='a history block (3 frames of 4 inputs)')
+    add('style', made_up(OBS_STYLE, (128, 128), 3, 7, chase={}, style_range=[-1.0, 1.0]), seed=7,
+        why='the style dials (98 inputs)')
+    add('style_history', made_up(OBS_STYLE + 3 * 4, (128, 128), 3, 8, chase={}, style_range=[-1.0, 1.0],
+                                 history={'slots': [9, 10, 11, 12], 'frames': 3, 'every': 2, 'reset_slot': 0}),
+        seed=8, why='the style dials with a history block after them')
 
     # --- what the plugin must refuse (it then leaves the cars to the stock AI) ---
     good = json.load(open(os.path.join(folder, 'shipped.json')))
@@ -273,6 +279,12 @@ def main():
     broken('no_steer_lock', 'reads the car inputs but has no cars.drift_steer_lock_deg', lambda d: d.pop('cars'))
     broken('bad_pace_range', 'a pace range upside down', lambda d: d.update(pace_fraction_range=[1.1, 0.8]))
     broken('bad_skill_range', 'a skill range past 1', lambda d: d.update(skill_range=[0.0, 1.5]))
+    style_doc = json.load(open(os.path.join(folder, 'style.json')))
+    for name, why, rng in (('bad_style_range', 'a style range not centred on 0', [0.0, 1.0]),
+                           ('wide_style_range', 'a style range past 2', [-3.0, 3.0])):
+        doc = copy.deepcopy(style_doc)
+        doc['style_range'] = rng
+        add_doc(name, doc, why)
     broken('unknown_setting', 'a plugin setting this build does not have',
            lambda d: d['plugin_settings'].update(EnableWeightTransfer=1.0))
     broken('setting_out_of_range', 'a known setting at a value the plugin cannot take',

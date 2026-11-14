@@ -115,6 +115,22 @@ public class GradientDriftConfiguration
     public float BotSkillSpread { get; set; } = 0f;
     public int BotStyleSeed { get; set; } = 0;
 
+    // THE STYLE DIALS, for a policy trained to follow them ("style_range" in the policy file; others
+    // ignore these): how the bots drift, each -1 .. 1, 0 = the policy's own style. Picked from what
+    // tells players apart on public servers.
+    //   BotStyleAngle   + a deeper drift angle, - a shallower one
+    //   BotStyleSwing   + the angle runs deeper at the apex and shallower between corners, - one
+    //                   angle throughout
+    //   BotStyleCommit  + carries more speed into corners, - settles the car early
+    //   BotStyleSmooth  + calmer, smoother steering, - busier hands
+    // BotStyleDialSpread, 0 - 1: each bot's dials are drawn up to this much either side of these
+    // (0 = every bot on the settings). Per bot: Angle, Swing, Commit, Smooth in BotStyles.
+    public float BotStyleAngle { get; set; } = 0f;
+    public float BotStyleSwing { get; set; } = 0f;
+    public float BotStyleCommit { get; set; } = 0f;
+    public float BotStyleSmooth { get; set; } = 0f;
+    public float BotStyleDialSpread { get; set; } = 0f;
+
     // AdaptToPlayers: while players drift with the bots, each bot's pace and chase gap move toward
     // theirs (PlayerAdaptation.cs): the players' speed along the line against the track's pace
     // reference, and the gap they keep when following a car. Drifting players on the line count,
@@ -134,7 +150,8 @@ public class GradientDriftConfiguration
 
     // Styles set by hand, over the draws. Each entry names a bot by its entry-list DRIVERNAME, or
     // without a Name applies to the AI entries in order. Any of Aggression (0 - 1, 0.5 = the
-    // settings), ChaseGapMeters and Skill; a value left out is drawn or the server's. E.g.
+    // settings), ChaseGapMeters, Skill and the style dials (Angle, Swing, Commit, Smooth); a value
+    // left out is drawn or the server's. E.g.
     //   BotStyles:
     //     - Name: Kenji
     //       Aggression: 0.9
@@ -242,6 +259,19 @@ public class GradientDriftConfiguration
     // position, steering, engine RPM, gear, throttle and the four wheel speeds (no name, IP or
     // Steam ID). How the two visuals' encodings were measured, and judge.py's human driver.
     public bool LogHumanCarForCalibration { get; set; } = false;
+
+    // RecordPlayers: every connected player's car, as their client reports it (position, heading,
+    // velocity, steering, throttle, gear, RPM), into gradientdrift_players_<date>_<time>.csv.gz in
+    // the server's working directory, a new file for every server start. For learning how people
+    // drift here (drift_rl's style catalogue; tools/players_to_monitor.py). Players show only as a
+    // salted hash of their Steam ID, the same on this server across sessions (the salt is made once
+    // into gradientdrift_players_salt.txt); no names, IPs or Steam IDs. About 2 MB per player-hour
+    // compressed. Independent of telemetry logging. Off by default.
+    public bool RecordPlayers { get; set; } = false;
+    // Rows per player per second at most (0 = every server tick).
+    public float RecordPlayersHz { get; set; } = 20f;
+    // The file stops growing at this size, uncompressed (0 = no limit).
+    public float RecordPlayersMaxMegabytes { get; set; } = 2000f;
 
     // ---- Steering visual (cosmetic) -------------------------------------------------------
 
@@ -429,6 +459,11 @@ public class GradientDriftConfiguration
     // same way, so a slippery stretch of road is slippery for the bots too. Set by the policy file.
     public bool SurfaceGrip { get; set; } = false;
 
+    // Each axle's sideways force plus a correction fitted to Assetto Corsa (FittedTireCorrection.cs):
+    // without it this model's car keeps rotating at the end of a transition where the game's stops.
+    // Made for the physics the shipped policy trains with. Set by the policy file.
+    public bool FittedTireCorrection { get; set; } = false;
+
     // Floor on the speed in the slip-angle formula, which is singular at zero speed.
     public float MinSlipAngleSpeedMs { get; set; } = 3.0f;
 
@@ -472,6 +507,14 @@ public class GradientDriftConfiguration
     public bool CarOutlineContact { get; set; } = false;
     public float CarOutlineOverhangMeters { get; set; } = 0.8f;
     public float CarOutlineSideMarginMeters { get; set; } = 0.1f;
+
+    // Walls touch the car's body: a rectangle turned with its heading, the size of the car's own
+    // body when its car file says (BODY_FRONT_M / BODY_REAR_M / BODY_HALF_WIDTH_M, which setup reads
+    // from the car's collider.kn5), else the outline above; checked at points round its edge no more
+    // than 0.5 m apart (CarBody). Off, walls touch the contact distance's six pins around the travel
+    // direction, which have no pin straight ahead or behind, so a nose or tail went into a guard rail
+    // by up to a metre. Not a policy input: a server setting, on whatever the policy was trained with.
+    public bool BodyWallContact { get; set; } = true;
 
     // ---- Ride height ----------------------------------------------------------------------------
 

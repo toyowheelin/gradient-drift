@@ -83,7 +83,12 @@ chases up to 10% slower, and keeps up to twice `ChaseTimeGapSeconds`.
 | `BotStyleSpread` | `0` | How far apart the bots' styles are drawn, 0 to 1. **0** means every bot drives with the settings above, as before. **1** means aggression anywhere from 0 to 1 and chase gaps from half `ChaseGapMeters` to twice it. |
 | `BotSkillSpread` | `0` | Each bot's skill is `BotSkill` minus a random amount up to this (0 to 1). **0** means every bot is at `BotSkill`. |
 | `BotStyleSeed` | `0` | Change it to draw a new set of styles. |
-| `BotStyles` | empty | Styles set by hand, which win over the draws. Each entry names a bot by its `DRIVERNAME` in `entry_list.ini`. An entry with no `Name` applies to the AI entries in order. Any of `Aggression` (0 to 1), `ChaseGapMeters` and `Skill` can be set; anything left out is drawn or taken from the settings. |
+| `BotStyleAngle` | `0` | Style dial, -1 to 1: **+** a deeper drift angle, **-** a shallower one. **0** is the policy's own style. Only for a policy trained with the style dials (`style_range` in the policy file); others ignore all the `BotStyle*` dials. |
+| `BotStyleSwing` | `0` | Style dial, -1 to 1: **+** the angle runs deeper at the apex and shallower between corners, the way most players drive; **-** one angle throughout. |
+| `BotStyleCommit` | `0` | Style dial, -1 to 1: **+** carries more speed into corners, **-** settles the car early. |
+| `BotStyleSmooth` | `0` | Style dial, -1 to 1: **+** calmer, smoother steering, **-** busier hands. |
+| `BotStyleDialSpread` | `0` | Each bot's style dials are drawn up to this much (0 to 1) either side of the settings above. **0** means every bot on the settings. |
+| `BotStyles` | empty | Styles set by hand, which win over the draws. Each entry names a bot by its `DRIVERNAME` in `entry_list.ini`. An entry with no `Name` applies to the AI entries in order. Any of `Aggression` (0 to 1), `ChaseGapMeters`, `Skill` and the style dials `Angle`, `Swing`, `Commit` and `Smooth` (-1 to 1) can be set; anything left out is drawn or taken from the settings. |
 
 ```yaml
 BotStyleSpread: 0.6
@@ -155,6 +160,9 @@ stopped for 30 seconds, and a line when it moves again. Nothing while the bots d
 | `ScorecardWriteMinutes` | `10` | The scorecard is rewritten this often while a session runs (so a crash loses at most this much), and once more when the session ends or the server stops. |
 | `LogLearnedPolicyObservations` | `true` | Adds the network's inputs to every telemetry row (about 330 bytes a row). The check tools need them. |
 | `LogHumanCarForCalibration` | `false` | Adds the first connected player's car to the telemetry: position, steering, RPM, gear, throttle, wheel speeds. No name, IP or Steam ID. Used to compare the bots with a human driver. |
+| `RecordPlayers` | `false` | Records every connected player's car, as their own game reports it (position, heading, velocity, steering, throttle, gear, RPM), into `gradientdrift_players_<date>_<time>.csv.gz` in the server folder, a new file for each server start. For learning how people drift on your server: `tools/players_to_monitor.py` turns a file into the AI Car Monitor's format that drift_rl reads. Players appear only as a salted hash of their Steam ID, the same on this server across sessions (the salt is made once into `gradientdrift_players_salt.txt`; keep it private). No names, IPs or Steam IDs. About 2 MB per player-hour. Separate from the telemetry settings. |
+| `RecordPlayersHz` | `20` | Rows per player per second at most. **0** means every server tick. |
+| `RecordPlayersMaxMegabytes` | `2000` | The players file stops growing at this size, uncompressed. **0** means no limit. |
 | `VerboseLogging` | `false` | The plugin's routine lines as well: what it loaded, each setting the policy file brings, each bot car's numbers, spawns and placements, and the timing line every 60 s. Off, the log has warnings only. |
 | `ShowEntryListNames` | `true` | Show each bot in game under its entry list `DRIVERNAME` instead of AssettoServer's `<NamePrefix> <slot>` (`Traffic 16`). A bot with no `DRIVERNAME` keeps AssettoServer's name. |
 | `BotNation` | `""` | Country code shown with the bots' names (e.g. `ITA`); empty = none. |
@@ -182,7 +190,7 @@ Many are replaced at start, without anything in the YAML:
 - **By the policy file** (`plugin_settings` in `policy.json`): the steering lock and steering speed,
   the brakes (`FrontBrakeOnly`, `DisableBrakes`), the rear thrust, brake and friction-circle models
   and `RearSpinGripShare`, tyre load sensitivity and its numbers, the tyre curve (`RoundTireCurve`),
-  `SurfaceGrip`, the height of the wall sensors, and the wrong-way recovery thresholds. The plugin
+  `SurfaceGrip`, `FittedTireCorrection`, the height of the wall sensors, and the wrong-way recovery thresholds. The plugin
   switches on only the features a policy was trained with, so an older policy keeps driving the car
   it knew.
 
@@ -223,6 +231,7 @@ Many are replaced at start, without anything in the YAML:
 | `DisableBrakes` | `false` | Policy file. With `EnableRearFrictionCircle`: no pedal braking and no brake action, so the car slows only by lifting and with its angle (gen18 on) |
 | `FrontBrakeOnly` | `false` | Policy file. With `EnableRearFrictionCircle`: no pedal braking, but the brake action (the front axle, with the throttle) still works, so the car can scrub speed and keep its angle |
 | `SurfaceGrip` | `false` | Policy file. Each axle's peak friction times the grip of the ground under it: its surface's `FRICTION` in the track's `surfaces.ini` over the main road's, from `<track>_collision_grip.csv.gz` (setup writes it beside the other track files; without it every surface grips 1, with a warning) |
+| `FittedTireCorrection` | `false` | Policy file. Each axle's sideways force plus a correction fitted to Assetto Corsa's E36 (`FittedTireCorrection.cs`, the same numbers as `fast_sim._fitted_axle_correction`), as a share of the axle's static load, from the slip angles, yaw rate, body slip, speed and throttle. Without it the model keeps rotating at the end of a transition where the game stops. Made for the physics the shipped policy trains with (`RoundTireCurve`, `RearSpinGripShare` 0.95, tyre load sensitivity) |
 | `RearSpinGripShare` | `1` (off) | Policy file. With `EnableRearFrictionCircle`: the rear friction circle while the throttle spins the tires, as a share of their peak; it shrinks toward this with the share of full-throttle thrust used |
 | `MaxLongitudinalDecelMs2` | `5.6` | Hardest braking, m/s² |
 | `MinSlipAngleSpeedMs` | `3.0` | Speed floor in the slip-angle formula |
@@ -261,6 +270,7 @@ The policy reads these sensors' outputs directly, so their geometry has to match
 | `CarOutlineContact` | `false` | Policy file. Walls touch the car's own outline (a rectangle turned with its heading: each axle's distance from the centre plus `CarOutlineOverhangMeters`, half the wider track plus `CarOutlineSideMarginMeters`) instead of the contact distance's circle, so a sliding car's tail can't pass through a wall |
 | `CarOutlineOverhangMeters` | `0.8` | |
 | `CarOutlineSideMarginMeters` | `0.1` | |
+| `BodyWallContact` | `true` | Walls touch the car's body: a rectangle turned with its heading, checked at points no more than 0.5 m apart round its edge. Its size is the car file's body (`BODY_FRONT_M`, `BODY_REAR_M`, `BODY_HALF_WIDTH_M`, which setup reads from the car's `collider.kn5`); a car file without one uses `CarOutlineOverhangMeters` and `CarOutlineSideMarginMeters`. Off, walls touch the contact distance's six pins, which have none straight ahead or behind, so a nose or tail could go into a guard rail. A server setting, not a policy input: it applies whatever the policy was trained with |
 | `RoundTireCurve` | `false` | Policy file. Each axle's sideways force follows the brush (Fiala) curve: three times as steep as the straight line at small slip angles, rounding over into full sliding at the tyres' `FRICTION_LIMIT_ANGLE` plus `FLEX` x the static load on one tire (car file `FRONT_TIRE_FLEX` / `REAR_TIRE_FLEX`, else `FrontTireFlex` / `RearTireFlex`). Matches Assetto Corsa's front tyre, which gives 75 - 90% of its peak by 4 - 8 deg |
 | `FrontTireFlex`, `RearTireFlex` | `0.000852` | tyres.ini `FLEX`, degrees of slip angle per N, for cars without a car file |
 | `GroundRayHeightOffsetM` | `0.40` | Ride height above the ground found below the car. The bot drives and senses at this height; clients are sent each car at its own CG height (`CG_HEIGHT_M` in its car file) instead |

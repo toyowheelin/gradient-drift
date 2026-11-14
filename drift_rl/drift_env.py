@@ -78,6 +78,7 @@ OBS_NAMES = (
        'lead_slip_here/(pi/2)', 'chase_gap']
     + ['lead_plan'] + [f'lead_{n}_{h:g}s' for h in (0.5, 1.0, 2.0) for n in ('gap/20', 'line/5', 'slip/(pi/2)')]
     + ['lead_steer/(pi/4)', 'lead_pedal', 'lead_brake', 'lead_accel/5']
+    + ['style_angle', 'style_swing', 'style_commit', 'style_smooth']
 )
 def mirror_obs_map():
     """(perm, sign) with obs_mirrored = obs[perm] * sign: the same moment seen left-right mirrored (the
@@ -111,6 +112,7 @@ OBS_SIZE_V4 = 55                 # ... and from before the car inputs, the first
 OBS_SIZE_V5 = 67                 # ... and from before the chase inputs, the first 67
 OBS_SIZE_V6 = 80                 # ... and from before the lead's path ahead, the first 80
 OBS_SIZE_V7 = 90                 # ... and from before the lead's controls, the first 90
+OBS_SIZE_V8 = 94                 # ... and from before the style dials, the first 94
 OBS_SIZE = len(OBS_NAMES)
 # The car (car_inputs()): what tells one car from another, each scaled to sit near 0 for a typical
 # drift car, from the same numbers the vehicle model drives with - so the plugin works them out
@@ -144,6 +146,25 @@ N_PLAN_OBS = 1 + 3 * len(CHASE_PATH_AHEAD_S)
 # That Line"): a lead's lift or steer is the first sign it will slow or change direction.
 LEAD_CTRL_OBS_SLOT = PLAN_OBS_SLOT + N_PLAN_OBS
 N_LEAD_CTRL_OBS = 4
+# THE STYLE DIALS (fast_sim S_STYLE0.., -1 .. 1 each, 0 = the policy's own style): how this bot
+# drives, drawn per episode in training (EnvConfig.style_share) and set per bot by the plugin
+# (BotStyles). Picked from the players' style catalogue (2026-11-12): the habits that are stable per
+# driver and where the shipped bots sit outside every recorded player. Each moves what the reward
+# asks for, not the car:
+#  * angle: the drift angle that counts as full drift is scaled by 1 + STYLE_ANGLE_SHARE x dial
+#    (the 25 - 45 deg band becomes 30 - 54 deg at +1, 21 - 38 deg at -1);
+#  * swing: the same scale, but by how tight the line is here (STYLE_SWING_SHARE x dial x c, c = +1
+#    at a 20 m radius or tighter, 0 at 40 m, -1 on a straight): + = deeper at the apex and shallower
+#    between corners, the way players let the angle swing through a corner; - = one angle throughout;
+#  * commit: the asked speed is raised by STYLE_COMMIT_SHARE x dial where the line tightens ahead
+#    (entering a corner): + = carries more speed in, - = settles the car early;
+#  * smooth: busy steering and steering reversals cost 2^(STYLE_SMOOTH_EXP x dial) times as much.
+STYLE_OBS_SLOT = LEAD_CTRL_OBS_SLOT + N_LEAD_CTRL_OBS
+N_STYLE_OBS = 4
+STYLE_ANGLE_SHARE = 0.2
+STYLE_SWING_SHARE = 0.15
+STYLE_COMMIT_SHARE = 0.08
+STYLE_SMOOTH_EXP = 1.5
 LEAD_ACCEL_TICKS = 5            # samples the lead's acceleration is measured over
 IDM_LEAD_ACCEL_GAIN = 1.0       # the lead's acceleration added to the IDM's (CACC feedforward)
 CHASE_GAP_M = (0.5, 6.0)         # the asked gap, bumper to bumper, at chase_gap 0 and 1
@@ -262,7 +283,8 @@ NEW_INPUT_NORM = {'pace_fraction': (0.88, 0.1), 'pace/50': (1.0, 0.12), 'prev_ac
                   **{name: (0.0, 0.5) for name in OBS_NAMES[CHASE_OBS_SLOT:CHASE_OBS_SLOT + N_CHASE_OBS - 1]},
                   'chase_gap': (0.5, 0.3),
                   **{name: (0.0, 0.5) for name in OBS_NAMES[PLAN_OBS_SLOT:PLAN_OBS_SLOT + N_PLAN_OBS]},
-                  **{name: (0.0, 0.5) for name in OBS_NAMES[LEAD_CTRL_OBS_SLOT:LEAD_CTRL_OBS_SLOT + N_LEAD_CTRL_OBS]}}
+                  **{name: (0.0, 0.5) for name in OBS_NAMES[LEAD_CTRL_OBS_SLOT:LEAD_CTRL_OBS_SLOT + N_LEAD_CTRL_OBS]},
+                  **{name: (0.0, 0.5) for name in OBS_NAMES[STYLE_OBS_SLOT:STYLE_OBS_SLOT + N_STYLE_OBS]}}
 # steer, speed (pedal), and brake WITH the throttle (fast_sim.step_post): the third is used as
 # max(0, output), so an output at or below zero is no brake at all
 ACT_SIZE = 3
@@ -633,6 +655,12 @@ class EnvConfig:
     # Salimans and Chen 2018, https://arxiv.org/abs/1812.03381). A track without ghosts falls back
     # to the made-up starts above.
     drift_start_ghost_share: float = 0.0
+    # the style dials (STYLE_*): the share of episodes that draw them, each evenly from
+    # -style_range .. style_range; the rest drive with style_fixed (angle, swing, commit, smooth;
+    # 0 = the policy's own style). style_share 0 and style_fixed 0 = as before.
+    style_share: float = 0.0
+    style_range: float = 1.0
+    style_fixed: tuple = (0.0, 0.0, 0.0, 0.0)
     # per-car MaxSpeed (CeilingKmh): real runs show 74.8 - 85.7 km/h
     max_speed_kmh_low: float = 72.0
     max_speed_kmh_high: float = 88.0
@@ -746,6 +774,27 @@ def course_overrun_m(cte, nearest, margin, co, n_points):
 
 
 @njit(cache=True)
+def _style_angle_scale(s, sp_radius, nearest):
+    """How much the angle that counts as full drift is scaled by the angle and swing dials (STYLE_*)."""
+    a = s[fs.S_STYLE0]
+    w = s[fs.S_STYLE0 + 1]
+    if a == 0.0 and w == 0.0:
+        return 1.0
+    c = 0.0
+    if 0 <= nearest < sp_radius.shape[0]:
+        c = max(-1.0, min(1.0, 40.0 / max(sp_radius[nearest], 1.0) - 1.0))
+    return max(0.5, 1.0 + STYLE_ANGLE_SHARE * a + STYLE_SWING_SHARE * w * c)
+
+
+@njit(cache=True)
+def _corner_entry(sp_radius, la_min_radius, point):
+    """0 - 1: how much the line tightens over the next MIN_RADIUS_WINDOW_M (a corner coming up)."""
+    if point < 0 or point >= sp_radius.shape[0] or la_min_radius.shape[0] != sp_radius.shape[0]:
+        return 0.0
+    return max(0.0, min(1.0, 20.0 / max(la_min_radius[point], 1.0) - 20.0 / max(sp_radius[point], 1.0)))
+
+
+@njit(cache=True)
 def _drift_quality(abs_slip_deg, rw):
     if abs_slip_deg <= rw[R_SLIP0]:
         return 0.0
@@ -817,6 +866,9 @@ def build_obs(s, mid, prev_act, p, obs, sp_dir, la_idx, la_min_radius, co, pace_
     obs[k + 3 + N_CAR_OBS] = p[fs.P_SKILL]
     for j in range(N_CHASE_OBS + N_PLAN_OBS):
         obs[CHASE_OBS_SLOT + j] = 0.0
+    if obs.shape[0] >= STYLE_OBS_SLOT + N_STYLE_OBS:
+        for j in range(N_STYLE_OBS):
+            obs[STYLE_OBS_SLOT + j] = s[fs.S_STYLE0 + j]
 
 
 @njit(cache=True)
@@ -870,6 +922,33 @@ def _sample_dt(u1, u2, cfg, prev_dt):
 
 
 @njit(cache=True)
+def _style_uniform(r, k):
+    """Another uniform from one already used: its digits far past the ones that placed the car."""
+    x = r * (7919.0 + 104.729 * k)
+    return x - math.floor(x)
+
+
+@njit(cache=True)
+def _draw_style(s, r0, r1, r2, r3, r4, r5, cfg):
+    """The style dials for a new episode (STYLE_*): with probability EnvConfig.style_share each dial
+    is drawn evenly from -style_range .. style_range, else they are EnvConfig.style_fixed (0 = the
+    policy's own style). The uniforms come from the reset's own (_style_uniform), so the random
+    number layout every kernel shares stays as it was."""
+    if cfg.shape[0] < ENV_CFG_STYLE + 2 + N_STYLE_OBS:
+        return
+    share = cfg[ENV_CFG_STYLE]
+    if share > 0.0 and _style_uniform(r0, 0) < share:
+        span = cfg[ENV_CFG_STYLE + 1]
+        s[fs.S_STYLE0] = (2.0 * _style_uniform(r1, 1) - 1.0) * span
+        s[fs.S_STYLE0 + 1] = (2.0 * _style_uniform(r2, 2) - 1.0) * span
+        s[fs.S_STYLE0 + 2] = (2.0 * _style_uniform(r3, 3) - 1.0) * span
+        s[fs.S_STYLE0 + 3] = (2.0 * _style_uniform(r5, 4) - 1.0) * span
+    else:
+        for j in range(N_STYLE_OBS):
+            s[fs.S_STYLE0 + j] = cfg[ENV_CFG_STYLE + 2 + j]
+
+
+@njit(cache=True)
 def _reset_one(i, states, counters, prev_act, ep, r0, r1, r2, r3, r4, r5, r6, cfg, sp_pos, sp_dir):
     """r0..r6: 7 uniforms. cfg: the env_cfg vector (see env_cfg_vector)."""
     n = sp_pos.shape[0]
@@ -889,6 +968,7 @@ def _reset_one(i, states, counters, prev_act, ep, r0, r1, r2, r3, r4, r5, r6, cf
     s[S_MAX_SPEED] = (cfg[2] + r3 * (cfg[3] - cfg[2])) / 3.6
     s[fs.S_REAR_SLIDE_GRIP] = cfg[11] + r5 * (cfg[12] - cfg[11])
     s[fs.S_PACE] = cfg[13] + r6 * (cfg[14] - cfg[13])
+    _draw_style(s, r0, r1, r2, r3, r4, r5, cfg)
     s[S_PREV_NEAREST] = -1
     s[S_ARC] = np.nan
     s[fs.S_SMOOTH_H] = np.nan
@@ -1533,7 +1613,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     # ---- reward ----
     progress = max(-2.0, min(5.0, d[D_ProgressM]))
     abs_slip = abs(d[D_RealSlipAngleRad]) * (180.0 / math.pi)
-    q = _drift_quality(abs_slip / (1.0 - SKILL_ANGLE * lack), rw)
+    q = _drift_quality(abs_slip / ((1.0 - SKILL_ANGLE * lack) * _style_angle_scale(s, sp_radius, int(d[fs.D_NearestPointId]))), rw)
     pace = s[fs.S_PACE]
     ref_point = max(0, min(pace_ref.shape[0] - 1, int(d[fs.D_NearestPointId])))
     ref_kmh = pace_ref[ref_point] if pace_ref.shape[0] == sp_pos.shape[0] else 0.0
@@ -1562,6 +1642,9 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         pace = max(env_cfg[13] * env_cfg[20], min(top, (v + a_idm * env_cfg[18]) / ref_ms))
         s[fs.S_PACE] = pace
     asked_kmh = pace * min(ref_kmh, s[fs.S_MAX_SPEED] * 3.6)
+    if s[fs.S_STYLE0 + 2] != 0.0 and asked_kmh > 0.0:
+        asked_kmh = min(asked_kmh * (1.0 + STYLE_COMMIT_SHARE * s[fs.S_STYLE0 + 2]
+                                     * _corner_entry(sp_radius, la_min_radius, ref_point)), s[fs.S_MAX_SPEED] * 3.6)
     if rw[R_PATH_PROGRESS] > 0.0 and co.shape[0] == sp_pos.shape[0]:
         path = max(0.7, min(1.4, 1.0 - co[ref_point, 10] * d[D_CrossTrackErrorM]))
         progress *= path
@@ -1759,13 +1842,14 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     da0 = a0 - prev_act[i, 0]
     da1 = a1 - prev_act[i, 1]
     turned_back = 0.0
+    smooth = 2.0 ** (STYLE_SMOOTH_EXP * s[fs.S_STYLE0 + 3])
     if da0 * counters[i, 7] < 0.0:
         turned_back = min(abs(da0), abs(counters[i, 7]))
-        r -= rw[R_STEER_REVERSAL] * (1.0 - SKILL_STEER * lack) * turned_back
+        r -= rw[R_STEER_REVERSAL] * (1.0 - SKILL_STEER * lack) * smooth * turned_back
     if da0 != 0.0:
         counters[i, 7] = da0
     da2 = a2 - prev_act[i, 2]
-    r -= rw[R_ACT_RATE] * (1.0 - SKILL_STEER * lack) * (da0 * da0 + da1 * da1 + da2 * da2)
+    r -= rw[R_ACT_RATE] * (1.0 - SKILL_STEER * lack) * smooth * (da0 * da0 + da1 * da1 + da2 * da2)
     prev_act[i, 0] = a0
     prev_act[i, 1] = a1
     prev_act[i, 2] = a2
@@ -2181,6 +2265,7 @@ RND_COLS = 13      # uniforms per car per step: [0,1] next tick length, [2..5,8,
 ENV_CFG_SLIDING_GRIP_LOW = 11      # indices into env_cfg_vector()
 ENV_CFG_PACE_LOW = 13
 ENV_CFG_DRIFT_START = 22
+ENV_CFG_STYLE = 27                 # style_share, style_range, then the 4 style_fixed dials
 
 
 def env_cfg_vector(cfg):
@@ -2193,7 +2278,8 @@ def env_cfg_vector(cfg):
                      cfg.chase_time_gap_blind_s, cfg.chase_response_s, cfg.chase_pace_max, cfg.chase_pace_min,
                      1.0 if cfg.chase_touch_push else 0.0, cfg.drift_start_fraction,
                      cfg.drift_start_transition_share, cfg.drift_start_slip_low_deg, cfg.drift_start_slip_high_deg,
-                     cfg.drift_start_ghost_share])
+                     cfg.drift_start_ghost_share, cfg.style_share, cfg.style_range]
+                    + [float(v) for v in (tuple(cfg.style_fixed) + (0.0,) * N_STYLE_OBS)[:N_STYLE_OBS]])
 
 
 def ghost_arrays(world):
@@ -2662,6 +2748,7 @@ PLUGIN_SETTING_PARAMS = {
     'RoundTireCurve': ('EXT_ROUND_TIRE_CURVE', float),              # 1 = brush-curve tyres (fast_sim._tire_curve)
     'RearSpinGripShare': ('REAR_SPIN_GRIP_SHARE', float),          # rear circle while spinning, share of peak; 1 = off
     'SurfaceGrip': ('EXT_SURFACE_GRIP', float),                     # 1 = tyre grip x the surface's (surfaces.ini FRICTION)
+    'FittedTireCorrection': ('EXT_FITTED_TIRE_CORRECTION', float),  # 1 = each axle's force + the correction fitted to the game
 }
 DEFAULT_MAX_STEER_DEG = 28.125      # the plugin's MaxSteerAngleRadians default
 
@@ -2850,7 +2937,8 @@ def require_direct(policy_meta):
                          "plugin and the simulator no longer have; only direct-control policies run")
 
 
-def server_run_configs(policy_meta=None, ticks=3300, ceiling_kmh=None, sliding_grip=None, pace=None, skill=None):
+def server_run_configs(policy_meta=None, ticks=3300, ceiling_kmh=None, sliding_grip=None, pace=None, skill=None,
+                       style=None):
     """(EnvConfig, RewardConfig) for simulating what the SERVER does with a car: one long run of
     `ticks` ticks (3300 is about 3 minutes) in which nothing ever resets the car - on the server a
     car that leaves the track has to drive back, and the time it spends doing that is what the
@@ -2861,8 +2949,10 @@ def server_run_configs(policy_meta=None, ticks=3300, ceiling_kmh=None, sliding_g
     training range. sliding_grip fixes RearSlidingGrip; None keeps the range the policy was
     trained over; pace fixes the pace (a fraction; a policy with paces), None keeps its range.
     A pace needs the world's pace_ref (course_pace_reference()). skill fixes the skill input (the
-    plugin's BotSkill; a policy trained with one); None drives at full skill."""
+    plugin's BotSkill; a policy trained with one); None drives at full skill. style fixes the four
+    style dials (angle, swing, commit, smooth; STYLE_*); None = all 0."""
     cfg = env_config_for(policy_meta, episode_ticks=int(ticks))
+    cfg = replace(cfg, style_share=0.0, style_fixed=tuple(float(v) for v in (style or (0.0,) * N_STYLE_OBS)))
     if skill is not None:
         cfg = replace(cfg, skill_low=float(skill), skill_high=float(skill))
     if pace is not None:

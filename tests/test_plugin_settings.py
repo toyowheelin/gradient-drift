@@ -38,3 +38,16 @@ def test_shipped_policy_settings_apply():
     with open(SHIPPED_POLICY) as f:
         settings = set((json.load(f).get('plugin_settings') or {}))
     assert settings <= plugin_accepts(), f'the shipped policy carries settings the plugin refuses: {sorted(settings - plugin_accepts())}'
+
+
+def test_fitted_tire_correction_numbers_match():
+    """The plugin's FittedTireCorrection.cs holds the same numbers as fast_sim's correction."""
+    import fast_sim as fs
+    with open(os.path.join(ROOT, 'GradientDriftPlugin', 'FittedTireCorrection.cs'), encoding='utf-8-sig') as f:
+        source = f.read()
+    for name, python in (('Front', fs.FITTED_TIRE_CORRECTION_FRONT), ('Rear', fs.FITTED_TIRE_CORRECTION_REAR)):
+        body = source[source.index(f'private static readonly float[] {name} ='):]
+        body = body[body.index('{') + 1:body.index('}')]
+        plugin = [float(x) for x in re.findall(r'(-?\d+(?:\.\d+)?(?:e-?\d+)?)f', body)]
+        assert plugin == list(python), f'FittedTireCorrection.cs {name} differs from fast_sim.FITTED_TIRE_CORRECTION_{name.upper()}'
+    assert 'Limit = 0.6f' in source and fs.FITTED_TIRE_CORRECTION_LIMIT == 0.6
