@@ -1537,26 +1537,30 @@ def main():
                     pi_loss = -torch.min(ratio * a_mb, torch.clamp(ratio, 1 - args.clip, 1 + args.clip) * a_mb).mean()
                     entropy = (log_std + 0.5 * (LOG_2PI + 1.0)).sum()
                     v_loss = 0.5 * ((value(b_obs[idx], b_priv[idx]) - b_ret[idx]) ** 2).mean()
-                    if update <= warmup_updates:
+                    # value warm-up: nothing moves the driving network (the kickstart, CAPS and mirror
+                    # terms too: keep1 let them train it at the starting learning rate with no KL brake,
+                    # and the policy lost its drift at the end of the warm-up, 2026-11-16)
+                    warm = update <= warmup_updates
+                    if warm:
                         loss = args.vf_coef * v_loss
                     else:
                         loss = pi_loss - args.ent_coef * entropy + args.vf_coef * v_loss
-                    if kick_w > 0.0:
+                    if kick_w > 0.0 and not warm:
                         m = b_teach_m[idx]
                         kick = (((mu - b_teach[idx]) ** 2).sum(dim=1) * m).sum() / m.sum().clamp(min=1.0)
                         loss = loss + kick_w * kick
                         kick_errs.append(float(kick.detach()))
-                    if args.caps_temporal > 0.0:
+                    if args.caps_temporal > 0.0 and not warm:
                         mu_next = actor(b_next[idx], b_lead[idx])
                         caps_t = (((mu - mu_next) ** 2).sum(dim=1) * b_cont[idx]).mean()
                         loss = loss + args.caps_temporal * caps_t
                         caps_t_log.append(float(caps_t.detach()))
-                    if args.caps_spatial > 0.0:
+                    if args.caps_spatial > 0.0 and not warm:
                         mu_near = actor(b_obs[idx] + args.caps_sigma * torch.randn_like(b_obs[idx]), b_lead[idx])
                         caps_s = ((mu - mu_near) ** 2).sum(dim=1).mean()
                         loss = loss + args.caps_spatial * caps_s
                         caps_s_log.append(float(caps_s.detach()))
-                    if args.mirror > 0.0:
+                    if args.mirror > 0.0 and not warm:
                         # mirror the raw inputs, scale them again, and ask for the mirrored action
                         sd = (obs_var.sqrt() + 1e-8).to(f32)
                         raw = b_obs[idx] * sd + obs_mean.to(f32)
