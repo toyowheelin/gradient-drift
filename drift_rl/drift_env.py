@@ -162,13 +162,17 @@ N_LEAD_CTRL_OBS = 4
 #    under 20% still pays them in full, so there was no slope to follow.)
 #  * commit: the asked speed is raised by STYLE_COMMIT_SHARE x dial where the line tightens ahead
 #    (entering a corner): + = carries more speed in, - = settles the car early;
-#  * smooth: a tilt on how far the steering action strays from its own STYLE_SMOOTH_AVG_S average
-#    (the style report's jitter): STYLE_SMOOTH_PAY x dial x (that - STYLE_SMOOTH_REF) per second,
-#    the difference capped at -STYLE_SMOOTH_REF and +STYLE_SMOOTH_BUSY_CAP, so + pays for steering
-#    calmer than combo_all2 does (0.15 of lock on Drift Playground and Klutch, 2026-11-14; every
-#    recorded player steers calmer) and - stops caring without paying for sawing at the wheel.
-#    (styles1/2 multiplied the action-rate and reversal costs by 2^(1.5 x dial) instead, and nothing
-#    changed: those costs are too small next to the drift pay for 8x of them to matter.)
+#  * smooth: a tilt on how much the front wheels zigzag: the change of the wheels' angle (fraction
+#    of lock) from one tick to the next, minus the change the tick before (a second difference: 0
+#    for a steady turn of the wheel, however fast, so transitions and countersteer cost nothing).
+#    STYLE_SMOOTH_PAY x dial x (that - STYLE_SMOOTH_REF) per second, the difference capped at
+#    -STYLE_SMOOTH_REF and +STYLE_SMOOTH_BUSY_CAP, so + pays for steering calmer than combo_all2
+#    (0.146 of lock per tick on Drift Playground and Klutch, 2026-11-16; every recorded player
+#    steers calmer) and - stops caring without paying for sawing at the wheel. Across cars it
+#    follows the style report's jitter (correlation 0.6 - 0.7).
+#    (styles1/2 multiplied the action-rate and reversal costs by 2^(1.5 x dial): too small to
+#    matter. styles3 tilted the action's distance from its own 0.5 s average, which is mostly the
+#    deliberate swing of the wheel through transitions, not jitter: correlation 0.1 - 0.2.)
 STYLE_OBS_SLOT = LEAD_CTRL_OBS_SLOT + N_LEAD_CTRL_OBS
 N_STYLE_OBS = 4
 STYLE_ANGLE_SHARE = 0.4
@@ -176,9 +180,8 @@ STYLE_SWING_PAY = 1.0
 STYLE_SWING_MID = 35.0
 STYLE_SWING_SPAN = 15.0
 STYLE_COMMIT_SHARE = 0.16
-STYLE_SMOOTH_PAY = 6.0
-STYLE_SMOOTH_AVG_S = 0.5
-STYLE_SMOOTH_REF = 0.15
+STYLE_SMOOTH_PAY = 5.5
+STYLE_SMOOTH_REF = 0.146
 STYLE_SMOOTH_BUSY_CAP = 0.05
 LEAD_ACCEL_TICKS = 5            # samples the lead's acceleration is measured over
 IDM_LEAD_ACCEL_GAIN = 1.0       # the lead's acceleration added to the IDM's (CACC feedforward)
@@ -359,7 +362,7 @@ SLIDE_MIN_DEG, HIGH_ANGLE_MIN_DEG, SLIDE_MAX_DEG = 20.0, 40.0, 80.0
 # speed its pace asked for (pace x the course's reference speed where the car was), averaged the
 # same way (m/s), seconds since its last transition, and which way the course was turning there
 # (fast_sim co[:, 9]; 2 = no transition yet)]
-N_COUNTERS = 45       # ... [12, 13] the steering and pedal noise of a lower skill (SKILL_*), [14 - 19] its last two asked actions,
+N_COUNTERS = 46       # ... [12, 13] the steering and pedal noise of a lower skill (SKILL_*), [14 - 19] its last two asked actions,
 # [20 - 22] the way the car last rotated at swing_rate_degs or more (+1 / -1, 0 = not yet), seconds since, and which
 # way the course was turning there, [23 - 28] the chase: the lead's ghost (1 + its index; 0 = no lead), the ghost's
 # clock, its sample at that time, the asked gap (chase_gap), how late the lead is seen, the gap last seen,
@@ -382,8 +385,8 @@ C_TOUCH_T = 36
 # (LEAD_RETURN_HZ) as a driver who was bumped gathers the car up again. [43] the yaw rate the touch
 # under way has kicked into the lead so far, deg/s (chase_lead_upset_*)
 C_LEAD_OX, C_LEAD_OZ, C_LEAD_OH, C_LEAD_VX, C_LEAD_VZ, C_LEAD_W, C_LEAD_KICK = range(37, 44)
-# [44] the steering action averaged over STYLE_SMOOTH_AVG_S (the smooth dial)
-C_STEER_AVG = 44
+# [44, 45] the front wheels' angle last tick (fraction of lock) and its change the tick before (the smooth dial)
+C_WHEEL_LAST, C_WHEEL_DELTA = 44, 45
 # a steering reversal for the statistics: the steering action turning back by more than this
 # (fraction of full lock) in one tick
 STEER_REVERSAL_MIN = 0.05
@@ -1872,14 +1875,14 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         counters[i, 7] = da0
     da2 = a2 - prev_act[i, 2]
     r -= rw[R_ACT_RATE] * (1.0 - SKILL_STEER * lack) * (da0 * da0 + da1 * da1 + da2 * da2)
-    if counters[i, 0] == 0.0:
-        counters[i, C_STEER_AVG] = a0
-    else:
-        counters[i, C_STEER_AVG] += (a0 - counters[i, C_STEER_AVG]) * min(1.0, dt / STYLE_SMOOTH_AVG_S)
+    wheel = s[fs.S_LAST_STEER] / max(p[fs.P_MAX_STEER_RAD], 1e-3)
+    wheel_delta = wheel - counters[i, C_WHEEL_LAST]
     smooth_dial = s[fs.S_STYLE0 + 3]
-    if smooth_dial != 0.0:
-        stray = abs(a0 - counters[i, C_STEER_AVG]) - STYLE_SMOOTH_REF
-        r -= STYLE_SMOOTH_PAY * smooth_dial * max(-STYLE_SMOOTH_REF, min(STYLE_SMOOTH_BUSY_CAP, stray)) * dt
+    if smooth_dial != 0.0 and counters[i, 0] >= 2.0:
+        zigzag = abs(wheel_delta - counters[i, C_WHEEL_DELTA]) - STYLE_SMOOTH_REF
+        r -= STYLE_SMOOTH_PAY * smooth_dial * max(-STYLE_SMOOTH_REF, min(STYLE_SMOOTH_BUSY_CAP, zigzag)) * dt
+    counters[i, C_WHEEL_DELTA] = wheel_delta if counters[i, 0] >= 1.0 else 0.0
+    counters[i, C_WHEEL_LAST] = wheel
     prev_act[i, 0] = a0
     prev_act[i, 1] = a1
     prev_act[i, 2] = a2
