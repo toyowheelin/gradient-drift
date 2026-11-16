@@ -258,8 +258,23 @@ def main():
     ap.add_argument('--name', default=None)
     ap.add_argument('--resume', default=None, help='checkpoint.pt from an earlier train_ppo_gpu.py run')
     ap.add_argument('--init-policy', default=None, help='policy.json to start the driving network from')
-    ap.add_argument('--value-warmup-updates', type=int, default=60,
-                    help='with --init-policy: updates that train only the value network first')
+    ap.add_argument('--value-warmup-updates', type=int, default=None,
+                    help='updates that train only the value network first (default 60 with --init-policy, 0 with '
+                         '--resume). Give it with --resume when the fine-tune changes the reward or the inputs, so '
+                         'the carried-over critic learns the new returns before it steers the policy (PIRLNav, '
+                         'Ramrakhya et al. 2023, https://arxiv.org/abs/2301.07302)')
+    ap.add_argument('--rehearse-tracks', default=None, metavar='DIR',
+                    help='fine-tuning: also drive every --track as it is in this folder (the data the starting '
+                         'policy learned on, e.g. the old AI lines), in --rehearse-groups extra groups of cars per '
+                         'track, so the old task keeps being practised (rehearsal; CLEAR, Rolnick et al. 2019, '
+                         'https://arxiv.org/abs/1811.11682). Raise --envs by those groups x --group')
+    ap.add_argument('--rehearse-groups', type=int, default=1, help='with --rehearse-tracks: groups per track')
+    ap.add_argument('--kickstart-where', choices=['all', 'rehearsal'], default='all',
+                    help="which cars the kickstart pulls toward the teacher: all, or only the rehearsal groups and "
+                         "the generated courses (the old tasks) so the new task is left to the reward. With "
+                         "--kickstart set to the starting policy itself and a --kickstart-floor this is the anchor "
+                         "that keeps what the starting policy could do (Wolczyk et al. 2024, "
+                         "https://arxiv.org/abs/2402.02868)")
     ap.add_argument('--grip-randomisation', type=float, default=None)
     ap.add_argument('--drift-starts', type=float, default=0.0, metavar='SHARE',
                     help='this share of episodes starts at speed and already sideways, a third of them mid '
@@ -694,11 +709,31 @@ def main():
         env_cfg.car_power_randomisation = args.car_power_randomisation
         print(f"cars ready in {time.time() - t_cars:.0f} s; weight +-{args.car_mass_randomisation:.0%}, "
               f"engine +-{args.car_power_randomisation:.0%}", flush=True)
-    multi = len(worlds) > 1 or bool(pool)
+    rehearse_worlds = []
+    if args.rehearse_tracks:
+        if args.rehearse_groups < 1:
+            sys.exit('--rehearse-groups must be 1 or more')
+        for t, w in zip(tracks, worlds):
+            rw = fs.load_world(args.rehearse_tracks, track=t)
+            fs.require_road_mesh(rw, args.rehearse_tracks, t)
+            fs.require_course(rw, args.rehearse_tracks, t)
+            if pace_range != (0.0, 0.0):
+                rw.pace_ref = de.course_pace_reference(args.rehearse_tracks, t, rw)
+            if args.chase > 0.0:
+                rw.ghosts = w.ghosts          # the same leads, so the self-play re-records reach both
+            rehearse_worlds += [rw] * args.rehearse_groups
+        print(f"rehearsal: {len(rehearse_worlds)} more groups drive {', '.join(tracks)} as in "
+              f"{os.path.abspath(args.rehearse_tracks)}", flush=True)
+    if args.kickstart_where == 'rehearsal' and not (args.rehearse_tracks or args.generated):
+        sys.exit('--kickstart-where rehearsal needs --rehearse-tracks or --generated (the cars it pulls)')
+    multi = len(worlds) > 1 or bool(pool) or bool(rehearse_worlds)
+    n_fixed_main = len(worlds)
     if multi:
         if sim == 'gpu':
             sys.exit("several tracks at once run on the CPU simulator only: add --sim cpu")
         fixed = [w for t, w in zip(tracks, worlds) for _ in range(track_groups[t] * (args.groups_per_track if pool else 1))]
+        n_fixed_main = len(fixed)
+        fixed += rehearse_worlds
         env = gpu_env.MultiTrackCpuEnv(fixed, pool, n_envs, args.group, env_cfg, rew_cfg, seed=args.seed)
         print(f"{env.n_groups} groups of {args.group} cars: {len(fixed)} on {', '.join(f'{t} x{track_groups[t]}' if track_groups[t] > 1 else t for t in tracks)}, "
               f"{env.n_groups - len(fixed)} on generated courses" if pool else
@@ -1201,6 +1236,12 @@ def main():
     # with the style dials: the kickstart pulls only the episodes driving the policy's own style
     # (every dial 0) toward the teacher, which cannot see the dials; the rest are left to the reward
     teach_mask = torch.ones((T, N), dtype=f32, device=dev) if teacher else None
+    # --kickstart-where rehearsal: only the cars on the old tasks (rehearsal groups, generated courses)
+    where_mask = torch.ones(N, dtype=f32, device=dev)
+    if teacher and args.kickstart_where == 'rehearsal':
+        where_mask.zero_()
+        where_mask[n_fixed_main * args.group:] = 1.0     # fixed tracks first, then rehearsal, then generated
+        print(f"kickstart pulls {int(where_mask.sum())} of {N} cars (rehearsal groups and generated courses)", flush=True)
     style_slots = slice(de.STYLE_OBS_SLOT, de.STYLE_OBS_SLOT + de.N_STYLE_OBS)
     priv_buf = torch.zeros((T, N, n_priv), dtype=f32, device=dev)
     cat_buf = torch.zeros((T, N), dtype=f32, device=dev)
@@ -1304,7 +1345,12 @@ def main():
     interrupted = False
     # --init-policy gives a good driver but a blank value network. Advantages computed from a
     # blank value network are noise, so for the first few updates only the value network learns.
-    warmup_updates = args.value_warmup_updates if (args.init_policy and not args.resume) else 0
+    if args.value_warmup_updates is not None:
+        warmup_updates = args.value_warmup_updates
+    else:
+        warmup_updates = 60 if (args.init_policy and not args.resume) else 0
+    if warmup_updates:
+        print(f"value warm-up: the first {warmup_updates} updates train only the value network", flush=True)
 
     per_track = {}
 
@@ -1366,8 +1412,9 @@ def main():
                     lead_buf[t] = obs[:, gate_slot]
                     if teacher:
                         teach_buf[t] = teacher(hx)       # the base inputs, then the history block if it reads one
+                        teach_mask[t] = where_mask
                         if args.style_share:
-                            teach_mask[t] = (obs[:, style_slots].abs().sum(dim=1) == 0).to(f32)
+                            teach_mask[t] = where_mask * (obs[:, style_slots].abs().sum(dim=1) == 0).to(f32)
                     mu = actor(x, lead_buf[t])
                     a = mu + log_std.exp() * torch.randn_like(mu)
                     obs_buf[t], act_buf[t] = x, a

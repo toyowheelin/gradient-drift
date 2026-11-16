@@ -206,6 +206,9 @@ def main():
     ap.add_argument('--set', action='append', default=[], metavar='NAME=VALUE', help='a plugin setting for every policy')
     ap.add_argument('--cars', type=int, default=16)
     ap.add_argument('--ticks', type=int, default=3300, help='per run (3300 is about 3 minutes)')
+    ap.add_argument('--seed', type=int, default=8,
+                    help='random seed of the runs (start spread, noise); grade with a few seeds to see how much '
+                         'of a difference between policies is the luck of one seed')
     args = ap.parse_args()
     sys.path.insert(0, _HERE)
     import fast_sim as fs
@@ -263,7 +266,7 @@ def main():
             if dict(key).get('EnableTireLoadSensitivity'):
                 label += ' (tire load)'
             for pace in args.paces:
-                row, st = bot(world, pol, pace, args.grip, args.ticks, args.cars, settings, skill=args.skill)
+                row, st = bot(world, pol, pace, args.grip, args.ticks, args.cars, settings, seed=args.seed, skill=args.skill)
                 line(label, f'{pace:g}', flat, row, st)
             print(f"{'':28s} flat out {flat:.1f} km/h")
 
