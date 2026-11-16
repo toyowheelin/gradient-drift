@@ -263,6 +263,9 @@ def main():
             world.pace_ref = refs[key]
             flat = float(world.sp_length.sum() / np.sum(world.sp_length / (world.pace_ref / 3.6)) * 3.6)
             label = os.path.basename(os.path.dirname(name)) or name
+            if label == 'snapshots':            # train_ppo_gpu.py --snapshot-every: run name and ticks
+                tick = os.path.basename(name)[len('policy_'):-len('.json')]
+                label = os.path.basename(os.path.dirname(os.path.dirname(name))) + (f' {int(tick) / 1e6:.0f}M' if tick.isdigit() else '')
             if dict(key).get('EnableTireLoadSensitivity'):
                 label += ' (tire load)'
             for pace in args.paces:
