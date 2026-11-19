@@ -346,6 +346,14 @@ def main():
                     help='also save the policy every this many ticks as snapshots/policy_<ticks>.json, to choose '
                          'from afterwards with pick_policy.py (GT Sophy kept policies at regular intervals and '
                          'chose by a fixed set of scenarios: later ones trade one skill for another); 0 = off')
+    ap.add_argument('--curated-leads', type=float, default=None, metavar='HARD_SHARE',
+                    help='curated chase leads: the hard leads (far off the line, braking a lot or busy steering: '
+                         'drift_env.hard_lead_reasons) together get this share of the draws, the rest share the '
+                         'remainder (GT Sophy\'s curated opponents; 0 = never drawn). Default: every lead alike')
+    ap.add_argument('--hard-lead-limits', type=float, nargs=3, default=None,
+                    metavar=('OFF_LINE_M', 'BRAKE_SHARE', 'REVERSALS_MIN'),
+                    help='what makes a lead hard for --curated-leads (default %g m, %g, %g a minute)'
+                         % (de.HARD_LEAD_OFF_LINE_M, de.HARD_LEAD_BRAKE_SHARE, de.HARD_LEAD_REVERSALS_MIN))
     ap.add_argument('--self-ghost-every', type=int, default=25_000_000, metavar='TICKS',
                     help='ticks between --self-ghosts refreshes')
     ap.add_argument('--amp', default=None, metavar='NPZ',
@@ -679,6 +687,20 @@ def main():
             self_slots[t] = np.sort(_sg_rng.choice(len(w.ghosts), size=k, replace=False))
         print(f"self-play leads: {', '.join(f'{t} {len(v)}' for t, v in self_slots.items())} of the ghosts "
               f"re-recorded from this policy every {args.self_ghost_every:,} ticks", flush=True)
+    if args.curated_leads is not None:
+        if args.chase <= 0.0:
+            sys.exit('--curated-leads needs --chase')
+        if not 0.0 <= args.curated_leads <= 1.0:
+            sys.exit('--curated-leads: a share from 0 to 1')
+        limits = {}
+        if args.hard_lead_limits:
+            limits = dict(zip(('off_line_m', 'brake_share', 'reversals_min'), args.hard_lead_limits))
+        report = []
+        for t, w in zip(tracks, worlds):
+            w.lead_weights, hard = de.curated_lead_weights(w.ghosts, args.curated_leads,
+                                                           keep_easy=self_slots.get(t, ()), **limits)
+            report.append(f"{t} {int(hard.sum())} of {len(hard)} hard, drawn {w.lead_weights[hard].sum():.0%}")
+        print(f"curated leads: {', '.join(report)}", flush=True)
     # --privileged-critic without --chase is allowed (its inputs are all 0 with no car ahead): a solo
     # first stage that is later resumed with --chase needs the same critic
     if args.skill:

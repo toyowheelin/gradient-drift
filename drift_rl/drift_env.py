@@ -2358,6 +2358,68 @@ def guess_ghost_kinds(g):
     return kinds
 
 
+def lead_traits(g):
+    """How a ghost drives, from its own samples: mean km/h, share sliding over 20 deg, worst distance
+    from the AI line (m), share braking (brake input over 0.2), steering reversals a minute, and its
+    95th-percentile yaw acceleration (deg/s2) - the last two a measure of how jerky it is."""
+    t = g[:, GH_T]
+    ok = np.r_[True, np.diff(t) > 0]
+    g, t = g[ok], t[ok]
+    minutes = max((t[-1] - t[0]) / 60.0, 1e-9)
+    steer = g[:, GH_STEER]
+    s = np.sign(np.round(steer, 3))
+    s = s[s != 0]
+    reversals = int(np.sum(s[1:] != s[:-1])) / minutes
+    yaw_acc = np.abs(np.diff(g[:, GH_YAW]) / np.maximum(np.diff(t), 1e-3))
+    return (float(np.mean(g[:, GH_SPEED])) * 3.6, float(np.mean(np.abs(g[:, GH_SLIP]) > np.radians(20.0))),
+            float(np.max(np.abs(g[:, GH_CTE]))), float(np.mean(g[:, GH_BRAKE] > 0.2)), reversals,
+            float(np.degrees(np.quantile(yaw_acc, 0.95))) if len(yaw_acc) else 0.0)
+
+
+# Curated leads (train_ppo_gpu.py --curated-leads): the leads a chaser practises behind decide how
+# often it hits them and whether it learns to hang back (GT Sophy, Wurman et al. 2022: a curated
+# opponent mix; Sony AI: erratic opponents teach "learned helplessness"). Our chase_report --by-lead
+# (2026-11-02) found the hits come from a few kinds: recorded humans driving far off the line (SP)
+# and slow bots braking hard with busy steering (Klutch). Those are "hard" leads: kept, but drawn
+# only a set share of the time instead of in proportion to how many there are.
+HARD_LEAD_OFF_LINE_M = 6.0         # 95th percentile of |cross-track| from the AI line
+HARD_LEAD_BRAKE_SHARE = 0.4        # share of samples with the brake over 0.2
+HARD_LEAD_REVERSALS_MIN = 30.0     # steering reversals a minute
+
+
+def hard_lead_reasons(g, off_line_m=HARD_LEAD_OFF_LINE_M, brake_share=HARD_LEAD_BRAKE_SHARE,
+                      reversals_min=HARD_LEAD_REVERSALS_MIN):
+    """Why ghost g is a hard lead ('off line 9.1 m', 'brake 62%', '41 reversals/min'), [] if it is not.
+    Off line uses the 95th percentile so one glitched sample does not decide it."""
+    t = g[:, GH_T]
+    ok = np.r_[True, np.diff(t) > 0]
+    off = float(np.quantile(np.abs(g[ok, GH_CTE]), 0.95))
+    _, _, _, brake, rev, _ = lead_traits(g)
+    why = []
+    if off > off_line_m:
+        why.append(f'off line {off:.1f} m')
+    if brake > brake_share:
+        why.append(f'brake {brake:.0%}')
+    if rev > reversals_min:
+        why.append(f'{rev:.0f} reversals/min')
+    return why
+
+
+def curated_lead_weights(ghosts, hard_share, keep_easy=(), **limits):
+    """Draw weights for a track's ghost leaders (summing to 1): the hard leads (hard_lead_reasons)
+    together get hard_share of the draws (0 = never drawn), the rest share what is left equally.
+    keep_easy: indices never counted hard (self-play slots, re-recorded from the learner). With no
+    hard leads, or no easy ones, every lead is equally likely. Returns (weights, hard mask)."""
+    n = len(ghosts)
+    hard = np.array([bool(hard_lead_reasons(ghosts[i], **limits)) for i in range(n)], dtype=bool)
+    hard[list(keep_easy)] = False
+    nh = int(hard.sum())
+    if nh == 0 or nh == n:
+        return np.full(n, 1.0 / max(n, 1)), hard
+    w = np.where(hard, hard_share / nh, (1.0 - hard_share) / (n - nh))
+    return w / w.sum(), hard
+
+
 def scale_ghosts(g, r):
     """Ghosts driving the same path at r times their speed: their clock runs 1 / r as long, speeds and
     yaw rates are r times as large. A tandem lead drives under the chaser's limit, so a chaser has
@@ -2495,7 +2557,11 @@ class DriftVecEnv:
         for i in due:
             if np.isnan(self.states[i, S_ARC]):
                 continue
-            g = int(self.rng.integers(len(self.gh_len)))
+            lw = getattr(self.world, 'lead_weights', None)       # --curated-leads
+            if lw is not None and len(lw) == len(self.gh_len):
+                g = int(self.rng.choice(len(self.gh_len), p=lw))
+            else:
+                g = int(self.rng.integers(len(self.gh_len)))
             ghost = self.gh[g, :self.gh_len[g]]
             k = int(fs.world_to_spline(self.states[i, S_X], self.states[i, S_Y], self.states[i, S_Z],
                                        self.world.sp_pos))

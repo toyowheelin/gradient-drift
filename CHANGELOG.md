@@ -7,6 +7,9 @@ when releasing.
 
 ## Unreleased
 
+- Trainer: `--curated-leads SHARE` draws chase leads from a curated mix: leads that drive far off
+  the line, brake a lot or steer busily (where most chase hits came from) get only that share of the
+  chase episodes. `chase_report.py --by-lead` marks those leads.
 - Drift line: the moved AI line no longer adds bends the racing line does not have (tighter than
   80 m turning the other way, or on a straight). Where the zones sit far from the racing line, the
   line used to swing across the road between zones and wobble through long corners, and on a server
