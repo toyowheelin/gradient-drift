@@ -14,8 +14,9 @@ it (project notes, 2026-11-08 / 11-12):
   smooth  steering jitter: the steering's spread around its own 0.5 s average (deg of lock)
 plus speed, the share of time sliding and off the course, so a dial that buys its style by
 spinning or leaving the course shows. A policy trained without the dials shows the same numbers
-on every row except commit's: that dial moves the speed asked of the car, which every pace policy
-already sees (the pace_over input).
+on every row except commit's and smooth's: commit moves the speed asked of the car, which every
+pace policy already sees (the pace_over input), and smooth is a filter on the steering the
+simulator applies to any policy (STYLE_SMOOTH_FILTER).
 """
 import argparse
 

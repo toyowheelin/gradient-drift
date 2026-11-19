@@ -152,19 +152,31 @@ N_LEAD_CTRL_OBS = 4
 # driver and where the shipped bots sit outside every recorded player. Each moves what the reward
 # asks for, not the car:
 #  * angle: the drift angle that counts as full drift is scaled by 1 + STYLE_ANGLE_SHARE x dial
-#    (the 25 - 45 deg band becomes 30 - 54 deg at +1, 21 - 38 deg at -1);
-#  * swing: the same scale, but by how tight the line is here (STYLE_SWING_SHARE x dial x c, c = +1
-#    at a 20 m radius or tighter, 0 at 40 m, -1 on a straight): + = deeper at the apex and shallower
-#    between corners, the way players let the angle swing through a corner; - = one angle throughout;
+#    (the 25 - 45 deg band becomes 35 - 63 deg at +1, 15 - 27 deg at -1; 0.2 in styles1 moved the bots 3 - 4 deg, 0.4 in styles2 about 7);
+#  * swing: a tilt on the drift pay by how tight the line is here (c = +1 at a 20 m radius or
+#    tighter, 0 at 40 m, -1 on a straight): while sliding, STYLE_SWING_PAY x dial x c x the drift
+#    angle's distance from STYLE_SWING_MID (in STYLE_SWING_SPAN steps, capped at 1) of the drift pay
+#    per metre. + = deeper at the apex and shallower between corners, the way players let the angle
+#    swing through a corner; - = one angle throughout. (styles1/2 scaled the full-drift band by the
+#    dial instead, and nothing changed: the bots sit mid-band at 30 - 37 deg, where a band moved by
+#    under 20% still pays them in full, so there was no slope to follow.)
 #  * commit: the asked speed is raised by STYLE_COMMIT_SHARE x dial where the line tightens ahead
 #    (entering a corner): + = carries more speed in, - = settles the car early;
-#  * smooth: busy steering and steering reversals cost 2^(STYLE_SMOOTH_EXP x dial) times as much.
+#  * smooth: not a reward but a filter on the steering, as the plugin applies it: at dial d > 0 the
+#    steering applied is last tick's + (1 - STYLE_SMOOTH_FILTER x d) of the way to the one asked
+#    (dial 0 and below: as asked). combo_all2's steering change reverses on 73 - 77% of ticks, a
+#    zigzag that does nothing for the drive: filtered at 0.65 its jitter (style report) falls from
+#    3.1 to 2.0 deg on Drift Playground and 3.4 to 2.1 on Klutch with the same slide, slip,
+#    off-course and wall contacts (2026-11-19). Three rewards for calm steering (styles1 - 4) moved
+#    it by 0.1 deg at most: the zigzag costs the policy almost nothing either way.
 STYLE_OBS_SLOT = LEAD_CTRL_OBS_SLOT + N_LEAD_CTRL_OBS
 N_STYLE_OBS = 4
-STYLE_ANGLE_SHARE = 0.2
-STYLE_SWING_SHARE = 0.15
-STYLE_COMMIT_SHARE = 0.08
-STYLE_SMOOTH_EXP = 1.5
+STYLE_ANGLE_SHARE = 0.4
+STYLE_SWING_PAY = 1.0
+STYLE_SWING_MID = 35.0
+STYLE_SWING_SPAN = 15.0
+STYLE_COMMIT_SHARE = 0.16
+STYLE_SMOOTH_FILTER = 0.65
 LEAD_ACCEL_TICKS = 5            # samples the lead's acceleration is measured over
 IDM_LEAD_ACCEL_GAIN = 1.0       # the lead's acceleration added to the IDM's (CACC feedforward)
 CHASE_GAP_M = (0.5, 6.0)         # the asked gap, bumper to bumper, at chase_gap 0 and 1
@@ -774,16 +786,17 @@ def course_overrun_m(cte, nearest, margin, co, n_points):
 
 
 @njit(cache=True)
-def _style_angle_scale(s, sp_radius, nearest):
-    """How much the angle that counts as full drift is scaled by the angle and swing dials (STYLE_*)."""
-    a = s[fs.S_STYLE0]
-    w = s[fs.S_STYLE0 + 1]
-    if a == 0.0 and w == 0.0:
-        return 1.0
-    c = 0.0
+def _style_angle_scale(s):
+    """How much the angle that counts as full drift is scaled by the angle dial (STYLE_*)."""
+    return max(0.5, 1.0 + STYLE_ANGLE_SHARE * s[fs.S_STYLE0])
+
+
+@njit(cache=True)
+def _line_tightness(sp_radius, nearest):
+    """+1 where the line's radius is 20 m or less, 0 at 40 m, toward -1 on a straight (the swing dial's c)."""
     if 0 <= nearest < sp_radius.shape[0]:
-        c = max(-1.0, min(1.0, 40.0 / max(sp_radius[nearest], 1.0) - 1.0))
-    return max(0.5, 1.0 + STYLE_ANGLE_SHARE * a + STYLE_SWING_SHARE * w * c)
+        return max(-1.0, min(1.0, 40.0 / max(sp_radius[nearest], 1.0) - 1.0))
+    return 0.0
 
 
 @njit(cache=True)
@@ -1538,6 +1551,9 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         counters[i, 14], counters[i, 15], counters[i, 16] = c0, c1, c2
         a0 = max(-1.0, min(1.0, a0 + SKILL_STEER_NOISE * lack * counters[i, 12]))
         a1 = max(-1.0, min(1.0, a1 + SKILL_PEDAL_NOISE * lack * counters[i, 13]))
+    smooth_dial = s[fs.S_STYLE0 + 3]
+    if smooth_dial > 0.0 and counters[i, 0] >= 1.0:
+        a0 = prev_act[i, 0] + (1.0 - STYLE_SMOOTH_FILTER * smooth_dial) * (a0 - prev_act[i, 0])
     dt = mids[i, M_DT]
     fs.step_post(s, a0, a1, a2, p, d, mids[i], sp_pos, sp_radius, sp_length, sp_next, sp_prev,
                  sp_fwd, sp_cum, tri_v, tri_surf, gmin, cell_size, dims, cell_start, cell_items,
@@ -1613,7 +1629,7 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     # ---- reward ----
     progress = max(-2.0, min(5.0, d[D_ProgressM]))
     abs_slip = abs(d[D_RealSlipAngleRad]) * (180.0 / math.pi)
-    q = _drift_quality(abs_slip / ((1.0 - SKILL_ANGLE * lack) * _style_angle_scale(s, sp_radius, int(d[fs.D_NearestPointId]))), rw)
+    q = _drift_quality(abs_slip / ((1.0 - SKILL_ANGLE * lack) * _style_angle_scale(s)), rw)
     pace = s[fs.S_PACE]
     ref_point = max(0, min(pace_ref.shape[0] - 1, int(d[fs.D_NearestPointId])))
     ref_kmh = pace_ref[ref_point] if pace_ref.shape[0] == sp_pos.shape[0] else 0.0
@@ -1673,6 +1689,11 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
         cut = rw[R_PACE_OVER] if pace_over > 0.0 else rw[R_PACE_UNDER]
         pay = max(rw[R_PACE_MIN_PAY], 1.0 - (1.0 - rw[R_PACE_MIN_PAY]) * abs(pace_over) / max(cut, 1e-3))
     r = pay * rw[R_PROGRESS_W] * paid * (rw[R_GRIP_FRAC] + (1.0 - rw[R_GRIP_FRAC]) * q)
+    swing_dial = s[fs.S_STYLE0 + 1]
+    if swing_dial != 0.0 and abs_slip > rw[R_SLIP0]:
+        deeper = max(-1.0, min(1.0, (abs_slip - STYLE_SWING_MID) / STYLE_SWING_SPAN))
+        r += (pay * rw[R_PROGRESS_W] * paid * (1.0 - rw[R_GRIP_FRAC]) * STYLE_SWING_PAY * swing_dial
+              * _line_tightness(sp_radius, int(d[fs.D_NearestPointId])) * deeper)
     push = d[D_CollisionPushOutM]
     if push > 0.0:
         r -= rw[R_PUSH_FLAT] + rw[R_PUSH_M] * min(push, 3.0)
@@ -1842,14 +1863,13 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
     da0 = a0 - prev_act[i, 0]
     da1 = a1 - prev_act[i, 1]
     turned_back = 0.0
-    smooth = 2.0 ** (STYLE_SMOOTH_EXP * s[fs.S_STYLE0 + 3])
     if da0 * counters[i, 7] < 0.0:
         turned_back = min(abs(da0), abs(counters[i, 7]))
-        r -= rw[R_STEER_REVERSAL] * (1.0 - SKILL_STEER * lack) * smooth * turned_back
+        r -= rw[R_STEER_REVERSAL] * (1.0 - SKILL_STEER * lack) * turned_back
     if da0 != 0.0:
         counters[i, 7] = da0
     da2 = a2 - prev_act[i, 2]
-    r -= rw[R_ACT_RATE] * (1.0 - SKILL_STEER * lack) * smooth * (da0 * da0 + da1 * da1 + da2 * da2)
+    r -= rw[R_ACT_RATE] * (1.0 - SKILL_STEER * lack) * (da0 * da0 + da1 * da1 + da2 * da2)
     prev_act[i, 0] = a0
     prev_act[i, 1] = a1
     prev_act[i, 2] = a2

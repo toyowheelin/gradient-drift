@@ -26,7 +26,8 @@ when releasing.
   servers. `train_ppo_gpu.py --style-share` draws them per episode and moves what the reward asks for;
   `style_report.py` checks a policy follows them. Plugin settings `BotStyleAngle`, `BotStyleSwing`,
   `BotStyleCommit`, `BotStyleSmooth`, `BotStyleDialSpread` and per-bot `BotStyles` entries; a policy
-  without the dials ignores them. Older policies, history blocks included, still load, and
+  without the dials ignores them, except `smooth`, which is a filter on the steering and works with
+  any policy (at 1 the tick-to-tick steering zigzag drops by about a third with the same drift). Older policies, history blocks included, still load, and
   `--init-policy` / `--kickstart` widen or read them.
 
 - Drift line: the AI line moves sideways at most 0.2 m per metre (a short zone far from the racing

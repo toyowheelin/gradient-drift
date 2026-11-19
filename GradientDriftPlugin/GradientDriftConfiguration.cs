@@ -122,7 +122,8 @@ public class GradientDriftConfiguration
     //   BotStyleSwing   + the angle runs deeper at the apex and shallower between corners, - one
     //                   angle throughout
     //   BotStyleCommit  + carries more speed into corners, - settles the car early
-    //   BotStyleSmooth  + calmer, smoother steering, - busier hands
+    //   BotStyleSmooth  + calmer, smoother steering (a filter on the steering; works with any
+    //                   policy), 0 and below as the policy steers
     // BotStyleDialSpread, 0 - 1: each bot's dials are drawn up to this much either side of these
     // (0 = every bot on the settings). Per bot: Angle, Swing, Commit, Smooth in BotStyles.
     public float BotStyleAngle { get; set; } = 0f;
