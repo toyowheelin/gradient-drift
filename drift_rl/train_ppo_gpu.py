@@ -170,7 +170,11 @@ def main():
     ap.add_argument('--kickstart-weight', type=float, default=1.0,
                     help='weight of the pull (squared action difference) at the start')
     ap.add_argument('--kickstart-ticks', type=int, default=150_000_000,
-                    help='ticks over which the pull fades linearly to zero')
+                    help='ticks over which the pull fades linearly to zero (or to --kickstart-floor)')
+    ap.add_argument('--kickstart-floor', type=float, default=0.0,
+                    help='the pull never fades below this weight. With --style-share it only pulls episodes at '
+                         'style 0, so the dial episodes learn their styles while neutral driving stays held to '
+                         'the teacher (styles2 lost its drift once the pull reached 0, as plain resumes do)')
     ap.add_argument('--residual', type=int, default=0, metavar='UNITS',
                     help='with --init-policy and --chase: keep the starting network frozen and train a second one '
                          '(two layers of UNITS) added to its action only while a lead is present (residual '
@@ -246,15 +250,31 @@ def main():
     ap.add_argument('--style-share', type=float, default=None,
                     help='train the style dials (drift_env STYLE_*): this share of episodes draws each dial evenly '
                          'from -RANGE .. RANGE (--style-range), the rest drive at 0 (the policy\'s own style)')
-    ap.add_argument('--style-range', type=float, default=1.0)
+    ap.add_argument('--style-range', type=float, default=1.0,
+                    help='with --kickstart, only the episodes at style 0 are pulled toward the teacher')
     ap.add_argument('--seed', type=int, default=0)
     ap.add_argument('--eval-minutes', type=float, default=1.0, help='wall-clock time between evaluations')
     ap.add_argument('--eval-episodes', type=int, default=128)
     ap.add_argument('--name', default=None)
     ap.add_argument('--resume', default=None, help='checkpoint.pt from an earlier train_ppo_gpu.py run')
     ap.add_argument('--init-policy', default=None, help='policy.json to start the driving network from')
-    ap.add_argument('--value-warmup-updates', type=int, default=60,
-                    help='with --init-policy: updates that train only the value network first')
+    ap.add_argument('--value-warmup-updates', type=int, default=None,
+                    help='updates that train only the value network first (default 60 with --init-policy, 0 with '
+                         '--resume). Give it with --resume when the fine-tune changes the reward or the inputs, so '
+                         'the carried-over critic learns the new returns before it steers the policy (PIRLNav, '
+                         'Ramrakhya et al. 2023, https://arxiv.org/abs/2301.07302)')
+    ap.add_argument('--rehearse-tracks', default=None, metavar='DIR',
+                    help='fine-tuning: also drive every --track as it is in this folder (the data the starting '
+                         'policy learned on, e.g. the old AI lines), in --rehearse-groups extra groups of cars per '
+                         'track, so the old task keeps being practised (rehearsal; CLEAR, Rolnick et al. 2019, '
+                         'https://arxiv.org/abs/1811.11682). Raise --envs by those groups x --group')
+    ap.add_argument('--rehearse-groups', type=int, default=1, help='with --rehearse-tracks: groups per track')
+    ap.add_argument('--kickstart-where', choices=['all', 'rehearsal'], default='all',
+                    help="which cars the kickstart pulls toward the teacher: all, or only the rehearsal groups and "
+                         "the generated courses (the old tasks) so the new task is left to the reward. With "
+                         "--kickstart set to the starting policy itself and a --kickstart-floor this is the anchor "
+                         "that keeps what the starting policy could do (Wolczyk et al. 2024, "
+                         "https://arxiv.org/abs/2402.02868)")
     ap.add_argument('--grip-randomisation', type=float, default=None)
     ap.add_argument('--drift-starts', type=float, default=0.0, metavar='SHARE',
                     help='this share of episodes starts at speed and already sideways, a third of them mid '
@@ -689,11 +709,31 @@ def main():
         env_cfg.car_power_randomisation = args.car_power_randomisation
         print(f"cars ready in {time.time() - t_cars:.0f} s; weight +-{args.car_mass_randomisation:.0%}, "
               f"engine +-{args.car_power_randomisation:.0%}", flush=True)
-    multi = len(worlds) > 1 or bool(pool)
+    rehearse_worlds = []
+    if args.rehearse_tracks:
+        if args.rehearse_groups < 1:
+            sys.exit('--rehearse-groups must be 1 or more')
+        for t, w in zip(tracks, worlds):
+            rw = fs.load_world(args.rehearse_tracks, track=t)
+            fs.require_road_mesh(rw, args.rehearse_tracks, t)
+            fs.require_course(rw, args.rehearse_tracks, t)
+            if pace_range != (0.0, 0.0):
+                rw.pace_ref = de.course_pace_reference(args.rehearse_tracks, t, rw)
+            if args.chase > 0.0:
+                rw.ghosts = w.ghosts          # the same leads, so the self-play re-records reach both
+            rehearse_worlds += [rw] * args.rehearse_groups
+        print(f"rehearsal: {len(rehearse_worlds)} more groups drive {', '.join(tracks)} as in "
+              f"{os.path.abspath(args.rehearse_tracks)}", flush=True)
+    if args.kickstart_where == 'rehearsal' and not (args.rehearse_tracks or args.generated):
+        sys.exit('--kickstart-where rehearsal needs --rehearse-tracks or --generated (the cars it pulls)')
+    multi = len(worlds) > 1 or bool(pool) or bool(rehearse_worlds)
+    n_fixed_main = len(worlds)
     if multi:
         if sim == 'gpu':
             sys.exit("several tracks at once run on the CPU simulator only: add --sim cpu")
         fixed = [w for t, w in zip(tracks, worlds) for _ in range(track_groups[t] * (args.groups_per_track if pool else 1))]
+        n_fixed_main = len(fixed)
+        fixed += rehearse_worlds
         env = gpu_env.MultiTrackCpuEnv(fixed, pool, n_envs, args.group, env_cfg, rew_cfg, seed=args.seed)
         print(f"{env.n_groups} groups of {args.group} cars: {len(fixed)} on {', '.join(f'{t} x{track_groups[t]}' if track_groups[t] > 1 else t for t in tracks)}, "
               f"{env.n_groups - len(fixed)} on generated courses" if pool else
@@ -822,7 +862,7 @@ def main():
                     h = torch.tanh(h)
             return torch.clamp(h, -1.0, 1.0)
         print(f"kickstart: pulled toward {args.kickstart}'s actions ({t_n} inputs), weight "
-              f"{args.kickstart_weight:g} fading to 0 over {args.kickstart_ticks:,} ticks", flush=True)
+              f"{args.kickstart_weight:g} fading to {args.kickstart_floor:g} over {args.kickstart_ticks:,} ticks", flush=True)
 
     def value(x, pv):
         return vf(torch.cat([x, pv], dim=1) if n_priv else x)[:, 0]
@@ -1193,6 +1233,16 @@ def main():
     act_buf = torch.zeros((T, N, de.ACT_SIZE), dtype=f32, device=dev)
     lead_buf = torch.zeros((T, N), dtype=f32, device=dev)
     teach_buf = torch.zeros((T, N, de.ACT_SIZE), dtype=f32, device=dev) if teacher else None
+    # with the style dials: the kickstart pulls only the episodes driving the policy's own style
+    # (every dial 0) toward the teacher, which cannot see the dials; the rest are left to the reward
+    teach_mask = torch.ones((T, N), dtype=f32, device=dev) if teacher else None
+    # --kickstart-where rehearsal: only the cars on the old tasks (rehearsal groups, generated courses)
+    where_mask = torch.ones(N, dtype=f32, device=dev)
+    if teacher and args.kickstart_where == 'rehearsal':
+        where_mask.zero_()
+        where_mask[n_fixed_main * args.group:] = 1.0     # fixed tracks first, then rehearsal, then generated
+        print(f"kickstart pulls {int(where_mask.sum())} of {N} cars (rehearsal groups and generated courses)", flush=True)
+    style_slots = slice(de.STYLE_OBS_SLOT, de.STYLE_OBS_SLOT + de.N_STYLE_OBS)
     priv_buf = torch.zeros((T, N, n_priv), dtype=f32, device=dev)
     cat_buf = torch.zeros((T, N), dtype=f32, device=dev)
     cat_log = []
@@ -1295,7 +1345,12 @@ def main():
     interrupted = False
     # --init-policy gives a good driver but a blank value network. Advantages computed from a
     # blank value network are noise, so for the first few updates only the value network learns.
-    warmup_updates = args.value_warmup_updates if (args.init_policy and not args.resume) else 0
+    if args.value_warmup_updates is not None:
+        warmup_updates = args.value_warmup_updates
+    else:
+        warmup_updates = 60 if (args.init_policy and not args.resume) else 0
+    if warmup_updates:
+        print(f"value warm-up: the first {warmup_updates} updates train only the value network", flush=True)
 
     per_track = {}
 
@@ -1357,6 +1412,9 @@ def main():
                     lead_buf[t] = obs[:, gate_slot]
                     if teacher:
                         teach_buf[t] = teacher(hx)       # the base inputs, then the history block if it reads one
+                        teach_mask[t] = where_mask
+                        if args.style_share:
+                            teach_mask[t] = where_mask * (obs[:, style_slots].abs().sum(dim=1) == 0).to(f32)
                     mu = actor(x, lead_buf[t])
                     a = mu + log_std.exp() * torch.randn_like(mu)
                     obs_buf[t], act_buf[t] = x, a
@@ -1450,7 +1508,8 @@ def main():
             if args.cat > 0.0:
                 cat_log.append(float((cat_buf > 0).float().mean()))
             b_teach = teach_buf.reshape(-1, de.ACT_SIZE) if teacher else None
-            kick_w = args.kickstart_weight * max(0.0, 1.0 - steps_done / args.kickstart_ticks) if teacher else 0.0
+            b_teach_m = teach_mask.reshape(-1) if teacher else None
+            kick_w = max(args.kickstart_floor, args.kickstart_weight * max(0.0, 1.0 - steps_done / args.kickstart_ticks)) if teacher else 0.0
             kick_errs = []
             b_logp, b_adv, b_ret = logp_buf.reshape(-1), adv.reshape(-1), ret.reshape(-1)
             n = b_obs.shape[0]
@@ -1478,25 +1537,30 @@ def main():
                     pi_loss = -torch.min(ratio * a_mb, torch.clamp(ratio, 1 - args.clip, 1 + args.clip) * a_mb).mean()
                     entropy = (log_std + 0.5 * (LOG_2PI + 1.0)).sum()
                     v_loss = 0.5 * ((value(b_obs[idx], b_priv[idx]) - b_ret[idx]) ** 2).mean()
-                    if update <= warmup_updates:
+                    # value warm-up: nothing moves the driving network (the kickstart, CAPS and mirror
+                    # terms too: keep1 let them train it at the starting learning rate with no KL brake,
+                    # and the policy lost its drift at the end of the warm-up, 2026-11-16)
+                    warm = update <= warmup_updates
+                    if warm:
                         loss = args.vf_coef * v_loss
                     else:
                         loss = pi_loss - args.ent_coef * entropy + args.vf_coef * v_loss
-                    if kick_w > 0.0:
-                        kick = ((mu - b_teach[idx]) ** 2).sum(dim=1).mean()
+                    if kick_w > 0.0 and not warm:
+                        m = b_teach_m[idx]
+                        kick = (((mu - b_teach[idx]) ** 2).sum(dim=1) * m).sum() / m.sum().clamp(min=1.0)
                         loss = loss + kick_w * kick
                         kick_errs.append(float(kick.detach()))
-                    if args.caps_temporal > 0.0:
+                    if args.caps_temporal > 0.0 and not warm:
                         mu_next = actor(b_next[idx], b_lead[idx])
                         caps_t = (((mu - mu_next) ** 2).sum(dim=1) * b_cont[idx]).mean()
                         loss = loss + args.caps_temporal * caps_t
                         caps_t_log.append(float(caps_t.detach()))
-                    if args.caps_spatial > 0.0:
+                    if args.caps_spatial > 0.0 and not warm:
                         mu_near = actor(b_obs[idx] + args.caps_sigma * torch.randn_like(b_obs[idx]), b_lead[idx])
                         caps_s = ((mu - mu_near) ** 2).sum(dim=1).mean()
                         loss = loss + args.caps_spatial * caps_s
                         caps_s_log.append(float(caps_s.detach()))
-                    if args.mirror > 0.0:
+                    if args.mirror > 0.0 and not warm:
                         # mirror the raw inputs, scale them again, and ask for the mirrored action
                         sd = (obs_var.sqrt() + 1e-8).to(f32)
                         raw = b_obs[idx] * sd + obs_mean.to(f32)
