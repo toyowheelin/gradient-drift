@@ -86,7 +86,7 @@ chases up to 10% slower, and keeps up to twice `ChaseTimeGapSeconds`.
 | `BotStyleAngle` | `0` | Style dial, -1 to 1: **+** a deeper drift angle, **-** a shallower one. **0** is the policy's own style. Only for a policy trained with the style dials (`style_range` in the policy file); others ignore all the `BotStyle*` dials. |
 | `BotStyleSwing` | `0` | Style dial, -1 to 1: **+** the angle runs deeper at the apex and shallower between corners, the way most players drive; **-** one angle throughout. |
 | `BotStyleCommit` | `0` | Style dial, -1 to 1: **+** carries more speed into corners, **-** settles the car early. |
-| `BotStyleSmooth` | `0` | Style dial, -1 to 1: **+** calmer, smoother steering, **-** busier hands. |
+| `BotStyleSmooth` | `0` | Style dial, -1 to 1: **+** calmer, smoother steering (a filter on the steering, so it works with any policy: at **1** the tick-to-tick zigzag drops by about a third with the same drift). **0** and below steer as the policy asks. |
 | `BotStyleDialSpread` | `0` | Each bot's style dials are drawn up to this much (0 to 1) either side of the settings above. **0** means every bot on the settings. |
 | `BotStyles` | empty | Styles set by hand, which win over the draws. Each entry names a bot by its `DRIVERNAME` in `entry_list.ini`. An entry with no `Name` applies to the AI entries in order. Any of `Aggression` (0 to 1), `ChaseGapMeters`, `Skill` and the style dials `Angle`, `Swing`, `Commit` and `Smooth` (-1 to 1) can be set; anything left out is drawn or taken from the settings. |
 

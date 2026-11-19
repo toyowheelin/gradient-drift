@@ -25,7 +25,7 @@ internal readonly record struct BotStyle(float Aggression, float PaceMiddle, flo
 //   Swing   + the angle runs deeper at the apex and shallower between corners (as most players
 //           drive), - one angle throughout
 //   Commit  + carries more speed into corners, - settles the car early
-//   Smooth  + calmer, smoother steering, - busier hands
+//   Smooth  + calmer, smoother steering (a steering filter, any policy), 0 and below as asked
 public readonly record struct StyleDials(float Angle, float Swing, float Commit, float Smooth);
 
 // One entry of the BotStyles setting. A missing value is drawn (BotStyleSpread) or the server's.

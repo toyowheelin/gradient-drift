@@ -42,6 +42,8 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
     // Wall triangles the ground ray will pass through (barriers over the road) before giving up.
     private const int GroundRayMaxWallLayers = 12;
     private const float BrakeLightHoldSeconds = 0.3f;
+    // drift_env.STYLE_SMOOTH_FILTER: how much of last tick's steering the smooth dial keeps at +1.
+    private const float SmoothFilter = 0.65f;
     // The brake action (a policy with three outputs) lights the brake lights from this much of it.
     private const float BrakeLightMinBrake = 0.05f;
     // Ground attitude: how far to either side of the car the ground is sampled, and the
@@ -1320,6 +1322,15 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             if (policy.ReadsSkill && state.Style.Skill < 1f)
             {
                 (steerAction, speedAction, brakeAction) = HandicapBySkill(state, firstTick, steerAction, speedAction, brakeAction);
+            }
+            // Smooth style dial: a filter on the steering, as drift_env applies it (STYLE_SMOOTH_FILTER),
+            // for any policy. At d > 0 the steering moves 1 - 0.65 d of the way from last tick's to the
+            // one asked, which takes out the tick-to-tick zigzag without costing the drift.
+            float smooth = Math.Clamp(state.Style.Dials.Smooth, 0f, 1f);
+            if (smooth > 0f && !firstTick)
+            {
+                float prev = state.Policy.PreviousSteerAction;
+                steerAction = prev + (1f - SmoothFilter * smooth) * (steerAction - prev);
             }
             state.Policy.PreviousSteerAction = steerAction;
             state.Policy.PreviousSpeedAction = speedAction;
