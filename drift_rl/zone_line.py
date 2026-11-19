@@ -40,6 +40,9 @@ RAMP_POINTS = 5
 SMOOTH_POINTS = 5         # each side: an 11-point moving average
 MAX_SLOPE = 0.2           # the line moves sideways at most 0.2 m per metre along it (a short zone far
                           # from the racing line gets less of the move rather than a kink)
+NEW_BEND_M = 80.0         # the moved line may not add a bend tighter than this that the racing line does
+                          # not have (turning the other way, or on a straight): eased out where it does
+MIN_SIDE_M = 3.0          # and keeps at least this much road between itself and either edge
 
 
 def _layout(raw):
@@ -85,9 +88,25 @@ def zone_points(zones, n):
     return out
 
 
-def move_line(xz, edges, zones, inside_m=INSIDE_M, ramp=RAMP_POINTS, smooth=SMOOTH_POINTS, max_slope=MAX_SLOPE):
+def curvature(xz, h=3):
+    """Signed curvature (1/m) of a closed line, from points h either side."""
+    d1 = (np.roll(xz, -h, 0) - np.roll(xz, h, 0)) / 2
+    d2 = np.roll(xz, -h, 0) - 2 * xz + np.roll(xz, h, 0)
+    return (d1[:, 0] * d2[:, 1] - d1[:, 1] * d2[:, 0]) / (np.linalg.norm(d1, axis=1) ** 3 + 1e-9)
+
+
+def new_bends(xz, moved, new_bend_m=NEW_BEND_M):
+    """Points where the moved line bends tighter than new_bend_m and the racing line there does not
+    bend that way (it turns the other way, or runs nearly straight)."""
+    k0, k1 = curvature(xz), curvature(moved)
+    return (np.abs(k1) > 1 / new_bend_m) & ((np.sign(k0) != np.sign(k1)) | (np.abs(k0) < 1 / 300))
+
+
+def move_line(xz, edges, zones, inside_m=INSIDE_M, ramp=RAMP_POINTS, smooth=SMOOTH_POINTS, max_slope=MAX_SLOPE,
+              new_bend_m=NEW_BEND_M, min_side_m=MIN_SIDE_M):
     """The AI line's (x, z) moved into the zones: (n, 2)."""
     n = len(xz)
+    min_side_m = min(min_side_m, inside_m)          # --inside nearer than MIN_SIDE_M still means it
     pos = edges[['PositiveEdgeX', 'PositiveEdgeZ']].to_numpy(dtype=np.float64)
     neg = edges[['NegativeEdgeX', 'NegativeEdgeZ']].to_numpy(dtype=np.float64)
     off = np.zeros((n, 2))
@@ -129,6 +148,48 @@ def move_line(xz, edges, zones, inside_m=INSIDE_M, ramp=RAMP_POINTS, smooth=SMOO
         kernel = np.ones(2 * smooth + 1) / (2 * smooth + 1)
         off = np.stack([np.convolve(np.r_[off[-smooth:, j], off[:, j], off[:smooth, j]], kernel, 'valid')
                         for j in range(2)], 1)
+    def keep_off_edges(off):
+        # never nearer an edge than min_side_m (a curved edge and the smoothing can bring it closer),
+        # unless the racing line itself runs nearer there: then the move there is cut back toward the
+        # racing line until it is far enough (or the racing line's own distance)
+        out_ok = np.ones(n, bool)
+        scale = np.ones(n)
+        for t in np.linspace(1, 0, 21):
+            out = xz + off * scale[:, None]
+            out_ok[:] = True
+            for e, other in ((pos, neg), (neg, pos)):
+                width = np.linalg.norm(other - e, axis=1)
+                want = np.minimum(np.minimum(min_side_m, width / 2), np.linalg.norm(xz - e, axis=1))
+                out_ok &= np.linalg.norm(out - e, axis=1) >= want - 1e-6
+            if out_ok.all():
+                break
+            scale[~out_ok] = t
+        return off * scale[:, None]
+
+    def ease_new_bends(off, rounds):
+        # bends the racing line does not have (on Spirit Peaks, where the zones are far from it, the
+        # line swung across the road between zones and wobbled through long corners, and the bots
+        # fell out of their drifts there): smooth the move more, only around them
+        for _ in range(rounds):
+            bad = new_bends(xz, xz + off, new_bend_m)
+            if not bad.any():
+                return off, True
+            near = np.convolve(np.r_[bad[-8:], bad, bad[:8]].astype(float), np.ones(17), 'valid') > 0
+            avg = (np.roll(off, 1, 0) + off + np.roll(off, -1, 0)) / 3
+            off = off.copy()
+            off[near] = avg[near]
+        return off, False
+
+    for _ in range(30):
+        if min_side_m > 0:
+            off = keep_off_edges(off)
+        if new_bend_m <= 0:
+            break
+        off, clean = ease_new_bends(off, 20)
+        if clean and (min_side_m <= 0 or np.array_equal(keep_off_edges(off), off)):
+            break
+    if new_bend_m > 0:
+        off, _ = ease_new_bends(off, 500)       # no new bends wins over the last few cm from an edge
     return xz + off
 
 
