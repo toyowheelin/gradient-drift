@@ -29,7 +29,8 @@ without the chase inputs drives blind behind the ghost: the baseline.
 a bot at a pace and skill, a public driver, the owner's telemetria) and lists the leads with the
 most touches beside how each lead drives: GT Sophy and Sony AI found that the opponents a racer
 practises against decide both how often it collides and whether it learns to hang back. Use many
-episodes (e.g. 2048): each lead kind needs dozens.
+episodes (e.g. 2048): each lead kind needs dozens. The hard column is the share of a kind's episodes
+behind leads train_ppo_gpu.py --curated-leads counts as hard (drift_env.hard_lead_reasons).
 
 The lead is a replayed ghost: nothing pushes back, so by default a touch changes neither car and
 "crash" only shows what the chaser did next. --touch-push gives the chaser its half of an
@@ -57,22 +58,7 @@ def mean_per_touch(c, key):
     return float(np.sum(c[key] * c['contacts'])) / n if n > 0 else 0.0
 
 
-def lead_traits(g):
-    """How a ghost drives, from its own samples: mean km/h, share sliding over 20 deg, worst distance
-    from the AI line (m), share braking (brake input over 0.2), steering reversals a minute, and its
-    95th-percentile yaw acceleration (deg/s2) - the last two a measure of how jerky it is."""
-    t = g[:, de.GH_T]
-    ok = np.r_[True, np.diff(t) > 0]
-    g, t = g[ok], t[ok]
-    minutes = max((t[-1] - t[0]) / 60.0, 1e-9)
-    steer = g[:, de.GH_STEER]
-    s = np.sign(np.round(steer, 3))
-    s = s[s != 0]
-    reversals = int(np.sum(s[1:] != s[:-1])) / minutes
-    yaw_acc = np.abs(np.diff(g[:, de.GH_YAW]) / np.maximum(np.diff(t), 1e-3))
-    return (float(np.mean(g[:, de.GH_SPEED])) * 3.6, float(np.mean(np.abs(g[:, de.GH_SLIP]) > np.radians(20.0))),
-            float(np.max(np.abs(g[:, de.GH_CTE]))), float(np.mean(g[:, de.GH_BRAKE] > 0.2)), reversals,
-            float(np.degrees(np.quantile(yaw_acc, 0.95))) if len(yaw_acc) else 0.0)
+lead_traits = de.lead_traits
 
 
 def kind_group(label):
@@ -95,7 +81,9 @@ def by_lead(c, kinds, ghosts):
     hit = c['contacts'] > 0
     weight = c['chase_fraction'] * c['length']
     groups = np.array([kind_group(kinds[i]) if 0 <= i < len(kinds) else '?' for i in g])
-    print(f"  {'lead kind':<36} {'episodes':>8} {'gap':>6} {'in band':>8} {'drift':>6} {'hits':>6} {'km/h':>5}")
+    hard = np.array([bool(de.hard_lead_reasons(ghosts[i])) if 0 <= i < len(ghosts) else False for i in g])
+    print(f"  {'lead kind':<36} {'episodes':>8} {'gap':>6} {'in band':>8} {'drift':>6} {'hits':>6} {'km/h':>5} "
+          f"{'hard':>5}")
     for name in sorted(set(groups)):
         m = groups == name
         w = weight[m]
@@ -103,7 +91,10 @@ def by_lead(c, kinds, ghosts):
         touches = max(float(np.sum(c['contacts'][m])), 1.0)
         kmh = 3.6 * float(np.sum(c['contact_closing_ms'][m] * c['contacts'][m])) / touches
         print(f"  {name[:36]:<36} {int(m.sum()):8d} {wm('chase_mean_gap_m'):6.1f} {wm('chase_in_band_fraction'):8.0%} "
-              f"{wm('chase_drift_fraction'):6.0%} {float(np.mean(hit[m])):6.1%} {kmh:5.1f}")
+              f"{wm('chase_drift_fraction'):6.0%} {float(np.mean(hit[m])):6.1%} {kmh:5.1f} {float(np.mean(hard[m])):5.0%}")
+    if hard.any():
+        print(f"  hard leads (--curated-leads, drift_env.hard_lead_reasons): hits {float(np.mean(hit[hard])):.1%} "
+              f"over {int(hard.sum())} episodes; the rest {float(np.mean(hit[~hard])):.1%} over {int((~hard).sum())}")
     # single leads with the most touches, beside how each drives
     rows = []
     for i in np.unique(g[g >= 0]):
@@ -117,7 +108,8 @@ def by_lead(c, kinds, ghosts):
         for hits, eps, i in worst:
             kmh, slide, off, brake, rev, yaw = lead_traits(ghosts[i])
             print(f"  {'':18} {hits:3d}/{eps:<4d} {kmh:5.1f} {slide:6.0%} {off:6.1f} {brake:6.0%} {rev:8.1f} {yaw:11.0f}  "
-                  f"#{i} {kinds[i] if i < len(kinds) else '?'}")
+                  f"#{i} {kinds[i] if i < len(kinds) else '?'}"
+                  + (f"  hard: {', '.join(de.hard_lead_reasons(ghosts[i]))}" if de.hard_lead_reasons(ghosts[i]) else ''))
     # all leads: does how a lead drives go with how often it is touched?
     if len(rows) >= 8:
         traits = np.array([lead_traits(ghosts[i]) for _, _, i in rows])
