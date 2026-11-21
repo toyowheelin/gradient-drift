@@ -79,16 +79,69 @@ class Course:
         return int(np.argmin(np.abs(self.along - m)))
 
     def zone_outline(self, zone, depth=DEPTH_M, inset=0.0):
-        """(outer, inner): the zone's points along its edge (inset metres in from it) and depth
-        metres in from it, (k, 2) each."""
-        idx = self.points(zone['first'], zone['last'])
-        outer = self.edge(zone['side'])[idx]
-        other = self.edge(-zone['side'])[idx]
-        inward = other - outer
-        width = np.linalg.norm(inward, axis=1)
-        inward /= np.maximum(width, 1e-6)[:, None]
-        inner = outer + np.minimum(depth, width)[:, None] * inward
-        return outer + np.minimum(inset, width)[:, None] * inward, inner
+        """(outer, inner): the zone's edge as one smooth curve (inset metres in from it) and the
+        line depth metres in from it, (k, 2) each (outline below; DriftZones.Build is the same)."""
+        return outline(self.edge(zone['side']), self.edge(-zone['side']), zone['first'], zone['last'], depth, inset)
+
+
+# The course edge comes point by point from the AI line's points (~2 m apart), and its curvature
+# jumps from point to point (Klutch Kickers' corners turned 2 deg/m on average with kinks of
+# 8 deg/m), so a box drawn through the raw points looked pieced together from several bends. The
+# outline is the edge smoothed along itself (a Gaussian over OUTLINE_SIGMA_POINTS, weights out to
+# OUTLINE_HALF_POINTS either side; it moves the edge in by up to ~0.3 m round a tight corner and
+# out by at most the inset, so the paint stays on the course), drawn as a Catmull-Rom curve through
+# the smoothed points every OUTLINE_STEP_M or less, with its depth measured square to the curve.
+OUTLINE_SIGMA_POINTS = 1.5
+OUTLINE_HALF_POINTS = 4
+OUTLINE_STEP_M = 0.5
+
+
+def outline_weights():
+    k = np.arange(-OUTLINE_HALF_POINTS, OUTLINE_HALF_POINTS + 1)
+    w = np.exp(-0.5 * (k / OUTLINE_SIGMA_POINTS) ** 2)
+    return w / w.sum()
+
+
+def outline(edge, other, first, last, depth=DEPTH_M, inset=0.0):
+    """(outer, inner) for the zone on `edge` (n, 2) from point first to last round the lap, the
+    course's other edge `other` giving the inward way and the width there (see OUTLINE_STEP_M)."""
+    n = len(edge)
+    count = (last - first) % n + 1
+    pad = OUTLINE_HALF_POINTS + 1
+    idx = (first - pad + np.arange(count + 2 * pad)) % n
+    e = np.asarray(edge, dtype=float)[idx]
+    o = np.asarray(other, dtype=float)[idx]
+    width = np.linalg.norm(o - e, axis=1)
+    toward = (o - e) / np.maximum(width, 1e-6)[:, None]
+    w = outline_weights()
+    k = OUTLINE_HALF_POINTS
+    s = e.copy()
+    for i in range(pad - 1, pad + count + 1):
+        s[i] = w @ e[i - k:i + k + 1]
+    # never further out than the inset (the paint's outer line is drawn that far in)
+    d = np.sum((s - e) * toward, axis=1)
+    s += np.maximum(-inset - d, 0.0)[:, None] * toward
+    core, cw, cu = s[pad - 1:pad + count + 1], width[pad - 1:pad + count + 1], toward[pad - 1:pad + count + 1]
+    pts, tans, ws, us = [], [], [], []
+    for i in range(1, count):
+        p0, p1, p2, p3 = core[i - 1], core[i], core[i + 1], core[i + 2]
+        m = max(1, int(np.ceil(np.linalg.norm(p2 - p1) / OUTLINE_STEP_M - 1e-3)))
+        for j in range(m):
+            t = j / m
+            pts.append(0.5 * (2 * p1 + (p2 - p0) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t
+                              + (3 * p1 - p0 - 3 * p2 + p3) * t ** 3))
+            tans.append(0.5 * ((p2 - p0) + 2 * (2 * p0 - 5 * p1 + 4 * p2 - p3) * t + 3 * (3 * p1 - p0 - 3 * p2 + p3) * t * t))
+            ws.append(cw[i] + (cw[i + 1] - cw[i]) * t)
+            us.append(cu[i] + (cu[i + 1] - cu[i]) * t)
+    pts.append(core[count])
+    tans.append(0.5 * (core[count + 1] - core[count - 1]))
+    ws.append(cw[count])
+    us.append(cu[count])
+    pts, tans, ws, us = np.array(pts), np.array(tans), np.array(ws), np.array(us)
+    tl = np.linalg.norm(tans, axis=1)
+    nrm = np.where(tl[:, None] > 1e-9, np.c_[-tans[:, 1], tans[:, 0]] / np.maximum(tl, 1e-9)[:, None], us)
+    nrm *= np.where(np.sum(nrm * us, axis=1) < 0, -1.0, 1.0)[:, None]
+    return pts + np.minimum(inset, ws)[:, None] * nrm, pts + np.minimum(depth, ws)[:, None] * nrm
 
 
 def zones_path(tracks, track):

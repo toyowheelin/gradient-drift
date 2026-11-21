@@ -114,6 +114,15 @@ public static class DriftZones
         return shapes;
     }
 
+    // setup's zones.OUTLINE_*: the edge is smoothed along itself (a Gaussian over OutlineSigmaPoints,
+    // weights out to OutlineHalfPoints either side, never more than the inset further out) and drawn
+    // as a Catmull-Rom curve through the smoothed points every OutlineStepM or less, its depth
+    // measured square to that curve: the raw edge's curvature jumps from point to point, so a box
+    // through its points looked pieced together from several bends (Klutch Kickers).
+    public const float OutlineSigmaPoints = 1.5f;
+    public const int OutlineHalfPoints = 4;
+    public const float OutlineStepM = 0.5f;
+
     // One zone's frame (its outer edge forward, then its inner side back) and stripes, from the
     // course's edge points. side +1 = the positive (left) edge, -1 the negative (right) one; first to
     // last runs round the lap (past the start when first > last).
@@ -122,21 +131,9 @@ public static class DriftZones
     public static Shape Build(Vector3[] positive, Vector3[] negative, int side, int first, int last, bool outsideZone,
         float stripeSpacingM, float insetM = 0f)
     {
-        int n = positive.Length;
-        int count = Mod(last - first, n) + 1;
-        Vector3[] edge = side > 0 ? positive : negative;
-        Vector3[] other = side > 0 ? negative : positive;
-        var outer = new Vector3[count];
-        var inner = new Vector3[count];
-        for (int k = 0; k < count; k++)
-        {
-            int p = (first + k) % n;
-            Vector3 inward = other[p] - edge[p];
-            inward.Y = 0f;
-            float width = inward.Length();
-            outer[k] = width > 1e-6f ? edge[p] + inward * (MathF.Min(insetM, width) / width) : edge[p];
-            inner[k] = width > 1e-6f ? edge[p] + inward * (MathF.Min(DepthM, width) / width) : edge[p];
-        }
+        (Vector3[] outer, Vector3[] inner) = Outline(side > 0 ? positive : negative, side > 0 ? negative : positive,
+            first, last, DepthM, insetM);
+        int count = outer.Length;
         var frame = new Vector3[2 * count];
         for (int k = 0; k < count; k++)
         {
@@ -156,6 +153,87 @@ public static class DriftZones
             stripes.Add((At(outer, along, t), At(inner, along, t + StripeSlantM)));
         }
         return new Shape(outsideZone, frame, stripes.ToArray());
+    }
+
+    // setup's zones.outline: (outer, inner) for the zone on `edge` from point first to last round the
+    // lap, `other` (the course's other edge) giving the inward way and the width there.
+    public static (Vector3[] Outer, Vector3[] Inner) Outline(Vector3[] edge, Vector3[] other, int first, int last,
+        float depthM, float insetM)
+    {
+        int n = edge.Length;
+        int count = Mod(last - first, n) + 1;
+        int k = OutlineHalfPoints;
+        int pad = k + 1;
+        int len = count + 2 * pad;
+        var e = new Vector2[len];
+        var y = new float[len];
+        var width = new float[len];
+        var toward = new Vector2[len];
+        for (int i = 0; i < len; i++)
+        {
+            int p = Mod(first - pad + i, n);
+            e[i] = new Vector2(edge[p].X, edge[p].Z);
+            y[i] = edge[p].Y;
+            Vector2 d = new Vector2(other[p].X, other[p].Z) - e[i];
+            width[i] = d.Length();
+            toward[i] = d / MathF.Max(width[i], 1e-6f);
+        }
+        var w = new double[2 * k + 1];
+        double total = 0;
+        for (int j = -k; j <= k; j++) total += w[j + k] = Math.Exp(-0.5 * (j / (double)OutlineSigmaPoints) * (j / (double)OutlineSigmaPoints));
+        var s = (Vector2[])e.Clone();
+        for (int i = pad - 1; i < pad + count + 1; i++)
+        {
+            double sx = 0, sz = 0;
+            for (int j = -k; j <= k; j++)
+            {
+                sx += w[j + k] / total * e[i + j].X;
+                sz += w[j + k] / total * e[i + j].Y;
+            }
+            s[i] = new Vector2((float)sx, (float)sz);
+            // never further out than the inset (the paint's outer line is drawn that far in)
+            float d = Vector2.Dot(s[i] - e[i], toward[i]);
+            if (-insetM - d > 0f) s[i] += (-insetM - d) * toward[i];
+        }
+        var pts = new List<Vector2>();
+        var tans = new List<Vector2>();
+        var ws = new List<float>();
+        var us = new List<Vector2>();
+        var ys = new List<float>();
+        int c0 = pad - 1;      // core[i] = s[c0 + i]: the zone's points with one more either side
+        for (int i = 1; i < count; i++)
+        {
+            Vector2 p0 = s[c0 + i - 1], p1 = s[c0 + i], p2 = s[c0 + i + 1], p3 = s[c0 + i + 2];
+            int m = Math.Max(1, (int)Math.Ceiling(Vector2.Distance(p2, p1) / OutlineStepM - 1e-3));
+            for (int j = 0; j < m; j++)
+            {
+                float t = j / (float)m;
+                Vector2 a2 = 2 * p0 - 5 * p1 + 4 * p2 - p3, a3 = 3 * p1 - p0 - 3 * p2 + p3;
+                pts.Add(0.5f * (2 * p1 + (p2 - p0) * t + a2 * (t * t) + a3 * (t * t * t)));
+                tans.Add(0.5f * ((p2 - p0) + 2 * a2 * t + 3 * a3 * (t * t)));
+                ws.Add(width[c0 + i] + (width[c0 + i + 1] - width[c0 + i]) * t);
+                us.Add(toward[c0 + i] + (toward[c0 + i + 1] - toward[c0 + i]) * t);
+                ys.Add(y[c0 + i] + (y[c0 + i + 1] - y[c0 + i]) * t);
+            }
+        }
+        pts.Add(s[c0 + count]);
+        tans.Add(0.5f * (s[c0 + count + 1] - s[c0 + count - 1]));
+        ws.Add(width[c0 + count]);
+        us.Add(toward[c0 + count]);
+        ys.Add(y[c0 + count]);
+        var outer = new Vector3[pts.Count];
+        var inner = new Vector3[pts.Count];
+        for (int q = 0; q < pts.Count; q++)
+        {
+            float tl = tans[q].Length();
+            Vector2 normal = tl > 1e-9f ? new Vector2(-tans[q].Y, tans[q].X) / tl : us[q];
+            if (Vector2.Dot(normal, us[q]) < 0f) normal = -normal;
+            Vector2 o = pts[q] + MathF.Min(insetM, ws[q]) * normal;
+            Vector2 i2 = pts[q] + MathF.Min(depthM, ws[q]) * normal;
+            outer[q] = new Vector3(o.X, ys[q], o.Y);
+            inner[q] = new Vector3(i2.X, ys[q], i2.Y);
+        }
+        return (outer, inner);
     }
 
     // build_zones.smooth_edges: a point whose width either side is clipped (SmoothWidths) has that
