@@ -7,6 +7,14 @@ when releasing.
 
 ## Unreleased
 
+- Physics fix (plugin and simulator): a spun bot stopped at full steering lock no longer sits still
+  with the throttle on. The forward-speed model took the front tyres' slip from the full steering
+  angle even at a standstill, so their sideways force was at its peak and its rearward part matched
+  the rear wheels' push; the car stayed at 0 km/h until the policy unwound the lock below about 30 deg.
+  The steering's part of the front slip now scales with speed below `MinSlipAngleSpeedMs`, as the
+  sideways model already did. On servers this pinned bots for 5 - 10 s at a time at corner exits
+  where they had spun. Driving at speed is unchanged.
+
 - `StuckResetSeconds` (default 8 s): a bot that has spun or stalled and not moved 5 m in that time is
   put back on the AI line where it is, rolling, and starts afresh, as training does with such a car.
   It waits while a player is near (the server's spawn safety distance) or another bot is on the spot.

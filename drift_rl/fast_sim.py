@@ -1464,7 +1464,10 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
             rear_load = p[P_REAR_STATIC_LOAD_N] - shift
         t_vx = max(prev_own, p[P_MIN_SLIP_SPEED_MS])
         t_steer = s[S_LAST_STEER]
-        t_front_slip = math.atan2(s[S_LATV] + p[P_DIST_CG_FRONT_M] * s[S_YAW], t_vx) - t_steer
+        # the steering's part scaled with speed below the minimum slip speed, as in the sideways model:
+        # a stopped car at full lock has no front tyre force dragging it (it used to pin a spun car still)
+        t_front_slip = (math.atan2(s[S_LATV] + p[P_DIST_CG_FRONT_M] * s[S_YAW], t_vx)
+                        - t_steer * min(1.0, max(0.0, prev_own / t_vx)))
         t_fy_f = _lateral_tire_force(t_front_slip, mu_f, front_load, curve_f, 1.0, round_curve)
         t_rear_peak = mu_r * rear_load
         front_along = -t_fy_f * math.sin(t_steer)
@@ -1537,7 +1540,10 @@ def step_post(s, act_steer, act_speed, act_brake, p, diag, mid,
         t_mass = (p[P_FRONT_STATIC_LOAD_N] + p[P_REAR_STATIC_LOAD_N]) / 9.80665
         t_vx = max(prev_own, p[P_MIN_SLIP_SPEED_MS])
         t_steer = s[S_LAST_STEER]
-        t_front_slip = math.atan2(s[S_LATV] + p[P_DIST_CG_FRONT_M] * s[S_YAW], t_vx) - t_steer
+        # the steering's part scaled with speed below the minimum slip speed, as in the sideways model:
+        # a stopped car at full lock has no front tyre force dragging it (it used to pin a spun car still)
+        t_front_slip = (math.atan2(s[S_LATV] + p[P_DIST_CG_FRONT_M] * s[S_YAW], t_vx)
+                        - t_steer * min(1.0, max(0.0, prev_own / t_vx)))
         t_rear_slip = math.atan2(s[S_LATV] - p[P_DIST_CG_REAR_M] * s[S_YAW], t_vx)
         t_fy_f = _lateral_tire_force(t_front_slip, mu_f, p[P_FRONT_STATIC_LOAD_N], curve_f, 1.0, round_curve)
         t_fy_r = _lateral_tire_force(t_rear_slip, mu_r, p[P_REAR_STATIC_LOAD_N], curve_r, rear_sliding_grip(s),

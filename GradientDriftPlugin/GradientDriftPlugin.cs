@@ -1823,7 +1823,10 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float mass = (_car.FrontStaticLoadN + _car.RearStaticLoadN) / 9.80665f;
         float slipAngleSpeed = MathF.Max(previousOwnSpeed, _configuration.MinSlipAngleSpeedMs);
         float steer = state.Policy.LastSteerCommandRadians;
-        float frontSlipAngle = MathF.Atan2(state.LateralVelocity + _car.DistanceCgToFrontAxleM * state.YawRate, slipAngleSpeed) - steer;
+        // the steering's part scaled with speed below MinSlipAngleSpeedMs, as in the sideways model: a
+        // stopped car at full lock has no front tyre force dragging it (it used to pin a spun bot still)
+        float frontSlipAngle = MathF.Atan2(state.LateralVelocity + _car.DistanceCgToFrontAxleM * state.YawRate, slipAngleSpeed)
+            - steer * Math.Clamp(previousOwnSpeed / slipAngleSpeed, 0f, 1f);
         float rearSlipAngle = MathF.Atan2(state.LateralVelocity - _car.DistanceCgToRearAxleM * state.YawRate, slipAngleSpeed);
         bool roundCurve = _configuration.RoundTireCurve;
         (float frontCurveAngle, float rearCurveAngle) = _car.TireCurveAngles(roundCurve);
@@ -1873,7 +1876,10 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         float mass = (_car.FrontStaticLoadN + _car.RearStaticLoadN) / 9.80665f;
         float slipAngleSpeed = MathF.Max(previousOwnSpeed, _configuration.MinSlipAngleSpeedMs);
         float steer = state.Policy.LastSteerCommandRadians;
-        float frontSlipAngle = MathF.Atan2(state.LateralVelocity + _car.DistanceCgToFrontAxleM * state.YawRate, slipAngleSpeed) - steer;
+        // the steering's part scaled with speed below MinSlipAngleSpeedMs, as in the sideways model: a
+        // stopped car at full lock has no front tyre force dragging it (it used to pin a spun bot still)
+        float frontSlipAngle = MathF.Atan2(state.LateralVelocity + _car.DistanceCgToFrontAxleM * state.YawRate, slipAngleSpeed)
+            - steer * Math.Clamp(previousOwnSpeed / slipAngleSpeed, 0f, 1f);
         float rearSlipAngle = MathF.Atan2(state.LateralVelocity - _car.DistanceCgToRearAxleM * state.YawRate, slipAngleSpeed);
         float fyFront = LateralTireForce(frontSlipAngle, _muFront,
             _car.FrontStaticLoadN, _car.TireCurveAngles(_configuration.RoundTireCurve).Front, 1f, _configuration.RoundTireCurve);
