@@ -7,6 +7,12 @@ when releasing.
 
 ## Unreleased
 
+- `StuckResetSeconds` (default 8 s): a bot that has spun or stalled and not moved 5 m in that time is
+  put back on the AI line where it is, rolling, and starts afresh, as training does with such a car.
+  It waits while a player is near (the server's spawn safety distance) or another bot is on the spot.
+  Bots used to sit 20 - 70 s at a few corner exits on some tracks, many times an hour, until they
+  worked free.
+
 - Drift line: the moved AI line no longer adds bends the racing line does not have (tighter than
   80 m turning the other way, or on a straight). Where the zones sit far from the racing line, the
   line used to swing across the road between zones and wobble through long corners, and on a server

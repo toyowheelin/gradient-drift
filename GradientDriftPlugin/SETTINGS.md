@@ -246,6 +246,8 @@ sideways speed are damped until it's straight again. The policy is trained with 
 | Setting | Default | |
 |---|---|---|
 | `EnableWrongWayRecovery` | `true` | |
+| `StuckResetSeconds` | `8` | A bot the policy drives that has moved less than `StuckResetMinMoveMeters` in this time (spun, stalled) is put back on the AI line at its nearest point, rolling along it, with a fresh state, as training resets such a car. Only with no player nearer than the server's `SpawnSafetyDistanceToPlayerMeters` and no other bot within 10 m; otherwise it waits. 0 = off. |
+| `StuckResetMinMoveMeters` | `5` | See `StuckResetSeconds`. |
 | `WrongWayEntryThresholdDeg` | `67` | Policy file |
 | `WrongWayEntryTicks` | `3` | Policy file |
 | `WrongWayExitSlipDeg` | `30` | Policy file |

@@ -345,6 +345,15 @@ public class GradientDriftConfiguration
     // are decayed (time constant below) until the car is neither sliding (body slip under
     // WrongWayExitSlipDeg) nor rotating (yaw rate under WrongWayExitYawRateDegS). A held
     // drift stays well inside the threshold. The policy is trained with this in place.
+    // A bot the policy is driving that has moved less than StuckResetMinMoveMeters in
+    // StuckResetSeconds (spun, stalled, nose in a wall) is put back on the AI line at its nearest
+    // point, pointing along it and rolling, and starts afresh: what training does when a car stalls
+    // or spins (the policy never had to get out of either). Only where no player is nearer than the
+    // server's own SpawnSafetyDistanceToPlayerMeters and no other bot is close; otherwise it waits.
+    // 0 = off.
+    public float StuckResetSeconds { get; set; } = 8f;
+    public float StuckResetMinMoveMeters { get; set; } = 5f;
+
     public bool EnableWrongWayRecovery { get; set; } = true;
     public float WrongWayEntryThresholdDeg { get; set; } = 67f;
     public int WrongWayEntryTicks { get; set; } = 3;

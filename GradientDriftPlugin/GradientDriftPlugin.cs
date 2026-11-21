@@ -1185,6 +1185,10 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             PlaceInLargestGap(sessionId, state);
             _cars[aiState] = state;
         }
+        else
+        {
+            state = ResetIfStuck(sessionId, aiState, state);
+        }
 
         Vector3 position = state.Position;
         Vector3 velocity = state.Velocity;
@@ -3498,6 +3502,106 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             }
         }
         return nearest < 0f ? -1f : MathF.Max(0f, nearest - train - CarLengthMeters);
+    }
+
+    // StuckResetSeconds: a bot the policy has (not one the server's AI holds) that has not moved
+    // StuckResetMinMoveMeters in that time goes back onto the line at its nearest point, along it at
+    // half the stock AI's speed there (at least 3 m/s), with a fresh state, as training resets a
+    // stalled or spun car. Waits while a player is near the spot or another bot is on it.
+    private const float StuckResetMinSpeedMs = 3f;
+    private const float StuckResetSpeedShare = 0.5f;
+    private const float StuckResetBotClearanceM = 10f;
+    private int _stuckResets;
+
+    private DriftCarState ResetIfStuck(byte sessionId, AiState aiState, DriftCarState state)
+    {
+        float limit = _configuration.StuckResetSeconds;
+        if (limit <= 0f || state.HeldByStock || !state.Heading.HasValue)
+        {
+            return state;
+        }
+        long now = _sessionManager.ServerTimeMilliseconds;
+        Vector3 position = state.Position;
+        if (state.StuckAnchor is not Vector3 anchor
+            || new Vector2(position.X - anchor.X, position.Z - anchor.Z).Length() >= _configuration.StuckResetMinMoveMeters)
+        {
+            state.StuckAnchor = position;
+            state.StuckSinceMs = now;
+            return state;
+        }
+        if (now - state.StuckSinceMs < limit * 1000f)
+        {
+            return state;
+        }
+
+        int pointId = _spline.WorldToSpline(position).PointId;
+        if (pointId < 0 || pointId >= _spline.Points.Length)
+        {
+            return state;
+        }
+        Vector3 forward = _spline.Operations.GetForwardVector(pointId);
+        if (new Vector2(forward.X, forward.Z).LengthSquared() <= 0.0001f)
+        {
+            return state;
+        }
+        Vector3 spot = _spline.Points[pointId].Position;
+        if (!SpotClearOfPlayers(spot) || !SpotClearOfBots(state, spot))
+        {
+            return state;
+        }
+
+        Vector3 along = Vector3.Normalize(new Vector3(forward.X, 0f, forward.Z));
+        float speed = MathF.Max(StuckResetMinSpeedMs, StuckResetSpeedShare * aiState.MaxSpeed);
+        var fresh = new DriftCarState(spot, along * speed, state.SpawnCounter)
+        {
+            RearSlidingGrip = state.RearSlidingGrip,
+            Pace = state.Pace,
+            Style = state.Style,
+            PreviousNearestPointId = pointId,
+            StuckAnchor = spot,
+            StuckSinceMs = now,
+        };
+        _cars[aiState] = fresh;
+        _stuckResets++;
+        _scorecard?.Stuck(sessionId);
+        VerboseLog.Information("GradientDrift: bot {SessionId} had not moved {Meters:F0} m in {Seconds:F0} s near AI-line point {Point}: put back on the line there ({Count} resets since start)",
+            sessionId, _configuration.StuckResetMinMoveMeters, limit, pointId, _stuckResets);
+        return fresh;
+    }
+
+    // No active player within the server's own SpawnSafetyDistanceToPlayerMeters of the spot (where
+    // it would not spawn a car in view either).
+    private bool SpotClearOfPlayers(Vector3 spot)
+    {
+        long now = _sessionManager.ServerTimeMilliseconds;
+        foreach (EntryCar car in _entryCarManager.EntryCars)
+        {
+            if (car.AiControlled || car.Client?.HasSentFirstUpdate != true
+                || now - car.LastActiveTime >= _aiParams.PlayerAfkTimeoutMilliseconds)
+            {
+                continue;
+            }
+            if (Vector3.DistanceSquared(car.Status.Position, spot) < _aiParams.SpawnSafetyDistanceToPlayerSquared)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // No other bot the plugin drives within StuckResetBotClearanceM of the spot.
+    private bool SpotClearOfBots(DriftCarState self, Vector3 spot)
+    {
+        foreach (DriftCarState other in _cars.Values)
+        {
+            if (!ReferenceEquals(other, self)
+                && new Vector2(other.Position.X - spot.X, other.Position.Z - spot.Z).LengthSquared()
+                   < StuckResetBotClearanceM * StuckResetBotClearanceM)
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     // HoldBotSpacing: a car just taken over goes to the middle of the largest gap between the
