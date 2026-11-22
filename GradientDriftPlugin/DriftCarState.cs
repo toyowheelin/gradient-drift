@@ -63,6 +63,11 @@ internal sealed class DriftCarState
     // The server's own AI has the car stopped this tick (waiting, about to despawn): the plugin follows it.
     public bool HeldByStock;
 
+    // StuckResetSeconds: where the car was when it last moved StuckResetMinMoveMeters, and when
+    // (server ms). Null = not known yet this spawn.
+    public Vector3? StuckAnchor;
+    public long StuckSinceMs;
+
     // How much longer the brake lights stay on, seconds.
     public float BrakeLightSeconds;
 
