@@ -7,6 +7,15 @@ when releasing.
 
 ## Unreleased
 
+- New plugin setting `AvoidCars` (off by default): a bot slows for a car it would run into within
+  `AvoidHorizonSeconds` (1.2 s), bots and players alike, moving or stopped, by a velocity-obstacle
+  test in the racing line's frame (after ORCA). Only the car behind yields, and a bot's own chase lead
+  is left to the chase, so tandems are untouched. Pace is the only lever (no steering), held no lower
+  than the policy's slowest chase pace. No retraining: any policy that reads pace. The scorecard now
+  splits out chase hits (a chaser touching the car it chases) and the share of time a bot slowed for
+  another car; telemetry logs `AvoidShare` and `ChaseLeadId`. New tool `drift_rl/car_contacts.py`
+  sorts car-on-car contacts in a telemetry file by how the cars met (from behind, side by side,
+  crossing).
 - Physics fix (plugin and simulator): a spun bot stopped at full steering lock no longer sits still
   with the throttle on. The forward-speed model took the front tyres' slip from the full steering
   angle even at a standstill, so their sideways force was at its peak and its rearward part matched

@@ -176,6 +176,12 @@ AGPL-3.0 program carry the work, given the notices.
   cooperative adaptive cruise control", ITSC 2011; Milanés and Shladover, "Modeling cooperative
   and autonomous adaptive cruise control dynamic responses using experimental data",
   Transportation Research Part C 48, 2014. The lead's acceleration fed forward into the IDM pace.
+* Velocity obstacles - Fiorini and Shiller, "Motion Planning in Dynamic Environments Using
+  Velocity Obstacles", International Journal of Robotics Research 17(7), 1998; van den Berg, Lin,
+  Manocha, "Reciprocal Velocity Obstacles for Real-Time Multi-Agent Navigation", ICRA 2008; van den
+  Berg, Guy, Lin, Manocha, "Reciprocal n-Body Collision Avoidance" (ORCA), ISRR 2009. The plugin's
+  `AvoidCars` test, worked in the racing line's frame, with pace as the only control (the car behind
+  yields).
 * Residual policy learning - Silver, Allen, Tenenbaum, Kaelbling, "Residual Policy Learning", 2018
   ([arXiv 1812.06298](https://arxiv.org/abs/1812.06298)); Johannink et al., "Residual
   Reinforcement Learning for Robot Control", ICRA 2019. The add-on chase network (`--residual`).

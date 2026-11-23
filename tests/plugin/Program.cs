@@ -4,6 +4,7 @@
 //     (the trainer's and every tool's copy of the network) for the same inputs, or
 //   - a policy the plugin must refuse (broken, or needing a setting this build cannot apply) loads, or
 //   - a car-on-car push (CarContact) differs from the trainer's, or
+//   - car avoidance (CarAvoidance) asks another speed share than drift_rl/car_avoid.py, or
 //   - the drift zones painted for players (DriftZones) are not the shapes setup's zones.py makes, or
 //   - players' zone scores (ZoneJudge) fill zones otherwise than setup's zones.score, or the run
 //     records (ZoneRecords) do not keep and rank runs, or
@@ -154,6 +155,34 @@ foreach (JsonElement c in cases.RootElement.GetProperty("policies").EnumerateArr
         forgets += adapt.EndTick(dt, false) ? 1 : 0;
     Expect(forgets == 1 && adapt.PaceWeight == 0f && float.IsNaN(adapt.Pace) && adapt.Apply(fast, 1f, 0.8f, 1.2f, 2f, 0.5f, 6f) == fast,
         "server empty for AdaptToPlayersForgetSeconds: back on the settings, averages dropped");
+}
+
+// AvoidCars (CarAvoidance.cs): the same speed share as drift_rl/car_avoid.py on make_cases.py's pairs
+if (cases.RootElement.TryGetProperty("avoid", out JsonElement avoid))
+{
+    int count = 0, wrong = 0, slowed = 0;
+    foreach (JsonElement c in avoid.EnumerateArray())
+    {
+        float[] o = c.GetProperty("own").EnumerateArray().Select(v => (float)v.GetDouble()).ToArray();
+        float[] b = c.GetProperty("other").EnumerateArray().Select(v => (float)v.GetDouble()).ToArray();
+        var own = new CarAvoidance.LineCar { S = o[0], D = o[1], Vs = o[2], Vd = o[3], Theta = o[4] };
+        var other = new CarAvoidance.LineCar { S = b[0], D = b[1], Vs = b[2], Vd = b[3], Theta = b[4] };
+        float want = (float)c.GetProperty("share").GetDouble();
+        float got = CarAvoidance.SpeedShare(in own, in other, (float)c.GetProperty("horizon").GetDouble(),
+            (float)c.GetProperty("margin").GetDouble(), (float)c.GetProperty("floor").GetDouble());
+        if (!(MathF.Abs(got - want) <= 1e-4f))
+        {
+            if (wrong < 3)
+                Console.WriteLine($"     avoid case {count}: plugin {got:F4}, car_avoid.py {want:F4}");
+            wrong++;
+        }
+        if (want < 1f)
+            slowed++;
+        count++;
+    }
+    bool ok = count > 0 && wrong == 0;
+    Console.WriteLine((ok ? "ok   " : "FAIL ") + $"CarAvoidance: {count - wrong} of {count} speed shares match car_avoid.py ({slowed} slow down)");
+    if (!ok) failures++;
 }
 
 // CarContactPush (CarContact.cs): the same push as the trainer's (drift_env._touch_push) on

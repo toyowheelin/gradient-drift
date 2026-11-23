@@ -11,7 +11,7 @@ contact (outlines overlapping, one event per pair until they are 0.5 s apart) by
   crossing  travel directions more than 60 deg apart (spun car, a car rejoining, wrong way)
 
 The striker is the car whose nose is nearer the contact; "chasing" counts contacts where the
-striker is a bot whose ChaseLeadId (telemetry FollowLeadId, logged since the avoidance PR) is the
+striker is a bot whose telemetry ChaseLeadId (logged since AvoidCars came in) is the
 other car. Older files have no chase column: the column then reads "-".
 
   python drift_rl/car_contacts.py drift_physics_telemetry_*.csv [--near 0.5]
@@ -78,8 +78,8 @@ def load(path):
     cols = ["Tick", "ServerTimeMs", "SessionId", "PosX", "PosZ", "SpeedKmh", "RealHeadingDeg",
             "HumanSessionId", "HumanPosX", "HumanPosZ", "HumanRotationX", "HumanSpeedKmh"]
     head = pd.read_csv(path, nrows=0).columns
-    has_chase = "FollowLeadId" in head
-    use = cols + (["FollowLeadId"] if has_chase else []) + (["PolicyActive"] if "PolicyActive" in head else [])
+    has_chase = "ChaseLeadId" in head
+    use = cols + (["ChaseLeadId"] if has_chase else []) + (["PolicyActive"] if "PolicyActive" in head else [])
     df = pd.read_csv(path, usecols=use, low_memory=False)
     return df, has_chase
 
@@ -108,7 +108,7 @@ def main(argv=None):
             cars = {}
             for r in g.itertuples(index=False):
                 cars[int(r.SessionId)] = (r.PosX, r.PosZ, math.radians(r.RealHeadingDeg), r.SpeedKmh,
-                                          int(r.FollowLeadId) if has_chase else -1)
+                                          int(r.ChaseLeadId) if has_chase else -1)
             r0 = g.iloc[0]
             if int(r0["HumanSessionId"]) >= 0 and not math.isnan(r0["HumanPosX"]):
                 human_ms += dt

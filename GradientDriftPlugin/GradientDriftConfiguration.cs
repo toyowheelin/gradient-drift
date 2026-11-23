@@ -95,6 +95,15 @@ public class GradientDriftConfiguration
     // player's own game already gives the player its share. Off: a bot drives through the hit as if
     // nothing were there (only the player's car reacts).
     public bool CarContactPush { get; set; } = false;
+    // AvoidCars: a bot slows for a car it would run into within AvoidHorizonSeconds (CarAvoidance:
+    // a velocity-obstacle test in the AI line's frame, each car its outline at its angle to the line,
+    // grown by AvoidMarginMeters). Only the car behind yields; a bot's own chase lead is left to the
+    // chase. Its pace drops at once to what keeps clear, no lower than the slowest the policy chases at,
+    // and eases back over AvoidReleaseSeconds. Off: only spacing and chasing keep bots off other cars.
+    public bool AvoidCars { get; set; } = false;
+    public float AvoidHorizonSeconds { get; set; } = 1.2f;
+    public float AvoidMarginMeters { get; set; } = 0.3f;
+    public float AvoidReleaseSeconds { get; set; } = 1f;
     public int ChaseTrainMax { get; set; } = 3;
     public float ChaseBotRunSeconds { get; set; } = 60f;
     public float ChaseBotCooldownSeconds { get; set; } = 30f;

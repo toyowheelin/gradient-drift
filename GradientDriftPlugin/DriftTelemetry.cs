@@ -62,6 +62,8 @@ internal struct DriftTelemetryRow
     public float GapAheadM;                // along the line to the next bot ahead; -1 = none
     public float Pace;                     // the pace the car is asked to drive (fraction, or km/h for gen4); 0 = none
     public float PaceOver;                 // the pace error input this tick (GradientDriftPlugin.UpdatePaceOver); 0 = none
+    public float AvoidShare;               // AvoidCars: the share of its speed the bot slows to for another car; 1 = none
+    public int ChaseLeadId;                // ChasePlayers: the session id of the car this bot chases; -1 = none
 
     // A tandem-train follower's row (TrainSize > 1); FollowLeadId -1 on every other row.
     public int FollowLeadId;               // the lead's session id
@@ -112,7 +114,7 @@ internal sealed class DriftTelemetry : IDisposable
         "SentVelocityY,SentPitch,SentRoll,SentStatusFlag," +
         "HumanPosY,HumanVelocityY,HumanPitch,HumanRoll,HumanStatusFlag,HumanPerformanceDelta," +
         "RearSlidingGrip,GapAheadM,FollowLeadId,FollowPlace,FollowDelayMs,FollowGapM,FollowOffsetM," +
-        "PolicyBrakeAction,Pace,PaceOver";
+        "PolicyBrakeAction,Pace,PaceOver,AvoidShare,ChaseLeadId";
 
     private const float RadToDeg = 180f / MathF.PI;
 
@@ -232,7 +234,9 @@ internal sealed class DriftTelemetry : IDisposable
         Number(line, row.FollowOffsetM, "F2");
         Number(line, row.PolicyBrakeAction, "F4");
         Number(line, row.Pace, "F4");
-        line.Append(row.PaceOver.ToString("F4", CultureInfo.InvariantCulture));
+        Number(line, row.PaceOver, "F4");
+        Number(line, row.AvoidShare, "F2");
+        line.Append(row.ChaseLeadId.ToString(CultureInfo.InvariantCulture));
 
         if (_maxBytes > 0 && _bytes + line.Length + 2 > _maxBytes)
         {
