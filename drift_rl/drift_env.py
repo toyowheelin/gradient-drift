@@ -255,7 +255,11 @@ PRIV_NAMES = (['lead_present', 'gap/20', 'gap_minus_target/5', 'breathe', 'lead_
 N_PRIV = len(PRIV_NAMES)
 # ghost columns (record_ghosts.py)
 GH_T, GH_X, GH_Z, GH_HEADING, GH_SLIP, GH_YAW, GH_SPEED, GH_ARC, GH_CTE, GH_STEER, GH_PEDAL, GH_BRAKE = range(12)
-GH_COLS = 12        # ghosts recorded before the controls (9 columns) read them as 0
+# ... and for a ghost that was itself chasing in a train (train_string.py): 1 + its train head's
+# acceleration along its path at each sample, m/s^2 (EnvConfig.chase_head_share). 0 = the ghost
+# drove at the head of its train (every recorded solo run and human lap)
+GH_HEAD_ON, GH_HEAD_ACCEL = 12, 13
+GH_COLS = 14        # ghosts recorded before the controls (9 columns) or the head (12) read them as 0
 # The skill input (fast_sim P_SKILL, 0 - 1, drawn per episode like the pace): how good a driver to
 # be. From what decides drift-day run groups and what coaches and judges pick out (README, "A
 # skill setting"), the range runs from a driver who is allowed out with others - holds a drift,
@@ -736,6 +740,12 @@ class EnvConfig:
     # ... and the bottom, as a share of pace_low: a chaser closing on a slower lead must slow under
     # the solo pace range (only a policy trained to will drift there)
     chase_pace_min: float = 1.0
+    # string stability in a train (car 3 chasing car 2 chasing a head): the share c of the
+    # acceleration feedforward taken from the train's head instead of the car just ahead,
+    # (1 - c) x lead + c x head (leader-predecessor following, Swaroop and Hedrick 1999; the
+    # plugin's ChaseHeadFeedforward). Only a lead whose ghost carries its head (GH_HEAD_ON) has
+    # one; 0 = the lead's acceleration only, as every policy so far was trained
+    chase_head_share: float = 0.0
     # a touch pushes the chaser off the lead (TOUCH_RESTITUTION); off = cars pass through each other
     # (the training default: only the touch is seen). chase_report.py --touch-push
     chase_touch_push: bool = False
@@ -1616,6 +1626,9 @@ def _step_one(i, states, mids, diags, actions, prev_act, counters, ep, params, r
                     lead_vx = rate * (gh[g, kn, GH_X] - gh[g, k, GH_X]) / span
                     lead_vz = rate * (gh[g, kn, GH_Z] - gh[g, k, GH_Z]) / span
                 lead_a = _lead_accel(gh, g, k, rate)
+                if gh[g, k, GH_HEAD_ON] > 0.5 and env_cfg.shape[0] > ENV_CFG_HEAD_SHARE:
+                    share = env_cfg[ENV_CFG_HEAD_SHARE]
+                    lead_a = (1.0 - share) * lead_a + share * rate * rate * gh[g, k, GH_HEAD_ACCEL]
                 lead_v_ahead = lead_v
                 breathe = _breathe(gh, g, gh_len[g], k, t_g)
                 inside = _inside(sp_pos, sp_next, sp_radius, int(d[fs.D_NearestPointId]))
@@ -2286,6 +2299,7 @@ ENV_CFG_SLIDING_GRIP_LOW = 11      # indices into env_cfg_vector()
 ENV_CFG_PACE_LOW = 13
 ENV_CFG_DRIFT_START = 22
 ENV_CFG_STYLE = 27                 # style_share, style_range, then the 4 style_fixed dials
+ENV_CFG_HEAD_SHARE = ENV_CFG_STYLE + 2 + N_STYLE_OBS     # chase_head_share, last
 
 
 def env_cfg_vector(cfg):
@@ -2299,7 +2313,8 @@ def env_cfg_vector(cfg):
                      1.0 if cfg.chase_touch_push else 0.0, cfg.drift_start_fraction,
                      cfg.drift_start_transition_share, cfg.drift_start_slip_low_deg, cfg.drift_start_slip_high_deg,
                      cfg.drift_start_ghost_share, cfg.style_share, cfg.style_range]
-                    + [float(v) for v in (tuple(cfg.style_fixed) + (0.0,) * N_STYLE_OBS)[:N_STYLE_OBS]])
+                    + [float(v) for v in (tuple(cfg.style_fixed) + (0.0,) * N_STYLE_OBS)[:N_STYLE_OBS]]
+                    + [cfg.chase_head_share])
 
 
 def ghost_arrays(world):
