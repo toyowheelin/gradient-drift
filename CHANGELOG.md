@@ -7,6 +7,17 @@ when releasing.
 
 ## Unreleased
 
+- `train_string.py` (new, trainer): measures whether gap errors grow down a ChaseBots train (string
+  stability). Car 2 chases a recorded head run, car 3 chases car 2's recorded run, all on one clock
+  with the plugin's gap law; prints each car's gap error, speed swing against the car ahead, time
+  over 3 m behind and time with the pace pinned at its top. Ghosts gain two columns (the train
+  head's acceleration) and the simulator a matching `chase_head_share`; older ghost files read as
+  heads, and every existing run is unchanged.
+- `ChaseHeadFeedforward` (new plugin setting, default 0 = off): a bot chasing a bot in a train takes
+  this share of its acceleration feedforward from the train's front car instead of the car just
+  ahead. Off by default: in the simulator it did not steady trains. Gap errors do grow down a train
+  (car 3 spends 2 - 4x car 2's time over 3 m behind), but the growth comes from fall-backs with the
+  pace pinned at its top, which feedforward cannot reach; a head with more pace in hand does help.
 - Physics fix (plugin and simulator): a spun bot stopped at full steering lock no longer sits still
   with the throttle on. The forward-speed model took the front tyres' slip from the full steering
   angle even at a standstill, so their sideways force was at its peak and its rearward part matched

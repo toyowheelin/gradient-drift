@@ -96,6 +96,12 @@ public class GradientDriftConfiguration
     // nothing were there (only the player's car reacts).
     public bool CarContactPush { get; set; } = false;
     public int ChaseTrainMax { get; set; } = 3;
+    // String stability in a train: each chaser adds its lead's acceleration to the gap law
+    // (feedforward); with only the car just ahead, a speed swing grows going back down the line.
+    // ChaseHeadFeedforward, 0 - 1, is the share of that feedforward taken from the train's front
+    // car instead ((1 - share) x the car ahead + share x the front car; leader-predecessor
+    // following, Swaroop and Hedrick 1999). 0 = the car ahead only. Bots behind the first chaser only.
+    public float ChaseHeadFeedforward { get; set; } = 0f;
     public float ChaseBotRunSeconds { get; set; } = 60f;
     public float ChaseBotCooldownSeconds { get; set; } = 30f;
 

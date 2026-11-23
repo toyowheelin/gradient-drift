@@ -3060,6 +3060,16 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
             leadSpeed = ChaseInputs.LineSpeed(lead, _lapLength);
             leadAccel = ChaseInputs.Accel(lead);
             low = policy.PaceLow * policy.ChasePaceMin;
+            // in a train, part of the feedforward from the car at its front (ChaseHeadFeedforward)
+            float headShare = Math.Clamp(_configuration.ChaseHeadFeedforward, 0f, 1f);
+            if (headShare > 0f && chasing && target.IsBot)
+            {
+                byte headId = TrainHead(leadId);
+                if (headId != leadId && _leadTracks.TryGetValue(headId, out LeadTrack? head) && head.Count > 0)
+                {
+                    leadAccel = (1f - headShare) * leadAccel + headShare * ChaseInputs.Accel(head);
+                }
+            }
         }
         float v = MathF.Max(0f, state.LineSpeedMs);
         float top = MathF.Max(low, high * state.Style.ChaseTopShare);
@@ -3179,6 +3189,35 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
                 }
             }
         }
+    }
+
+    // The car at the front of the line the car leadId is in, by this tick's _chaseTargets: follows
+    // each bot's own chase forward until a car that is not chasing (a player or a free bot).
+    private byte TrainHead(byte leadId)
+    {
+        byte id = leadId;
+        for (int steps = 0; steps <= _spaced.Count; steps++)
+        {
+            DriftCarState? at = null;
+            foreach (var (s, sid) in _spacedIds)
+            {
+                if (sid == id)
+                {
+                    at = s;
+                    break;
+                }
+            }
+            if (at == null || !_chaseTargets.TryGetValue(at, out var t))
+            {
+                return id;
+            }
+            id = t.LeadId;
+            if (!t.IsBot)
+            {
+                return id;
+            }
+        }
+        return leadId;            // a loop (AssignChases does not make one): the car ahead only
     }
 
     // How many bots chase in the line from this chaser forward, by this tick's _chaseTargets

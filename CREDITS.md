@@ -176,6 +176,13 @@ AGPL-3.0 program carry the work, given the notices.
   cooperative adaptive cruise control", ITSC 2011; Milanés and Shladover, "Modeling cooperative
   and autonomous adaptive cruise control dynamic responses using experimental data",
   Transportation Research Part C 48, 2014. The lead's acceleration fed forward into the IDM pace.
+* String stability in chase trains - Swaroop and Hedrick, "Constant spacing strategies for
+  platooning in automated highway systems", ASME J. Dynamic Systems, Measurement and Control 121,
+  1999 (leader-predecessor following: `ChaseHeadFeedforward`); Seiler, Pant, Hedrick, "Disturbance
+  propagation in vehicle strings", IEEE TAC 49, 2004; Naus et al., "String-stable CACC design and
+  experimental validation: a frequency-domain approach", IEEE Trans. Vehicular Technology 59, 2010;
+  Ploeg, van de Wouw, Nijmeijer, "Lp string stability of cascaded systems: application to vehicle
+  platooning", IEEE Trans. Control Systems Technology 22, 2014. How `train_string.py` measures it.
 * Residual policy learning - Silver, Allen, Tenenbaum, Kaelbling, "Residual Policy Learning", 2018
   ([arXiv 1812.06298](https://arxiv.org/abs/1812.06298)); Johannink et al., "Residual
   Reinforcement Learning for Robot Control", ICRA 2019. The add-on chase network (`--residual`).
