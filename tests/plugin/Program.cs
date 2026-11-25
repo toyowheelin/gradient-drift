@@ -12,10 +12,16 @@
 //     a wall hit or car data that does not add up.
 //
 //     dotnet run --project PluginChecks.csproj -- <cases folder>
+//
+// The zones, scores and records are GradientDriftScoringPlugin's, referenced under the alias Scoring:
+// it compiles its own copy of GradientDriftPlugin's track-file readers (PluginData and the rest).
+extern alias Scoring;
 using System.Numerics;
 using System.Text.Json;
 using AssettoServer.Server.Ai.Splines;
 using GradientDriftPlugin;
+using Scoring::GradientDriftScoring;
+using ScoringData = Scoring::GradientDriftPlugin.PluginData;
 
 if (args.Length != 1)
 {
@@ -244,7 +250,7 @@ if (cases.RootElement.TryGetProperty("zones", out JsonElement zoneCase))
             JunctionStartId = -1, JunctionEndId = -1, LeftId = -1, RightId = -1,
         };
     }
-    PluginData.Init(Path.Combine(folder, "zones"));
+    ScoringData.Init(Path.Combine(folder, "zones"));
     string before = Directory.GetCurrentDirectory();
     Directory.SetCurrentDirectory(Path.Combine(folder, "zones"));       // the track's files sit in the server folder
     List<DriftZones.Shape>? shapes = DriftZones.Load(track, trackPoints, (float)zoneCase.GetProperty("spacing").GetDouble(),
@@ -310,7 +316,7 @@ if (cases.RootElement.TryGetProperty("zones", out JsonElement judgeCase) && judg
         Id = i, Position = new Vector3(p[0], p[1], p[2]), NextId = (i + 1) % line.Length,
         PreviousId = (i + line.Length - 1) % line.Length, JunctionStartId = -1, JunctionEndId = -1, LeftId = -1, RightId = -1,
     }).ToArray();
-    PluginData.Init(Path.Combine(folder, "zones"));
+    ScoringData.Init(Path.Combine(folder, "zones"));
     string before = Directory.GetCurrentDirectory();
     Directory.SetCurrentDirectory(Path.Combine(folder, "zones"));
     DriftZones.Course? course = DriftZones.LoadCourse(track, trackPoints);

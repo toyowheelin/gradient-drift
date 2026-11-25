@@ -212,12 +212,18 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
 
     public GradientDriftPlugin(EntryCarManager entryCarManager, Lazy<ACServer> acServer,
         GradientDriftConfiguration configuration, ACServerConfiguration serverConfiguration, AiSpline spline,
-        SessionManager sessionManager, CSPServerExtraOptions cspServerExtraOptions,
-        CSPServerScriptProvider cspServerScriptProvider)
+        SessionManager sessionManager, CSPServerExtraOptions cspServerExtraOptions)
     {
         _entryCarManager = entryCarManager;
         _acServer = acServer;
         _configuration = configuration;
+        List<string> moved = _configuration.MovedZoneSettings();
+        if (moved.Count > 0)
+        {
+            // moved to their own plugin
+            Log.Warning("GradientDrift: {Settings} moved to GradientDriftScoringPlugin and are ignored here - put them in its "
+                + "--- !GradientDriftScoringConfiguration block of extra_cfg.yml (setup does that)", string.Join(", ", moved));
+        }
         if (_configuration.TrainSize > 1)
         {
             // retired in v0.3.0: bots form trains by chasing each other
@@ -260,18 +266,6 @@ public class GradientDriftPlugin : BackgroundService, IAssettoServerAutostart
         _trackName = trackName;
         _roadMeshPoints = LoadRoadMesh(trackName + RoadMeshFileSuffix);
         _roadMeshTree = _roadMeshPoints.Length > 0 ? new MeshKdTree(_roadMeshPoints) : null;
-
-        if (_configuration.ShowZones && !_configuration.IsArcadeScoring())
-        {
-            // the track's drift zones painted on the road for players with CSP (DriftZones.cs)
-            List<DriftZones.Shape>? zones = DriftZones.Load(trackName, spline.Points, _configuration.ZoneStripeSpacingMeters,
-                _configuration.ZoneLineWidthMeters);
-            if (zones is { Count: > 0 })
-            {
-                cspServerScriptProvider.AddScript(DriftZones.Script(zones, _configuration.ZoneColor, _configuration.ZoneLineWidthMeters),
-                    DriftZones.ScriptName);
-            }
-        }
 
         TrackTriangle[] sensorTriangles = TrackGeometry.Load(trackName + TrackGeometry.SensorFileSuffix);
         TrackTriangle[] collisionTriangles = TrackGeometry.Load(trackName + TrackGeometry.CollisionFileSuffix,

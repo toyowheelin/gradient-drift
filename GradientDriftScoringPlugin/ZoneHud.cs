@@ -1,4 +1,4 @@
-namespace GradientDriftPlugin;
+namespace GradientDriftScoring;
 
 // The zone score HUD for players with CSP: a CSP online script (sent like DriftZones' paint) that
 // asks the server for the player's numbers a few times a second (ZoneScoreController) and draws

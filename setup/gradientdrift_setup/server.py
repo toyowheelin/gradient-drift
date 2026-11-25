@@ -19,6 +19,9 @@ PLUGIN_CONFIG_TAG = '!GradientDriftConfiguration'
 # the plugin's name before the rename: a server set up with it is moved to the new name
 OLD_PLUGIN = 'DriftAiPlugin'
 OLD_PLUGIN_CONFIG_TAG = '!DriftAiPluginConfiguration'
+# players' drift scoring, HUD, board and painted zones: their own plugin (it needs no bots)
+SCORING_PLUGIN = 'GradientDriftScoringPlugin'
+SCORING_CONFIG_TAG = '!GradientDriftScoringConfiguration'
 
 
 @dataclass
@@ -45,6 +48,8 @@ class Server:
     ai_params: dict = field(default_factory=dict)     # extra_cfg.yml AiParams' plain values
     plugin_config: dict | None = None                 # the --- !GradientDriftConfiguration document
     plugin_files: list = field(default_factory=list)  # plugins/GradientDriftPlugin/*
+    scoring_config: dict | None = None                # the --- !GradientDriftScoringConfiguration document
+    scoring_files: list = field(default_factory=list) # plugins/GradientDriftScoringPlugin/*
     old_plugin: bool = False                          # set up under the old name (OLD_PLUGIN)
     old_plugin_doc: bool = False                      # its settings under OLD_PLUGIN_CONFIG_TAG
     old_policy: str = ''                              # plugins/DriftAiPlugin/DriftAiPlugin.policy.json, if there
@@ -129,6 +134,8 @@ def read_server(folder):
             tag = getattr(getattr(d, 'tag', None), 'value', None)
             if tag == PLUGIN_CONFIG_TAG:
                 s.plugin_config = dict(d)
+            elif tag == SCORING_CONFIG_TAG:
+                s.scoring_config = dict(d)
             elif tag == OLD_PLUGIN_CONFIG_TAG and s.plugin_config is None:
                 s.plugin_config = dict(d)          # renamed by setup with the rest
                 s.old_plugin = s.old_plugin_doc = True
@@ -140,6 +147,9 @@ def read_server(folder):
     plugin_dir = os.path.join(folder, 'plugins', PLUGIN)
     if os.path.isdir(plugin_dir):
         s.plugin_files = sorted(os.listdir(plugin_dir))
+    scoring_dir = os.path.join(folder, 'plugins', SCORING_PLUGIN)
+    if os.path.isdir(scoring_dir):
+        s.scoring_files = sorted(os.listdir(scoring_dir))
     bundle_path = os.path.join(plugin_dir, bundle.BUNDLE)
     if os.path.isfile(bundle_path):
         try:

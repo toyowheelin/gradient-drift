@@ -230,34 +230,37 @@ public class GradientDriftConfiguration
     // own "Powered by AssettoServer" line (the game shows it in chat). Empty = no line.
     public string JoinMessage { get; set; } = "Drift bots by Gradient Drift https://github.com/toyowheelin/gradient-drift";
 
-    // Paint the track's drift zones on the road for players with CSP (DriftZones.cs): the
-    // <track>_course_zones.csv setup writes (and its zone editor changes), as boxes of this colour
-    // (RRGGBB) with lines this wide, closed at both ends, striped every ZoneStripeSpacingMeters
-    // (twice that for a touch-and-go area). Needs <track>_course_edges.csv too. Not painted when
-    // ZoneScoreMode is Arcade (the zones are not scored then).
+    // Moved to GradientDriftScoringPlugin (its own plugin, with its own settings block; it needs no
+    // bots): the players' drift scoring, HUD, board and painted zones. Still accepted here so an older
+    // extra_cfg.yml starts, but ignored; setup moves them to the new block. The plugin warns at start
+    // when one is set to other than its old default.
     public bool ShowZones { get; set; } = true;
     public string ZoneColor { get; set; } = "F5C400";
     public float ZoneLineWidthMeters { get; set; } = 0.3f;
     public float ZoneStripeSpacingMeters { get; set; } = 1.6f;
-
-    // Score players' drifting through the zones (ZoneScoring.cs, ZoneJudge.cs): line, angle and
-    // speed in each zone, a tandem bonus, spins and wall hits marked down, one score for a run from
-    // the first zone to the last. Players with CSP see it on a HUD (ZoneHud); everyone gets a chat
-    // line per run. Each server keeps its own runs in ZoneRecordsFile (SQLite, in the server's
-    // folder; empty = keep nothing) and its board shows each driver's best, ZoneBoardSize of them.
-    //
-    // ZoneScoreMode picks how drifting is scored: Zones (above, like a drift series' judges) or
-    // Arcade (ArcadeJudge.cs: freestyle, no zones needed, so it works on any track: points for
-    // every moment sliding, from the angle and speed, times a combo that grows with each
-    // transition and a bonus for sliding close behind another car; a spin or wall hit loses the
-    // chain). Each mode keeps its own board.
     public bool ZoneScoring { get; set; } = true;
     public string ZoneScoreMode { get; set; } = "Zones";
-    public bool IsArcadeScoring() => string.Equals(ZoneScoreMode?.Trim(), "Arcade", StringComparison.OrdinalIgnoreCase);
     public bool ZoneHud { get; set; } = true;
     public bool ZoneScoreChat { get; set; } = true;
     public string ZoneRecordsFile { get; set; } = "gradientdrift_zone_records.db";
     public int ZoneBoardSize { get; set; } = 10;
+
+    // The moved settings above that are set to other than their old default.
+    public List<string> MovedZoneSettings()
+    {
+        var set = new List<string>();
+        if (!ShowZones) set.Add(nameof(ShowZones));
+        if (ZoneColor != "F5C400") set.Add(nameof(ZoneColor));
+        if (ZoneLineWidthMeters != 0.3f) set.Add(nameof(ZoneLineWidthMeters));
+        if (ZoneStripeSpacingMeters != 1.6f) set.Add(nameof(ZoneStripeSpacingMeters));
+        if (!ZoneScoring) set.Add(nameof(ZoneScoring));
+        if (ZoneScoreMode != "Zones") set.Add(nameof(ZoneScoreMode));
+        if (!ZoneHud) set.Add(nameof(ZoneHud));
+        if (!ZoneScoreChat) set.Add(nameof(ZoneScoreChat));
+        if (ZoneRecordsFile != "gradientdrift_zone_records.db") set.Add(nameof(ZoneRecordsFile));
+        if (ZoneBoardSize != 10) set.Add(nameof(ZoneBoardSize));
+        return set;
+    }
 
     // Every this many seconds, a line in the server log with the time the plugin took on the
     // server's update thread: milliseconds a tick, split into the network, the sensors (rays,

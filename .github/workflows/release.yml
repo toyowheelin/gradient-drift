@@ -3,7 +3,8 @@
 # on the AssettoServer version) and the setup program for Windows and Linux (build-setup.yml, with
 # its smoke tests), then makes one draft release with one zip, to publish by hand:
 #   gradient-drift-<tag>/windows/  and  linux/   each the setup program with the plugin already in
-#   its GradientDriftPlugin/ folder (where setup looks for it), so either folder stands on its own.
+#   its GradientDriftPlugin/ folder and the scoring plugin in GradientDriftScoringPlugin/ (where
+#   setup looks for them), so either folder stands on its own.
 name: release
 
 on:
@@ -42,8 +43,9 @@ jobs:
             unzip -q gradient-drift-setup-$os.zip -d unz/$os
             mkdir -p "$top"
             mv unz/$os/gradient-drift-setup "$top/$os"
-            cp -r plugin/GradientDriftPlugin "$top/$os/"
+            cp -r plugin/GradientDriftPlugin plugin/GradientDriftScoringPlugin "$top/$os/"
             test -s "$top/$os/GradientDriftPlugin/GradientDriftPlugin.dll"
+            test -s "$top/$os/GradientDriftScoringPlugin/GradientDriftScoringPlugin.dll"
             test -s "$top/$os/GradientDriftPlugin/GradientDriftPlugin.features.json"
             # one policy for every server: exactly the plugin's own, nothing per track
             policies=$(find "$top/$os" -name '*.policy.json' | wc -l)
@@ -61,8 +63,9 @@ jobs:
                     through it (./linux/gradient-drift-setup --help for the one-line commands)
 
           Use the one for the machine you run setup on (the one with the game installed); you can
-          delete the other. Each has the plugin already in its GradientDriftPlugin folder, and setup
-          installs it on the server, with the track data, car files and settings the bots need.
+          delete the other. Each has the plugin already in its GradientDriftPlugin folder (the bots)
+          and GradientDriftScoringPlugin folder (players' drift scoring, HUD and painted zones), and
+          setup installs them on the server, with the track data, car files and settings they need.
           For a hosted server (no game there), download the server's cfg folder, point setup at
           the folder holding it and use Export: it writes the files to upload. See setup/README.md.
 

@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Players' drift scoring, HUD, board and painted zones, on their own: no bots, no policy and no
+       GradientDriftPlugin needed. Like GradientDriftPlugin it builds inside an AssettoServer checkout,
+       beside it: AssettoServer/GradientDriftScoringPlugin/ next to AssettoServer/GradientDriftPlugin/. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <RootNamespace>GradientDriftScoring</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\AssettoServer\AssettoServer.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+    <ProjectReference Include="..\AssettoServer.Shared\AssettoServer.Shared.csproj">
+      <Private>false</Private>
+      <ExcludeAssets>runtime</ExcludeAssets>
+    </ProjectReference>
+  </ItemGroup>
+
+  <!-- The track files both plugins read (course edges, pace reference, the data bundle), compiled from
+       GradientDriftPlugin's own source so there is one copy of each. -->
+  <ItemGroup>
+    <Compile Include="..\GradientDriftPlugin\CourseEdges.cs" Link="Shared\CourseEdges.cs" />
+    <Compile Include="..\GradientDriftPlugin\PaceReference.cs" Link="Shared\PaceReference.cs" />
+    <Compile Include="..\GradientDriftPlugin\PluginData.cs" Link="Shared\PluginData.cs" />
+    <Compile Include="..\GradientDriftPlugin\VerboseLog.cs" Link="Shared\VerboseLog.cs" />
+  </ItemGroup>
+
+</Project>

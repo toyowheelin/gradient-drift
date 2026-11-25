@@ -34,6 +34,22 @@ def default_plugin_source():
     return None
 
 
+def scoring_source(plugin_source):
+    """The scoring plugin's build that goes with the plugin build in plugin_source: the same path with
+    its GradientDriftPlugin folder as GradientDriftScoringPlugin (the release's folder beside it, or the
+    repository's build folder beside the plugin's), or None when there is none."""
+    if not plugin_source:
+        return None
+    parts = os.path.normpath(os.path.abspath(plugin_source)).split(os.sep)
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i] == 'GradientDriftPlugin':
+            folder = os.sep.join(parts[:i] + ['GradientDriftScoringPlugin'] + parts[i + 1:]) or os.sep
+            if os.path.exists(os.path.join(folder, 'GradientDriftScoringPlugin.dll')):
+                return folder
+            break
+    return None
+
+
 def default_track_data():
     """Track files (setup_track.py's output, one folder per track): tracks/ beside the packaged
     program, else the repository's drift_rl/tracks/."""

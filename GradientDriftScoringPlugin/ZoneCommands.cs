@@ -2,7 +2,7 @@ using System.Globalization;
 using AssettoServer.Commands;
 using Qmmands;
 
-namespace GradientDriftPlugin;
+namespace GradientDriftScoring;
 
 // Chat commands for the zone scores (ZoneScoring): /zones says how runs are scored and the
 // player's best, /top the server's board.

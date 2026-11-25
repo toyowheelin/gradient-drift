@@ -1,6 +1,6 @@
 using System.Numerics;
 
-namespace GradientDriftPlugin;
+namespace GradientDriftScoring;
 
 // Freestyle (arcade) drift scoring: no zones, no lines on the road. It works on any track. A chain
 // starts when the car starts sliding and builds points every moment it slides:
