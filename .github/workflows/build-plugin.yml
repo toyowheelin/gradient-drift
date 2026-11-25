@@ -104,10 +104,9 @@ jobs:
           lost = [k for k in scoring_keys if b'set_' + k.encode() + b'\0' not in scoring_dll]
           print(f'scoring plugin: {len(scoring_keys)} settings; not found in the DLL: {lost}')
           assert scoring_keys and not lost, 'setup could not see these scoring settings in the DLL'
-          import sys
-          sys.path.insert(0, 'gradient-drift/setup')
-          from gradientdrift_setup.plan import SCORING_SETTINGS
-          assert set(SCORING_SETTINGS) <= set(scoring_keys), 'setup moves settings the scoring plugin lacks'
+          moved = re.search(r'SCORING_SETTINGS = \(([^)]*)\)', open('gradient-drift/setup/gradientdrift_setup/plan.py').read())
+          moved = re.findall(r"'(\w+)'", moved.group(1))
+          assert moved and set(moved) <= set(scoring_keys), 'setup moves settings the scoring plugin lacks'
           plan = open('gradient-drift/setup/gradientdrift_setup/plan.py').read()
           policy = open(f'{out}/GradientDriftPlugin.policy.json', 'rb').read().replace(b'\r\n', b'\n')
           sha = hashlib.sha256(policy).hexdigest()
