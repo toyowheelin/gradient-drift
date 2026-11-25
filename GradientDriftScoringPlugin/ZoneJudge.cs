@@ -1,6 +1,6 @@
 using System.Numerics;
 
-namespace GradientDriftPlugin;
+namespace GradientDriftScoring;
 
 // Judges one car's drifting through the track's zones, the way a drift judge would and the way
 // setup's zones.score measures a recorded run, from what the server knows of the car: where it is,

@@ -165,6 +165,7 @@ each policy drives in the car it learned in.
 | folder | what it is |
 |---|---|
 | [`GradientDriftPlugin/`](GradientDriftPlugin/) | The server plugin (C#). `GradientDriftPlugin.policy.json` is the trained policy it runs; [`SETTINGS.md`](GradientDriftPlugin/SETTINGS.md) lists its settings; [`HISTORY.md`](GradientDriftPlugin/HISTORY.md) is how each part of it came about, and the server tests. |
+| [`GradientDriftScoringPlugin/`](GradientDriftScoringPlugin/README.md) | The scoring plugin (C#): players' drift scoring, its HUD, the server's board and the painted drift zones. It needs no bots, so it also runs on its own, on a server without them. |
 | [`setup/`](setup/README.md) | The setup program for server operators: reads a server, says what it needs for drift bots, and makes those changes on a yes, with backups and an undo. |
 | [`drift_rl/`](drift_rl/README.md) | The simulator, trainer and evaluation tools (Python), for training a policy of your own. |
 | [`claude-plugin/`](claude-plugin/README.md) | A Claude Code plugin for server owners: a skill that lets Claude tune the bots to your server, reading the plugin's log and scorecards and changing settings one at a time with backups. |
@@ -173,18 +174,19 @@ each policy drives in the car it learned in.
 
 ## What the plugin does on a server
 
-- **No ports of its own; with drift scoring on, a few read-only addresses and chat commands.** It
-  reads the other cars' positions and speeds to place the bots, chase or wait for a car, (with
-  `AdaptToPlayers`) match the players' pace and gap, and (with `ZoneScoring`, on by default) judge
-  players' drifting. Scoring adds three GET addresses on AssettoServer's own HTTP port, which the
+- **No ports of its own; with the scoring plugin, a few read-only addresses and chat commands.** It
+  reads the other cars' positions and speeds to place the bots, chase or wait for a car and (with
+  `AdaptToPlayers`) match the players' pace and gap. The scoring plugin
+  ([GradientDriftScoringPlugin](GradientDriftScoringPlugin/README.md), which setup installs beside it)
+  reads them to judge players' drifting, and adds three GET addresses on AssettoServer's own HTTP port, which the
   HUD reads: `/gradientdrift/zones/<car>` (that car's live points), `/gradientdrift/board` and the
   board as a web page at `/gradientdrift/leaderboard` (names encoded; the page runs and loads
   nothing). It also adds the chat commands `/zones` and `/top`. None of them takes any input beyond
-  a car number or changes anything. `ZoneScoring: false` turns them all off.
+  a car number or changes anything. `ZoneScoring: false` in its settings turns them all off.
 - **What it sends players.** Besides the bots' cars and their entry-list names, players get a line
   in the welcome message on joining, "Drift bots by Gradient Drift" with a link here (`JoinMessage`;
-  `JoinMessage: ""` turns it off), and a chat line for each scored run (`ZoneScoreChat`). Players
-  with Custom Shaders Patch also get short scripts: one paints the track's drift zones on the road
+  `JoinMessage: ""` turns it off). The scoring plugin sends a chat line for each scored run
+  (`ZoneScoreChat`), and players with Custom Shaders Patch get short scripts from it: one paints the track's drift zones on the road
   (`ShowZones`), and one draws the drift HUD (`ZoneHud`). The scripts are plain text built at start
   (the zones' corner points, and lines that draw with CSP's track paint and UI). AssettoServer
   serves them from its own scripts address, as it does for its other client scripts. The paint
@@ -248,36 +250,44 @@ Clone it whole, not with `--depth 1`, because its build reads its version from g
 git clone --branch v0.0.54 https://github.com/compujuckel/AssettoServer.git
 ```
 
-**2. Put the plugin inside it.** Copy this repository's `GradientDriftPlugin/` folder into the
-AssettoServer folder, next to its own projects. The plugin's `.csproj` finds them by relative path,
-so it has to sit exactly here:
+**2. Put the plugins inside it.** Copy this repository's `GradientDriftPlugin/` and
+`GradientDriftScoringPlugin/` folders into the AssettoServer folder, next to its own projects. The
+plugins' `.csproj` files find them (and the scoring plugin finds a few of GradientDriftPlugin's
+files) by relative path, so they have to sit exactly here:
 
 ```
 AssettoServer/
 ├── AssettoServer/              (AssettoServer's own projects)
 ├── AssettoServer.Shared/
-└── GradientDriftPlugin/        <- this repository's folder
-    ├── GradientDriftPlugin.csproj
-    ├── GradientDriftPlugin.policy.json
+├── GradientDriftPlugin/        <- this repository's folders
+│   ├── GradientDriftPlugin.csproj
+│   ├── GradientDriftPlugin.policy.json
+│   └── *.cs
+└── GradientDriftScoringPlugin/
+    ├── GradientDriftScoringPlugin.csproj
     └── *.cs
 ```
 
-The plugin is one folder of this repository, so git can't clone it into that spot on its own. To
+The plugins are folders of this repository, so git can't clone them into that spot on their own. To
 build from a clone you can update with `git pull`, clone this repository somewhere else and link its
-folder into the AssettoServer tree instead of copying it. On Windows (PowerShell, from the folder
+folders into the AssettoServer tree instead of copying them. On Windows (PowerShell, from the folder
 holding both clones):
 
 ```
 git clone https://github.com/toyowheelin/gradient-drift.git
 New-Item -ItemType Junction -Path AssettoServer\GradientDriftPlugin -Target (Resolve-Path gradient-drift\GradientDriftPlugin)
+New-Item -ItemType Junction -Path AssettoServer\GradientDriftScoringPlugin -Target (Resolve-Path gradient-drift\GradientDriftScoringPlugin)
 ```
 
-On Linux: `ln -s ../gradient-drift/GradientDriftPlugin AssettoServer/GradientDriftPlugin`.
+On Linux: `ln -s ../gradient-drift/GradientDriftPlugin AssettoServer/GradientDriftPlugin` and
+`ln -s ../gradient-drift/GradientDriftScoringPlugin AssettoServer/GradientDriftScoringPlugin`.
 
 **3. Build it:**
 
 ```
 cd AssettoServer/GradientDriftPlugin
+dotnet build
+cd ../GradientDriftScoringPlugin
 dotnet build
 ```
 
@@ -291,8 +301,12 @@ result is in `bin/Debug/net8.0/`. The files the server needs are:
 | `GradientDriftPlugin.policy.json` | the trained policy, copied in from the source folder |
 | `GradientDriftPlugin.features.json` | what policies this build can run, for setup's check (the plugin itself does not read it) |
 
+and the scoring plugin's `GradientDriftScoringPlugin.dll` and `GradientDriftScoringPlugin.deps.json`
+in its own `bin/Debug/net8.0/`.
+
 **4. Install it on the server.** Run the [setup program](setup/README.md) with its `--plugin` option
-(or the window's **Plugin build** field) pointed at the `bin/Debug/net8.0/` folder. On a new server
+(or the window's **Plugin build** field) pointed at the plugin's `bin/Debug/net8.0/` folder (it finds the scoring plugin's build beside it).
+On a new server
 this is the way to do it: setup installs your build along with everything else the bots need (see
 the note above), and on a server it already set up it replaces the plugin with your build.
 

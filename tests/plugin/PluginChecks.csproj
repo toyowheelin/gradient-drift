@@ -2,6 +2,7 @@
 
   <!-- The plugin checker (Program.cs). Like the plugin, it builds inside an AssettoServer checkout:
        CI copies this folder to AssettoServer/PluginChecks/ beside AssettoServer/GradientDriftPlugin/
+       and AssettoServer/GradientDriftScoringPlugin/
        (.github/workflows/build-plugin.yml). It is not part of the plugin or its download. -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -15,6 +16,7 @@
     <ProjectReference Include="..\AssettoServer\AssettoServer.csproj" />
     <ProjectReference Include="..\AssettoServer.Shared\AssettoServer.Shared.csproj" />
     <ProjectReference Include="..\GradientDriftPlugin\GradientDriftPlugin.csproj" />
+    <ProjectReference Include="..\GradientDriftScoringPlugin\GradientDriftScoringPlugin.csproj" Aliases="Scoring" />
   </ItemGroup>
 
 </Project>

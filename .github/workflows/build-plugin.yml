@@ -3,15 +3,16 @@
 # (a workflow artifact; release.yml calls it on a v* tag and attaches it to the draft release). The
 # download's name and README say which AssettoServer version it is for. The plugin's .csproj
 # references AssettoServer by relative path, so the plugin is placed inside an AssettoServer checkout
-# as AssettoServer/GradientDriftPlugin/, as on a developer's machine.
+# as AssettoServer/GradientDriftPlugin/, as on a developer's machine, and the scoring plugin beside it
+# as AssettoServer/GradientDriftScoringPlugin/ (it compiles some of GradientDriftPlugin's source too).
 name: build plugin
 
 on:
   push:
     branches: [main]
-    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', 'setup/gradientdrift_setup/pairing.py', 'setup/gradientdrift_setup/zones.py', 'drift_rl/build_zones.py', 'tools/plugin_features.py', 'drift_rl/policy.py', 'tests/plugin/**', '.github/workflows/build-plugin.yml']
+    paths: ['GradientDriftPlugin/**', 'GradientDriftScoringPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', 'setup/gradientdrift_setup/pairing.py', 'setup/gradientdrift_setup/zones.py', 'drift_rl/build_zones.py', 'tools/plugin_features.py', 'drift_rl/policy.py', 'tests/plugin/**', '.github/workflows/build-plugin.yml']
   pull_request:
-    paths: ['GradientDriftPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', 'setup/gradientdrift_setup/pairing.py', 'setup/gradientdrift_setup/zones.py', 'drift_rl/build_zones.py', 'tools/plugin_features.py', 'drift_rl/policy.py', 'tests/plugin/**', '.github/workflows/build-plugin.yml']
+    paths: ['GradientDriftPlugin/**', 'GradientDriftScoringPlugin/**', 'setup/gradientdrift_setup/identify.py', 'setup/gradientdrift_setup/plan.py', 'setup/gradientdrift_setup/pairing.py', 'setup/gradientdrift_setup/zones.py', 'drift_rl/build_zones.py', 'tools/plugin_features.py', 'drift_rl/policy.py', 'tests/plugin/**', '.github/workflows/build-plugin.yml']
   workflow_dispatch:
   workflow_call:       # from release.yml on a v* tag
     outputs:
@@ -60,14 +61,20 @@ jobs:
           print('shipped policy needs: ' + '; '.join(pairing.policy_needs(doc)))
           assert not problems, 'the plugin cannot run its own shipped policy: ' + '; '.join(problems)
           PY
-      - name: place the plugin in the AssettoServer tree
-        run: cp -r gradient-drift/GradientDriftPlugin AssettoServer/GradientDriftPlugin
+      - name: place the plugins in the AssettoServer tree
+        run: |
+          cp -r gradient-drift/GradientDriftPlugin AssettoServer/GradientDriftPlugin
+          cp -r gradient-drift/GradientDriftScoringPlugin AssettoServer/GradientDriftScoringPlugin
       - name: build
-        run: dotnet build AssettoServer/GradientDriftPlugin/GradientDriftPlugin.csproj -c Debug
+        run: |
+          dotnet build AssettoServer/GradientDriftPlugin/GradientDriftPlugin.csproj -c Debug
+          dotnet build AssettoServer/GradientDriftScoringPlugin/GradientDriftScoringPlugin.csproj -c Debug
       - name: the build has what the server loads
         run: |
           out=AssettoServer/GradientDriftPlugin/bin/Debug/net8.0
           ls -l $out/GradientDriftPlugin.dll $out/GradientDriftPlugin.deps.json $out/GradientDriftPlugin.policy.json $out/GradientDriftPlugin.features.json
+          scoring=AssettoServer/GradientDriftScoringPlugin/bin/Debug/net8.0
+          ls -l $scoring/GradientDriftScoringPlugin.dll $scoring/GradientDriftScoringPlugin.deps.json
       - name: the plugin runs policies as the trainer does, and refuses what it cannot run
         # tests/plugin: the plugin's own loader and network on the shipped policy, made-up ones of
         # every shape it runs (their actions against drift_rl/policy.py's) and broken ones
@@ -91,6 +98,15 @@ jobs:
           lost = [k for k in keys if b'set_' + k.encode() + b'\0' not in dll]
           print(f'{len(keys)} settings; not found in the DLL: {lost}')
           assert keys and not lost, 'setup could not see these settings in the DLL'
+          scoring_dll = open('AssettoServer/GradientDriftScoringPlugin/bin/Debug/net8.0/GradientDriftScoringPlugin.dll', 'rb').read()
+          scoring_cs = open('gradient-drift/GradientDriftScoringPlugin/GradientDriftScoringConfiguration.cs').read()
+          scoring_keys = re.findall(r'public [\w<>?,\[\] ]+? (\w+) \{ get; set; \}', scoring_cs)
+          lost = [k for k in scoring_keys if b'set_' + k.encode() + b'\0' not in scoring_dll]
+          print(f'scoring plugin: {len(scoring_keys)} settings; not found in the DLL: {lost}')
+          assert scoring_keys and not lost, 'setup could not see these scoring settings in the DLL'
+          moved = re.search(r'SCORING_SETTINGS = \(([^)]*)\)', open('gradient-drift/setup/gradientdrift_setup/plan.py').read())
+          moved = re.findall(r"'(\w+)'", moved.group(1))
+          assert moved and set(moved) <= set(scoring_keys), 'setup moves settings the scoring plugin lacks'
           plan = open('gradient-drift/setup/gradientdrift_setup/plan.py').read()
           policy = open(f'{out}/GradientDriftPlugin.policy.json', 'rb').read().replace(b'\r\n', b'\n')
           sha = hashlib.sha256(policy).hexdigest()
@@ -122,8 +138,10 @@ jobs:
           version=$GITHUB_REF_NAME
           [[ "$GITHUB_REF" == refs/tags/v* ]] || version=$(git -C gradient-drift rev-parse --short HEAD)
           name=GradientDriftPlugin-$version-for-AssettoServer-$ASSETTOSERVER_VERSION
-          mkdir -p pkg/GradientDriftPlugin
+          scoring=AssettoServer/GradientDriftScoringPlugin/bin/Debug/net8.0
+          mkdir -p pkg/GradientDriftPlugin pkg/GradientDriftScoringPlugin
           cp $out/GradientDriftPlugin.dll $out/GradientDriftPlugin.deps.json $out/GradientDriftPlugin.policy.json $out/GradientDriftPlugin.features.json pkg/GradientDriftPlugin/
+          cp $scoring/GradientDriftScoringPlugin.dll $scoring/GradientDriftScoringPlugin.deps.json pkg/GradientDriftScoringPlugin/
           cp gradient-drift/LICENSE gradient-drift/CREDITS.md pkg/
           cat > pkg/README.txt <<EOF
           Gradient Drift plugin $version, built for AssettoServer $ASSETTOSERVER_VERSION.
@@ -135,8 +153,13 @@ jobs:
           says so in the server log at start, and the bots may misbehave: use the release made for your
           version, or build the plugin from the source against it.
 
-          To install: put this GradientDriftPlugin folder beside the setup program (the release has
-          it there already), and run setup on the server folder. It installs the plugin and makes the track data, car files and settings.
+          Two plugins:
+          GradientDriftPlugin         the drift bots
+          GradientDriftScoringPlugin  players' drift scoring, HUD, board and painted zones (needs no bots)
+
+          To install: put both folders beside the setup program (the release has them there already),
+          and run setup on the server folder. It installs the plugins and makes the track data, car
+          files and settings.
 
           Source, licence (AGPL-3.0, in LICENSE) and documentation:
           $GITHUB_SERVER_URL/$GITHUB_REPOSITORY (built from commit $GITHUB_SHA)

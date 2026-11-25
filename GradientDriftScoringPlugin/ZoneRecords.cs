@@ -3,7 +3,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using Serilog;
 
-namespace GradientDriftPlugin;
+namespace GradientDriftScoring;
 
 // The server's zone run records: a small SQLite database file of its own on each server (beside
 // its other files), so each server keeps its own leaderboard. Every scored run is kept; the board

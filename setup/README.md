@@ -73,15 +73,20 @@ gradient-drift-<version>/
 │   │   ├── GradientDriftPlugin.deps.json
 │   │   ├── GradientDriftPlugin.features.json
 │   │   └── GradientDriftPlugin.policy.json
+│   ├── GradientDriftScoringPlugin/   <- players' drift scoring, HUD and painted zones
+│   │   ├── GradientDriftScoringPlugin.dll
+│   │   └── GradientDriftScoringPlugin.deps.json
 │   └── ...
 └── linux/
     ├── gradient-drift-setup
-    ├── GradientDriftPlugin/      (the same plugin)
+    ├── GradientDriftPlugin/      (the same plugins)
+    ├── GradientDriftScoringPlugin/
     └── ...
 ```
 
 Use the folder for the machine you run setup on; the other can be deleted. Setup finds the plugin
-beside it and installs it on the server (or updates an older one). It carries its own Python and
+beside it and installs it on the server (or updates an older one), with the scoring plugin from the
+folder beside the plugin's. It carries its own Python and
 Qt; nothing to install. Track data setup made before (its `tracks` folder) is kept per folder:
 copy `tracks` over from an older setup folder to skip making it again. The plugin can live anywhere else too: pick its
 `GradientDriftPlugin` folder under **Plugin build** on the last page, or give `--plugin`.
@@ -251,9 +256,9 @@ gradient-drift-setup zones "D:\servers\my server" picture zones.svg ai_car_monit
 ```
 
 Setup copies the zones to the server with the track's other files (run it again after changing
-them), and the plugin paints them on the road for players with Custom Shaders Patch: yellow boxes
-closed at both ends, striped inside (`ShowZones`, `ZoneColor` and the rest in the plugin's
-[SETTINGS.md](../GradientDriftPlugin/SETTINGS.md)). For the bots, zones change what the trainer pays
+them), and the scoring plugin paints them on the road for players with Custom Shaders Patch: yellow
+boxes closed at both ends, striped inside (`ShowZones`, `ZoneColor` and the rest in its
+[settings](../GradientDriftScoringPlugin/README.md#settings)). For the bots, zones change what the trainer pays
 for: they drive a track's new zones only after a policy is trained on that track with them.
 
 ## A server on a hosting plan (or any machine without the game)
@@ -300,7 +305,7 @@ changed, and no bot is taken away.
 
 **`extra_cfg.yml`:**
 
-- `EnableAi`, and the plugin in `EnablePlugins`;
+- `EnableAi`, and the plugin and the scoring plugin in `EnablePlugins`;
 - the `AiParams` bots need. AssettoServer only spawns AI for a player near the AI line who is not
   idle, and a drift player is often well off it, or parked watching, so setup sets
   `MaxPlayerCount` (the player slots), `MaxPlayerDistanceToAiSplineMeters` at least 100 and
@@ -316,7 +321,9 @@ changed, and no bot is taken away.
   is what shows for a bot with no `DRIVERNAME` or with that setting off;
 - the plugin's own section with `EnableLearnedPolicy: true`, `BotPacePercent` when given, and
   `HoldBotSpacing: true` where it was off and there are several bots. `TrainSize` (retired in
-  v0.3.0) is taken out.
+  v0.3.0) is taken out;
+- the scoring settings (`ShowZones`, `ZoneScoring`, `ZoneScoreMode` and the rest) moved from the
+  plugin's section to the scoring plugin's own (`--- !GradientDriftScoringConfiguration`).
 
 **Made first when they are not there:** the track's data, into the track files folder (`tracks/`
 beside the packaged program, else the repository's `drift_rl/tracks`), never into the server; then,

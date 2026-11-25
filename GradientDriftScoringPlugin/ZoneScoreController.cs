@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.Mvc;
 
-namespace GradientDriftPlugin;
+namespace GradientDriftScoring;
 
 // What the zone HUD (ZoneHud) asks the server for, on AssettoServer's HTTP port: one car's live
 // numbers and latest scores, and the server's board. Plain tab-separated lines (ZoneScoring); the

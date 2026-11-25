@@ -7,6 +7,18 @@ when releasing.
 
 ## Unreleased
 
+- Players' drift scoring is its own plugin now, GradientDriftScoringPlugin, in its own folder of the
+  release beside GradientDriftPlugin: the zone and arcade scoring, the HUD, the chat lines, `/zones`
+  and `/top`, each server's board and the painted drift zones. It needs no bots, no policy and no
+  GradientDriftPlugin, so a server without bots (a competition server) can run it alone; Arcade mode
+  needs no track files and works with AI off too, while Zones mode still needs the server's AI line
+  (`EnableAi: true`, no AI cars needed). Its settings are the same names in its own
+  `--- !GradientDriftScoringConfiguration` block
+  ([settings](https://github.com/toyowheelin/gradient-drift/blob/main/GradientDriftScoringPlugin/README.md#settings));
+  GradientDriftPlugin still accepts them in its own block so an older `extra_cfg.yml` starts, but
+  ignores them and warns. Setup installs and enables the scoring plugin and moves the settings over.
+  Building from source: link or copy `GradientDriftScoringPlugin/` into the AssettoServer tree beside
+  `GradientDriftPlugin/` too.
 - New plugin setting `AvoidCars` (off by default): a bot slows for a car it would run into within
   `AvoidHorizonSeconds` (1.2 s), bots and players alike, moving or stopped, by a velocity-obstacle
   test in the racing line's frame (after ORCA). Only the car behind yields, and a bot's own chase lead

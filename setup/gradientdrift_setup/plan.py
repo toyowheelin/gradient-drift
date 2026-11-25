@@ -12,9 +12,16 @@ from .find import track_data_home, track_data_root
 from .game import _DRIFT_RL, car_facts, track_facts
 from .identify import TESTED_VERSION, identify, version_tuple
 from . import bundle, pairing
-from .server import OLD_PLUGIN, OLD_PLUGIN_CONFIG_TAG, PLUGIN, PLUGIN_CONFIG_TAG, server_running
+from .server import (OLD_PLUGIN, OLD_PLUGIN_CONFIG_TAG, PLUGIN, PLUGIN_CONFIG_TAG, SCORING_CONFIG_TAG, SCORING_PLUGIN,
+                     server_running)
 
 PLUGIN_FILES = ['GradientDriftPlugin.dll', 'GradientDriftPlugin.deps.json', 'GradientDriftPlugin.policy.json']
+SCORING_FILES = ['GradientDriftScoringPlugin.dll', 'GradientDriftScoringPlugin.deps.json']
+# The settings that moved from GradientDriftPlugin's block to GradientDriftScoringPlugin's (players' drift
+# scoring, HUD, board and painted zones became their own plugin). The old plugin still accepts them but
+# ignores them; setup moves each one set in the old block to the new block.
+SCORING_SETTINGS = ('ShowZones', 'ZoneColor', 'ZoneLineWidthMeters', 'ZoneStripeSpacingMeters', 'ZoneScoring',
+                    'ZoneScoreMode', 'ZoneHud', 'ZoneScoreChat', 'ZoneRecordsFile', 'ZoneBoardSize')
 # Every policy a plugin release shipped (SHA-256 of the file, line endings as LF), with the release.
 # A server's policy that is one of these is a stock one, replaced by the policy setup carries even
 # beside the same plugin; any other was made for the server (polished for its track) and is kept.
@@ -229,6 +236,69 @@ def same_data(a, b):
         return text(a) == text(b)
     except (OSError, EOFError):
         return False
+
+
+def _yaml_value(value):
+    """A setting's value as extra_cfg.yml text."""
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    text = str(value)
+    if isinstance(value, (int, float)) or re.fullmatch(r'[A-Za-z0-9_.-]+', text):
+        return text
+    return '"' + text.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def plan_scoring(p, plugin_source):
+    """The scoring plugin (players' drift scoring, HUD, board and painted zones) beside the bots' plugin:
+    installed or updated from the build next to plugin_source (find.scoring_source), enabled, and the
+    scoring settings the bots' plugin block still holds moved to its own block."""
+    from .find import scoring_source
+    server = p.server
+    x = 'cfg/extra_cfg.yml'
+    rel = f'plugins/{SCORING_PLUGIN}'
+    source = scoring_source(plugin_source)
+    if source is None:
+        if not all(f in server.scoring_files for f in SCORING_FILES):
+            p.notes.append(f"no {SCORING_PLUGIN} build beside the plugin's, so players' drift scoring, its HUD and the "
+                           f"painted zones are not installed (put the release's {SCORING_PLUGIN} folder beside its "
+                           f"{PLUGIN} folder and run setup again)")
+            return
+    else:
+        update = False
+        for f in SCORING_FILES:
+            there = os.path.join(server.folder, rel, f)
+            src = os.path.join(source, f)
+            if not os.path.exists(src):
+                continue
+            if f not in server.scoring_files:
+                p.changes.append(Change(f'{rel}/{f}', "install the scoring plugin (players' drift scoring, HUD, board "
+                                        "and painted zones)", op=('copy', src, f'{rel}/{f}')))
+            elif not filecmp.cmp(src, there, shallow=False):
+                update = True
+                p.changes.append(Change(f'{rel}/{f}', "update the scoring plugin to the build setup carries",
+                                        op=('copy', src, f'{rel}/{f}', 'plugin')))
+        if update and server_running(server.folder) and not any('AssettoServer is running' in b for b in p.blockers):
+            p.blockers.append("AssettoServer is running from this folder (the plugins are in use): stop it, then run "
+                              "setup again to update the plugins")
+    if SCORING_PLUGIN not in server.plugins:
+        plugins = server.plugins + ([PLUGIN] if PLUGIN not in server.plugins and OLD_PLUGIN not in server.plugins else [])
+        p.changes.append(Change(x, "enable the scoring plugin", f'EnablePlugins: [{", ".join(plugins)}]',
+                                f'EnablePlugins: [{", ".join(plugins + [SCORING_PLUGIN])}]', op=('yaml_plugin', SCORING_PLUGIN)))
+    old = server.plugin_config or {}
+    new = server.scoring_config or {}
+    old_tag = OLD_PLUGIN_CONFIG_TAG if server.old_plugin_doc else PLUGIN_CONFIG_TAG
+    for key in SCORING_SETTINGS:
+        if key not in old:
+            continue
+        if key not in new:
+            value = _yaml_value(old[key])
+            p.changes.append(Change(x, f"move {key} to the scoring plugin's settings", f'{key}: {value}',
+                                    f'--- {SCORING_CONFIG_TAG}\n{key}: {value}',
+                                    op=('yaml_doc', SCORING_CONFIG_TAG, key, value)))
+        p.changes.append(Change(x, f"take {key} out of the bots' plugin settings (the scoring plugin has it)"
+                                if key in new else f"take {key} out of the bots' plugin settings",
+                                f'{key}: {_yaml_value(old[key])}', '',
+                                op=('yaml_doc_remove', old_tag, key)))
 
 
 def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_mode='fixed',
@@ -664,6 +734,7 @@ def plan_bot(server, game, car=None, skin=None, bots=1, bot_name='DriftBot', ai_
             else:
                 p.changes.append(Change(x, f"take out the plugin setting {key}: this plugin has no such setting",
                                         f'{key}: {value}', '', op=('yaml_doc_remove', PLUGIN_CONFIG_TAG, key)))
+    plan_scoring(p, plugin_source)
     # an any-car policy (it reads the car inputs: more than 55) drives each bot with its own car's numbers
     if inputs > 55 and game:
         from .carfile import car_file_text, pace_source, same_car_file

@@ -2,9 +2,10 @@ using System.Globalization;
 using System.Numerics;
 using System.Text;
 using AssettoServer.Server.Ai.Splines;
+using GradientDriftPlugin;
 using Serilog;
 
-namespace GradientDriftPlugin;
+namespace GradientDriftScoring;
 
 // The track's drift zones painted on the road for players: thick yellow boxes along the outside
 // edge of the corners, closed at both ends, with diagonal stripes inside (sparser for a

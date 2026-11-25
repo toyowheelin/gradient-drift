@@ -341,3 +341,50 @@ def test_a_drift_line_gets_its_own_pace_reference(world):
     assert os.path.exists(os.path.join(data, track, pace))
     with open(os.path.join(data, track, pace), 'rb') as a, open(os.path.join(server, pace), 'rb') as b:
         assert a.read() == b.read()
+
+
+def test_setup_installs_the_scoring_plugin_and_moves_its_settings(world, tmp_path):
+    """Players' drift scoring is its own plugin: setup installs it from the build beside the plugin's,
+    enables it and moves the scoring settings out of the bots' plugin block into its own."""
+    from gradientdrift_setup.apply import apply_plan
+    from gradientdrift_setup.plan import plan_bot
+    from gradientdrift_setup.server import read_server
+    from ruamel.yaml import YAML
+    server, game, plugin, data, _ = world
+    release = tmp_path / 'release'
+    plugins = str(release / 'GradientDriftPlugin')
+    plugin_build(plugins)
+    scoring = release / 'GradientDriftScoringPlugin'
+    scoring.mkdir()
+    (scoring / 'GradientDriftScoringPlugin.dll').write_bytes(b'MZ fake scoring build\0')
+    (scoring / 'GradientDriftScoringPlugin.deps.json').write_text('{}\n')
+    extra = os.path.join(server, 'cfg', 'extra_cfg.yml')
+    with open(extra, 'a') as f:
+        f.write('ZoneScoreMode: Arcade\nZoneBoardSize: 20\n')
+
+    def make():
+        return plan_bot(read_server(server), game, bots=2, bot_name='TestBot', plugin_source=plugins, track_data=data,
+                        pace_percent=90)
+    p = make()
+    assert not p.blockers, p.blockers
+    files = {c.file for c in p.changes}
+    assert 'plugins/GradientDriftScoringPlugin/GradientDriftScoringPlugin.dll' in files
+    assert any(c.op == ('yaml_plugin', 'GradientDriftScoringPlugin') for c in p.changes)
+    apply_plan(p, log=lambda *_: None)
+    assert os.path.exists(os.path.join(server, 'plugins', 'GradientDriftScoringPlugin', 'GradientDriftScoringPlugin.dll'))
+    with open(extra) as f:
+        docs = [d for d in YAML(typ='rt').load_all(f.read()) if d is not None]
+    assert 'GradientDriftScoringPlugin' in docs[0]['EnablePlugins']
+    by_tag = {getattr(getattr(d, 'tag', None), 'value', None): d for d in docs[1:]}
+    bots, scores = by_tag['!GradientDriftConfiguration'], by_tag['!GradientDriftScoringConfiguration']
+    assert 'ZoneScoreMode' not in bots and 'ZoneBoardSize' not in bots
+    assert scores['ZoneScoreMode'] == 'Arcade' and scores['ZoneBoardSize'] == 20
+    again = make()
+    assert not any('Scoring' in c.file or 'scoring' in c.what or 'Zone' in c.what for c in again.changes), \
+        [c.what for c in again.changes]
+
+
+def test_setup_says_when_there_is_no_scoring_plugin_build(world):
+    p = plan(world)
+    assert not any('GradientDriftScoringPlugin' in c.file for c in p.changes)
+    assert any('GradientDriftScoringPlugin' in n for n in p.notes)

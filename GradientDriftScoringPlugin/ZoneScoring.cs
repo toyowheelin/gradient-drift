@@ -9,10 +9,12 @@ using AssettoServer.Server.Ai.Splines;
 using AssettoServer.Server.Configuration;
 using AssettoServer.Server.Plugin;
 using AssettoServer.Shared.Network.Packets.Shared;
+using Autofac;
 using Microsoft.Extensions.Hosting;
+using GradientDriftPlugin;
 using Serilog;
 
-namespace GradientDriftPlugin;
+namespace GradientDriftScoring;
 
 // Scores players' drifting through the track's zones (ZoneJudge) from the car status the server
 // already gets from them, keeps each server's run records (ZoneRecords) and shows players how they
@@ -20,9 +22,10 @@ namespace GradientDriftPlugin;
 // AssettoServer's HTTP port (ZoneScoreController), and a chat line for each scored run, which
 // players without CSP see too. Chat commands: /zones, /top (ZoneCommands).
 //
-// It runs whether or not the bots have a policy. In Zones mode it needs the zones painted for
-// players (<track>_course_zones.csv and <track>_course_edges.csv) and does nothing without them;
-// in Arcade mode (ZoneScoreMode, ArcadeJudge) it needs no track files at all.
+// It needs no bots: it is its own plugin, with or without GradientDriftPlugin beside it. In Zones
+// mode it needs the track's zones (<track>_course_zones.csv and <track>_course_edges.csv) and the
+// server's AI line they sit on, and does nothing without them; it also paints the zones for players
+// (ShowZones, DriftZones). In Arcade mode (ZoneScoreMode, ArcadeJudge) it needs no track files at all.
 public sealed class ZoneScoring : BackgroundService, IAssettoServerAutostart
 {
     private const int MaxEvents = 24;
@@ -30,7 +33,7 @@ public sealed class ZoneScoring : BackgroundService, IAssettoServerAutostart
     private readonly EntryCarManager _entryCarManager;
     private readonly Lazy<ACServer> _acServer;
     private readonly SessionManager _sessionManager;
-    private readonly GradientDriftConfiguration _configuration;
+    private readonly GradientDriftScoringConfiguration _configuration;
     private readonly ZoneJudge.Course? _course;
     private readonly Dictionary<byte, Driver> _drivers = new();
     private readonly List<AiState> _aiStates = new();
@@ -45,31 +48,58 @@ public sealed class ZoneScoring : BackgroundService, IAssettoServerAutostart
     public int ZoneCount => _course?.ZoneCount ?? 0;
 
     public ZoneScoring(EntryCarManager entryCarManager, Lazy<ACServer> acServer, SessionManager sessionManager,
-        GradientDriftConfiguration configuration, ACServerConfiguration serverConfiguration, AiSpline spline,
+        GradientDriftScoringConfiguration configuration, ACServerConfiguration serverConfiguration, ILifetimeScope scope,
         CSPServerScriptProvider cspServerScriptProvider)
     {
         _entryCarManager = entryCarManager;
         _acServer = acServer;
         _sessionManager = sessionManager;
         _configuration = configuration;
-        if (!configuration.ZoneScoring)
+        VerboseLog.On = configuration.VerboseLogging;
+        Arcade = configuration.IsArcadeScoring();
+        bool paint = configuration.ShowZones && !Arcade;
+        if (!configuration.ZoneScoring && !paint)
         {
             return;
         }
-        PluginData.Init(Path.GetDirectoryName(GetType().Assembly.Location) ?? "");
+        PluginData.Init(DataDirectory());
         string trackName = Path.GetFileName(serverConfiguration.Server.Track);
         string track = trackName + (string.IsNullOrWhiteSpace(serverConfiguration.Server.TrackConfig)
             ? "" : "/" + serverConfiguration.Server.TrackConfig.Trim());
-        Arcade = configuration.IsArcadeScoring();
         DriftZones.Course? course = null;
-        float[]? pace = null;
         if (!Arcade)
         {
             if (!string.Equals(configuration.ZoneScoreMode?.Trim(), "Zones", StringComparison.OrdinalIgnoreCase))
             {
                 Log.Warning("GradientDrift: ZoneScoreMode {Mode} is neither Zones nor Arcade - scoring through the zones", configuration.ZoneScoreMode);
             }
-            course = DriftZones.LoadCourse(trackName, spline.Points, "no zone scoring");
+            // the zones sit on the server's AI line, which AssettoServer loads only with AI on
+            AiSpline? spline = scope.ResolveOptional<AiSpline>();
+            if (spline == null)
+            {
+                Log.Warning("GradientDrift: no drift zones scored or painted - they need the server's AI line, and AI is off "
+                    + "(set EnableAi: true, with the track's ai/fast_lane.ai; no AI cars are needed), or score Arcade style (ZoneScoreMode: Arcade)");
+            }
+            else
+            {
+                course = DriftZones.LoadCourse(trackName, spline.Points, "no zone scoring");
+            }
+            if (course != null && paint && course.Zones.Count > 0)
+            {
+                // the track's drift zones painted on the road for players with CSP (DriftZones.cs)
+                List<DriftZones.Shape> shapes = DriftZones.Shapes(course, configuration.ZoneStripeSpacingMeters, configuration.ZoneLineWidthMeters);
+                cspServerScriptProvider.AddScript(DriftZones.Script(shapes, configuration.ZoneColor, configuration.ZoneLineWidthMeters),
+                    DriftZones.ScriptName);
+            }
+        }
+        if (!configuration.ZoneScoring)
+        {
+            Arcade = false;
+            return;
+        }
+        float[]? pace = null;
+        if (!Arcade)
+        {
             if (course == null || course.Zones.Count == 0)
             {
                 return;
@@ -99,6 +129,16 @@ public sealed class ZoneScoring : BackgroundService, IAssettoServerAutostart
             Log.Information("GradientDrift: scoring players' drifting through {Count} zones ({Pace})", course!.Zones.Count,
                 pace != null ? "speed against the track's pace reference" : $"no pace reference: {ZoneJudge.SpeedFallbackKmh:0} km/h is full speed points");
         }
+    }
+
+    // Where the track files are read from: GradientDriftPlugin's data bundle when that plugin is
+    // installed beside this one with a bundle (setup keeps the track's files in it), else this
+    // plugin's own folder; loose files in the server's folder are read either way (PluginData).
+    private string DataDirectory()
+    {
+        string own = Path.GetDirectoryName(GetType().Assembly.Location) ?? "";
+        string bots = Path.Combine(Path.GetDirectoryName(own) ?? "", "GradientDriftPlugin");
+        return File.Exists(Path.Combine(bots, PluginData.BundleFileName)) ? bots : own;
     }
 
     // The board arcade chains are kept under (in place of a zones fingerprint): its own board.
