@@ -102,6 +102,12 @@ internal sealed class DriftCarState
     // reference, held to the car's limit), m/s: the IDM works in speeds.
     public float LineSpeedMs;
     public float PaceOneMs;
+    // AvoidCars: the highest pace this car may be asked this tick to keep clear of other cars (its
+    // policy's units; +inf = no limit), and the share of its speed the test asked for (1 = none).
+    public float AvoidPaceCap = float.PositiveInfinity;
+    public float AvoidShare = 1f;
+    // The pace the policy is asked: the pace, held under AvoidPaceCap.
+    public float AskedPace => MathF.Min(Pace, AvoidPaceCap);
 
     // This bot's own style (BotStyles): its pace middle, chase gap, skill and chase rules.
     public BotStyle Style = new(0.5f, 0f, 2f, 1f, 7.5f, 1.1f);

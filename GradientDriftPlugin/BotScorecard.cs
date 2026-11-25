@@ -15,7 +15,9 @@ namespace GradientDriftPlugin;
 //   moving    over 25 km/h
 //   slide     share of moving time with the slip angle 20 - 80 deg; spin: 80 deg or more
 //   walls     share of moving time pushed out of a wall; wall hits: separate touches (0.5 s apart)
-//   car hits  separate touches of the bot's outline with another car's (0.5 s apart), bots or players
+//   car hits  separate touches of the bot's outline with another car's (0.5 s apart), bots or players;
+//             chase hits: those between a chasing bot and the car it chases (tandem contact)
+//   avoid     share of the bot's time AvoidCars held its pace down for another car
 //   chase     time chasing a car ahead (ChasePlayers), the gap to it (the outline gap for a tandem
 //             policy, along the line otherwise) and the share of chase time within 2 m of ChaseGapMeters
 //   stock     share of the bot's time the server's own AI drove it: before the plugin takes a car
@@ -43,6 +45,8 @@ internal sealed class BotScorecard
         public double Seconds, WaitingSeconds, HeldSeconds, InvalidSeconds, FollowingSeconds;
         public double MovingSeconds, SlideSeconds, SpinSeconds, SlideSlipSum, WallSeconds, DistanceM;
         public int WallHits, BotHits, PlayerHits, WrongWays, Takeovers, Stuck;
+        public int ChaseBotHits, ChasePlayerHits;
+        public double AvoidSeconds;
         public long LastWallMs = long.MinValue / 2;
         public bool WrongWay;
         public double ChaseSeconds, ChaseBotSeconds, InBandSeconds;
@@ -181,7 +185,7 @@ internal sealed class BotScorecard
 
     // One tick of a car the plugin has. chaseGapM: NaN unless it is chasing a car ahead.
     public void Driven(byte sessionId, float dt, bool heldByStock, bool policyValid, float speedMs, float slipRad,
-        float wallPushOutM, bool wrongWay, float chaseGapM, bool chaseLeadIsBot)
+        float wallPushOutM, bool wrongWay, float chaseGapM, bool chaseLeadIsBot, float avoidShare)
     {
         lock (_lock)
         {
@@ -200,6 +204,10 @@ internal sealed class BotScorecard
             if (!policyValid)
             {
                 bot.InvalidSeconds += dt;
+            }
+            if (avoidShare < 1f)
+            {
+                bot.AvoidSeconds += dt;
             }
             bot.DistanceM += speedMs * dt;
             if (wallPushOutM > 0f)
@@ -249,8 +257,9 @@ internal sealed class BotScorecard
         }
     }
 
-    // Two cars' outlines overlap this tick (other: a bot's or a player's session id).
-    public void Touching(byte sessionId, byte other, bool otherIsBot)
+    // Two cars' outlines overlap this tick (other: a bot's or a player's session id); chase: one of
+    // them is chasing the other.
+    public void Touching(byte sessionId, byte other, bool otherIsBot, bool chase)
     {
         lock (_lock)
         {
@@ -269,10 +278,19 @@ internal sealed class BotScorecard
             {
                 For(sessionId).BotHits++;
                 For(other).BotHits++;
+                if (chase)
+                {
+                    For(sessionId).ChaseBotHits++;
+                    For(other).ChaseBotHits++;
+                }
             }
             else
             {
                 For(sessionId).PlayerHits++;
+                if (chase)
+                {
+                    For(sessionId).ChasePlayerHits++;
+                }
             }
         }
     }
@@ -324,6 +342,8 @@ internal sealed class BotScorecard
             ["gap_p50"] = Percentile(b.Gaps, b.ChaseSeconds, 0.5) is double p50 ? (object?)Math.Round(p50, 2) : null,
             ["gap_p90"] = Percentile(b.Gaps, b.ChaseSeconds, 0.9) is double p90 ? (object?)Math.Round(p90, 2) : null,
             ["in_band"] = Math.Round(Share(b.InBandSeconds, b.ChaseSeconds), 3),
+            ["chase_hits"] = b.ChaseBotHits + b.ChasePlayerHits,
+            ["avoid"] = Math.Round(Share(b.AvoidSeconds, b.Seconds), 3),
             ["stock"] = Math.Round(Share(stock, b.Seconds - b.FollowingSeconds), 3),
             ["stock_waiting_s"] = Math.Round(b.WaitingSeconds, 1),
             ["stock_held_s"] = Math.Round(b.HeldSeconds, 1),
@@ -345,6 +365,7 @@ internal sealed class BotScorecard
             all.SlideSlipSum += b.SlideSlipSum; all.WallSeconds += b.WallSeconds; all.DistanceM += b.DistanceM;
             all.WallHits += b.WallHits; all.PlayerHits += b.PlayerHits; all.WrongWays += b.WrongWays;
             all.Takeovers += b.Takeovers; all.Stuck += b.Stuck;
+            all.ChasePlayerHits += b.ChasePlayerHits; all.AvoidSeconds += b.AvoidSeconds;
             all.ChaseSeconds += b.ChaseSeconds; all.ChaseBotSeconds += b.ChaseBotSeconds; all.InBandSeconds += b.InBandSeconds;
             for (int i = 0; i < GapBins; i++)
             {
@@ -353,6 +374,7 @@ internal sealed class BotScorecard
         }
         // a touch between two bots is one hit for the pool, not one for each
         all.BotHits = _bots.Values.Sum(b => b.BotHits) / 2;
+        all.ChaseBotHits = _bots.Values.Sum(b => b.ChaseBotHits) / 2;
         return all;
     }
 
@@ -427,15 +449,16 @@ internal sealed class BotScorecard
         sb.AppendLine("Moving = over 25 km/h. slide: slip 20-80 deg, spin: 80+ (shares of moving time). walls: share of moving");
         sb.AppendLine("time pushed out of a wall. hits: separate touches; car hits = bots/players. gap: chase gap p10/p50/p90 m,");
         sb.AppendLine("band: chase time within 2 m of the asked gap. stock: share of time the server's AI drove the bot.");
+        sb.AppendLine("chase hits: car hits between a chaser and the car it chases. avoid: share of time AvoidCars slowed the bot.");
         sb.AppendLine();
-        string head = $"{"bot",-4} {"driven",7} {"km",6} {"km/h",5} {"slide",6} {"angle",5} {"spin",5} {"walls",6} {"wall hits",9} {"car hits",9} " +
-                      $"{"chase",6} {"gap",15} {"band",5} {"stock",6} {"stuck",5} {"wrong way",9}";
+        string head = $"{"bot",-4} {"driven",7} {"km",6} {"km/h",5} {"slide",6} {"angle",5} {"spin",5} {"walls",6} {"wall hits",9} {"car hits",9} {"chase hits",10} " +
+                      $"{"avoid",5} {"chase",6} {"gap",15} {"band",5} {"stock",6} {"stuck",5} {"wrong way",9}";
         sb.AppendLine(head);
         foreach (var r in bots.Append(all))
         {
             sb.AppendLine($"{r["bot"],-4} {F(r["driven_minutes"], "F0") + "m",7} {F(r["km"], "F1"),6} {F(r["kmh"], "F0"),5} {Pct(r["slide"]),6} " +
                           $"{F(r["slide_slip_deg"], "F0"),5} {Pct(r["spin"]),5} {Pct(r["walls"]),6} {r["wall_hits"] + " " + F(r["wall_hits_per_hour"], "F0") + "/h",9} " +
-                          $"{r["bot_hits"] + "/" + r["player_hits"],9} {F(r["chase_minutes"], "F0") + "m",6} " +
+                          $"{r["bot_hits"] + "/" + r["player_hits"],9} {r["chase_hits"],10} {Pct(r["avoid"]),5} {F(r["chase_minutes"], "F0") + "m",6} " +
                           $"{F(r["gap_p10"], "F1") + "/" + F(r["gap_p50"], "F1") + "/" + F(r["gap_p90"], "F1"),15} {Pct(r["in_band"]),5} " +
                           $"{Pct(r["stock"]),6} {r["stuck"],5} {r["wrong_way"],9}");
         }

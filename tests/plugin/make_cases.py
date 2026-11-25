@@ -97,6 +97,33 @@ def float32_spread(pol, obs):
     return float(np.abs(plugin_actions(p32, obs.astype(np.float32)) - plugin_actions(pol, obs)).max())
 
 
+def avoid_cases(n=200, seed=11):
+    """Car avoidance (CarAvoidance.SpeedShare in the plugin) against drift_rl/car_avoid.py: two cars
+    near each other in the line's frame at random offsets, speeds and angles. A case whose answer
+    moves when the horizon or margin moves a hair is left out (float32 against float64 could fall
+    either side of a step there). Each: own car, other car, horizon, margin, floor, the share."""
+    import car_avoid as ca
+    rng = np.random.default_rng(seed)
+    out = []
+    acted = 0
+    while len(out) < n:
+        own = [0.0, float(rng.uniform(-3, 3)), float(rng.uniform(5, 25)), float(rng.uniform(-4, 4)),
+               float(rng.uniform(-0.9, 0.9))]
+        other = [float(rng.uniform(-6, 25)), float(rng.uniform(-6, 6)), float(rng.uniform(0, 25)),
+                 float(rng.uniform(-5, 5)), float(rng.uniform(-1.5, 1.5))]
+        horizon, margin, floor = float(rng.choice([0.8, 1.2, 2.0])), float(rng.choice([0.0, 0.3])), float(rng.uniform(0.3, 0.8))
+        k = ca.speed_share(own, other, horizon, margin, floor)
+        if any(abs(ca.speed_share(own, other, horizon + dh, margin + dm, floor) - k) > 1e-9
+               for dh, dm in ((1e-3, 0), (-1e-3, 0), (0, 1e-3), (0, -1e-3))):
+            continue
+        if k < 1.0:
+            acted += 1
+        elif len(out) - acted > n // 2:
+            continue            # keep at least half the cases ones where the bot slows
+        out.append({'own': own, 'other': other, 'horizon': horizon, 'margin': margin, 'floor': floor, 'share': k})
+    return out
+
+
 def contact_cases(n=48, seed=5):
     """Car-on-car pushes (CarContact.Collide in the plugin) against the trainer's
     (drift_env._touch_push): a car overlapping a lead at random places, speeds and yaw rates. Each:
@@ -296,6 +323,7 @@ def main():
     cases['policies'].append({'file': 'policies/not_json.json', 'expect': 'refused', 'why': 'a cut-off file'})
 
     cases['contacts'] = contact_cases()
+    cases['avoid'] = avoid_cases()
     cases['zones'] = zone_case(out)
     with open(os.path.join(out, 'cases.json'), 'w') as f:
         json.dump(cases, f)

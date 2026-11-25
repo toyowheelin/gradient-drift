@@ -58,7 +58,8 @@ no tracks whose model files are protected (DRM, which Custom Shaders Patch decod
 loads the track: setup cannot read their ground or walls and turns them down);
 and bots feel other cars only with `CarContactPush` on (off by default): then a bot that touches a
 player or another bot is pushed by its share of the hit, by the two cars' masses; with it off, a bot
-drives through a car it hits as if nothing were there.
+drives through a car it hits as if nothing were there. A bot sees another car only while it chases
+it, unless `AvoidCars` is on (off by default): then it slows for any car it would run into.
 
 ## Quick start
 
