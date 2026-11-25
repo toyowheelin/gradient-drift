@@ -24,7 +24,9 @@ What it does:
      Where the ground changes the edge is put on the boundary itself (BOUNDARY_BISECTIONS).
   4. Tidies the edge: no nearer another stretch of the line than its own point (the inside of a
      tight corner, two stretches side by side), and widening at most MAX_EDGE_SLOPE m per m along
-     the line, so open run-off reached for a point or two no longer spikes the edge out; and, where
+     the line, so open run-off reached for a point or two no longer spikes the edge out; a longer
+     stretch read far wider than the points around it is bridged across from them (bridge_open);
+     and, where
      no marker sets it, smooths it into one continuous curve (smooth_edge).
 
 Output (in the track's folder, drift_rl/tracks/<track>/):
@@ -72,6 +74,16 @@ RAY_SPREAD_M = 0.75
 # out across open run-off for a point or two and straight back (Klutch Kickers' corners); a real
 # course widens gradually. The limit only lowers an edge, never raises one.
 MAX_EDGE_SLOPE = 0.35
+# Where the paving runs on with nothing to stop the ray for a stretch (Klutch Kickers' hairpin exit
+# opens onto the drag strip and start grid: 16 points read 10 - 30 m against 3 - 5 m either side),
+# the slope limit alone left a 5 m tent-shaped bulge there that the painted zone and the drift line
+# followed out and back. A point reading more than OPEN_MARGIN_M wider than the running median of
+# OPEN_MEDIAN_POINTS points around it is taken as not knowing the edge: the edge there is bridged
+# in a straight line (in distance along the line) between the nearest points on each side that do
+# know it (bridge_open). The window is wide enough that a bulge up to half of it does not move the
+# median.
+OPEN_MARGIN_M = 3.0
+OPEN_MEDIAN_POINTS = 61
 # The edge may not reach a point nearer another stretch of the line than its own point (minus
 # FOLD_TOLERANCE_M): on the inside of a corner tighter than the walk, or between two stretches
 # side by side, the edge otherwise crossed into the other stretch's course. The racing-line tools
@@ -265,6 +277,24 @@ def slope_limit(width, line, slope=MAX_EDGE_SLOPE):
             a, b = (i + 1) % len(w), i % len(w)
             w[b] = min(w[b], w[a] + slope * seg[b])
     return w
+
+
+def bridge_open(width, line, margin=OPEN_MARGIN_M, points=OPEN_MEDIAN_POINTS):
+    """The widths with each point more than `margin` wider than the running median of `points`
+    points around it (wrapping round the lap) replaced by the straight-line interpolation, in
+    distance along the line, between the nearest points that are not. Returns (widths, open mask)."""
+    w = np.asarray(width, dtype=np.float64).copy()
+    w[~np.isfinite(w)] = PAVED_EDGE_SEARCH_M
+    n = len(w)
+    if n < points:
+        return w, np.zeros(n, bool)
+    half = points // 2
+    med = np.median([np.roll(w, k) for k in range(-half, half + 1)], axis=0)
+    open_ = w > med + margin
+    if open_.any() and not open_.all():
+        good = ~open_
+        w[open_] = np.interp(line.arc[open_], line.arc[good], w[good], period=line.lap)
+    return w, open_
 
 
 def smooth_edge(width, low=SMOOTH_MIN_POINTS, mean=SMOOTH_MEAN_POINTS):
@@ -524,6 +554,7 @@ def build(world, fs, de, materials=None, paint=None):
         offsets = (np.arange(RAYS_PER_POINT) - (RAYS_PER_POINT - 1) / 2) * RAY_SPREAD_M
         paved = np.array([np.median([paved_edge(i, sign, a) for a in offsets]) for i in range(N)])
         paved = np.minimum(paved, fold_limit(line, sign))
+        paved, _ = bridge_open(paved, line)
         ms = sorted((m for m in markers if m['used'] and m['lateral'] * sign > 0), key=lambda m: m['arc'])
         s = np.array([m['arc'] for m in ms])
         w = np.array([abs(m['lateral']) for m in ms])

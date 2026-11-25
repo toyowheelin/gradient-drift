@@ -170,3 +170,23 @@ def test_track_triangles_picks_thin_painted_meshes():
     assert tt.is_paint('mesh12', 'Line White', strip)
     assert not tt.is_paint('kerb_01', 'Kerb', strip)
     assert not tt.is_paint('grid_box', 'Line White', box)
+
+
+def test_bridge_open_bridges_a_long_open_stretch():
+    # Klutch Kickers' hairpin exit: 16 points read 10 - 30 m out over the open start apron
+    line = circle_line(100.0, n=400)
+    w = np.full(len(line.sp), 4.0)
+    w[300:310] = np.linspace(3.0, 4.0, 10)
+    w[312:328] = [10, 30, 30, 30, 13.5, 10.5, 17.5, 12.5, 30, 30, 20, 15, 12, 10, 18, 11]
+    w[310:312] = 3.2
+    out, open_ = bc.bridge_open(w, line)
+    assert open_[312:328].all() and not open_[:312].any() and not open_[328:].any()
+    assert out[312:328].max() < 4.5 and out[312:328].min() > 3.0
+    assert np.array_equal(out[~open_], w[~open_])
+
+
+def test_bridge_open_keeps_a_gradual_widening():
+    line = circle_line(100.0, n=400)
+    w = 4.0 + 2.0 * np.sin(np.linspace(0.0, 2 * math.pi, 400, endpoint=False))
+    out, open_ = bc.bridge_open(w, line)
+    assert not open_.any() and np.array_equal(out, w)

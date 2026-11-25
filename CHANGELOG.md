@@ -7,6 +7,10 @@ when releasing.
 
 ## Unreleased
 
+- Course edges: where the edge search runs on across open paving for a stretch (a hairpin exit
+  onto a drag strip or start grid), the edge is now bridged across from the points either side
+  instead of bulging out several metres and back. Painted zones and the drift line no longer bend
+  out and back there. Rebuild a track's course files (setup_track) to pick it up.
 - New plugin setting `AvoidCars` (off by default): a bot slows for a car it would run into within
   `AvoidHorizonSeconds` (1.2 s), bots and players alike, moving or stopped, by a velocity-obstacle
   test in the racing line's frame (after ORCA). Only the car behind yields, and a bot's own chase lead
