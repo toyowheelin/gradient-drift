@@ -123,3 +123,71 @@ def test_keeps_off_an_edge_that_bulges_in():
     assert (edges.PositiveEdgeZ - raw[:, 1]).min() < 2.5             # the smoothing cuts the corner of the bump
     moved = zl.move_line(xz, edges, zones, new_bend_m=0)
     assert (edges.PositiveEdgeZ - moved[:, 1]).min() > 2.95
+
+
+def circle(radius, n=300):
+    """A closed circle, anticlockwise, n points."""
+    a = np.linspace(0, 2 * np.pi, n, endpoint=False)
+    return np.c_[radius * np.cos(a), radius * np.sin(a)]
+
+
+def test_a_line_parallel_to_a_corner_bends_as_it_should():
+    # 5 m further out on a 20 m corner bends 20/25 as tightly: inside both bounds
+    assert not zl.off_bends(circle(20.0), circle(25.0)).any()
+
+
+def test_a_bump_on_a_corner_is_flagged():
+    xz = circle(20.0)
+    a = np.linspace(0, 2 * np.pi, len(xz), endpoint=False)
+    r = 20.0 + 3.0 * np.exp(-((np.arange(len(xz)) - 150) / 2.0) ** 2)     # out 3 m and back over a few points
+    bumped = np.c_[r * np.cos(a), r * np.sin(a)]
+    bad = zl.off_bends(xz, bumped)
+    assert bad[145:156].any() and not bad[:120].any() and not bad[180:].any()
+
+
+def stadium(straight_m=100, radius=15.0, half=8.0):
+    """A closed stadium-shaped course, anticlockwise, about 1 m a point, `half` m of road either side
+    of the line: (line (n, 2), edges table, left normals (n, 2))."""
+    pts = []
+    for x in np.arange(0, straight_m):
+        pts.append((x, -radius))
+    for a in np.arange(-np.pi / 2, np.pi / 2, 1 / radius):
+        pts.append((straight_m + radius * np.cos(a), radius * np.sin(a)))
+    for x in np.arange(straight_m, 0, -1.0):
+        pts.append((x, radius))
+    for a in np.arange(np.pi / 2, 3 * np.pi / 2, 1 / radius):
+        pts.append((radius * np.cos(a), radius * np.sin(a)))
+    xz = np.array(pts)
+    t = np.roll(xz, -1, 0) - np.roll(xz, 1, 0)
+    t /= np.linalg.norm(t, axis=1)[:, None]
+    left = np.c_[-t[:, 1], t[:, 0]]
+    n = len(xz)
+    p, m = np.full(n, half), np.full(n, half)
+    edges = pd.DataFrame({'PointId': np.arange(n), 'PositiveSideM': p, 'NegativeSideM': m})
+    edges[['PositiveEdgeX', 'PositiveEdgeZ']] = xz + left * half
+    edges[['NegativeEdgeX', 'NegativeEdgeZ']] = xz - left * half
+    return xz, edges, left
+
+
+def test_an_edge_bulge_in_a_hairpin_does_not_carry_the_line_out_and_back():
+    # the outside (negative, right-hand) edge of the first hairpin bulges out 4 m for 12 points:
+    # without the bend check the moved line follows it out and back and straightens at the zone's
+    # end; with it the line keeps within the bounds of the racing line's own bend
+    xz, edges, left = stadium()
+    corner = np.arange(100, 147)                       # the first hairpin's points
+    bulge = np.zeros(len(xz))
+    bulge[corner[20:32]] = 4.0
+    edges['NegativeSideM'] += bulge
+    edges[['NegativeEdgeX', 'NegativeEdgeZ']] = xz - left * edges.NegativeSideM.to_numpy()[:, None]
+    zones = pd.DataFrame({'Side': [-1], 'FirstPointId': [corner[5]], 'LastPointId': [corner[-5]]})
+    raw = zl.move_line(xz, edges, zones, bend_tight=0)
+    assert zl.off_bends(xz, raw).any()
+    moved = zl.move_line(xz, edges, zones)
+    assert not zl.off_bends(xz, moved).any()
+    k0, k1 = zl.curvature(xz), zl.curvature(moved)
+    d = np.linalg.norm(moved - xz, axis=1)
+    turning = np.abs(k0) > 1 / zl.TURN_RADIUS_M
+    ratio = k1[turning] / k0[turning]
+    assert (ratio >= zl.BEND_LOOSE - 1e-9).all()
+    assert (ratio <= zl.BEND_TIGHT * (1 + d[turning] * np.abs(k0[turning])) + 1e-9).all()
+    assert np.median(d[corner[8:-8]]) > 1.0            # still moved out toward the zone
