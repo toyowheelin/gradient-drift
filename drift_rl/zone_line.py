@@ -43,6 +43,16 @@ MAX_SLOPE = 0.2           # the line moves sideways at most 0.2 m per metre alon
 NEW_BEND_M = 80.0         # the moved line may not add a bend tighter than this that the racing line does
                           # not have (turning the other way, or on a straight): eased out where it does
 MIN_SIDE_M = 3.0          # and keeps at least this much road between itself and either edge
+# Where the racing line turns (radius under TURN_RADIUS_M) the moved line keeps to its bend: no more
+# than BEND_TIGHT x (1 + d / R) as tightly (d its offset from the racing line, R the racing line's
+# radius: a line placed further out on a corner may bend more, as a parallel line must), no less than
+# BEND_LOOSE x as tightly, and the same way round; eased out where it does not, like the new bends.
+# An edge that bulges out and back for a few points (Klutch Kickers' hairpin exit onto the drag strip
+# and start grid) carried the line out and back with it, so it straightened at the zone's end while
+# the racing line still turned there, and the bots came out of their drift and started it again.
+TURN_RADIUS_M = 150.0
+BEND_TIGHT = 1.5
+BEND_LOOSE = 0.6
 
 
 def _layout(raw):
@@ -102,8 +112,20 @@ def new_bends(xz, moved, new_bend_m=NEW_BEND_M):
     return (np.abs(k1) > 1 / new_bend_m) & ((np.sign(k0) != np.sign(k1)) | (np.abs(k0) < 1 / 300))
 
 
+def off_bends(xz, moved, tight=BEND_TIGHT, loose=BEND_LOOSE, turn_radius_m=TURN_RADIUS_M):
+    """Points where the racing line turns (radius under turn_radius_m) and the moved line bends more
+    than tight x (1 + d / R) as tightly (d its offset there, R the racing line's radius), less than
+    loose x as tightly, or the other way round."""
+    k0, k1 = curvature(xz), curvature(moved)
+    turning = np.abs(k0) > 1 / turn_radius_m
+    limit = tight * (1 + np.linalg.norm(moved - xz, axis=1) * np.abs(k0))
+    too_tight = np.abs(k1) > limit * np.abs(k0)
+    too_loose = np.abs(k1) < loose * np.abs(k0)
+    return turning & (too_tight | too_loose | (np.sign(k0) != np.sign(k1)))
+
+
 def move_line(xz, edges, zones, inside_m=INSIDE_M, ramp=RAMP_POINTS, smooth=SMOOTH_POINTS, max_slope=MAX_SLOPE,
-              new_bend_m=NEW_BEND_M, min_side_m=MIN_SIDE_M):
+              new_bend_m=NEW_BEND_M, min_side_m=MIN_SIDE_M, bend_tight=BEND_TIGHT, bend_loose=BEND_LOOSE):
     """The AI line's (x, z) moved into the zones: (n, 2)."""
     n = len(xz)
     min_side_m = min(min_side_m, inside_m)          # --inside nearer than MIN_SIDE_M still means it
@@ -169,9 +191,12 @@ def move_line(xz, edges, zones, inside_m=INSIDE_M, ramp=RAMP_POINTS, smooth=SMOO
     def ease_new_bends(off, rounds):
         # bends the racing line does not have (on Spirit Peaks, where the zones are far from it, the
         # line swung across the road between zones and wobbled through long corners, and the bots
-        # fell out of their drifts there): smooth the move more, only around them
+        # fell out of their drifts there), and bends far from the racing line's own where it turns
+        # (off_bends): smooth the move more, only around them
         for _ in range(rounds):
-            bad = new_bends(xz, xz + off, new_bend_m)
+            bad = new_bends(xz, xz + off, new_bend_m) if new_bend_m > 0 else np.zeros(n, bool)
+            if bend_tight > 0:
+                bad |= off_bends(xz, xz + off, bend_tight, bend_loose)
             if not bad.any():
                 return off, True
             near = np.convolve(np.r_[bad[-8:], bad, bad[:8]].astype(float), np.ones(17), 'valid') > 0
@@ -183,12 +208,12 @@ def move_line(xz, edges, zones, inside_m=INSIDE_M, ramp=RAMP_POINTS, smooth=SMOO
     for _ in range(30):
         if min_side_m > 0:
             off = keep_off_edges(off)
-        if new_bend_m <= 0:
+        if new_bend_m <= 0 and bend_tight <= 0:
             break
         off, clean = ease_new_bends(off, 20)
         if clean and (min_side_m <= 0 or np.array_equal(keep_off_edges(off), off)):
             break
-    if new_bend_m > 0:
+    if new_bend_m > 0 or bend_tight > 0:
         off, _ = ease_new_bends(off, 500)       # no new bends wins over the last few cm from an edge
     return xz + off
 
